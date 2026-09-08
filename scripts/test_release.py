@@ -27,7 +27,7 @@ class InstallerTest(unittest.TestCase):
         subprocess.run(['openssl','genpkey','-algorithm','ED25519','-out',str(key)], check=True, capture_output=True)
         der = subprocess.check_output(['openssl','pkey','-in',str(key),'-pubout','-outform','DER'])
         for target in ['x86_64-unknown-linux-musl','aarch64-unknown-linux-musl','x86_64-apple-darwin','aarch64-apple-darwin']:
-            binary = b'#!/bin/sh\necho "horde 0.2.1"\n'
+            binary = b'#!/bin/sh\nif [ "$1" = update ]; then test "$2" = --version && test "$3" = 0.2.1 || exit 9; echo repair-update; exit 0; fi\necho "horde 0.2.1"\n'
             with tarfile.open(self.dist/f'horde-{target}.tar','w') as archive:
                 info = tarfile.TarInfo('horde')
                 info.size = len(binary)
@@ -61,6 +61,16 @@ class InstallerTest(unittest.TestCase):
         (self.dist/'manifest.json').write_text('{}')
         self.assertNotEqual(self.install().returncode,0)
         self.assertFalse((self.home/'.local/bin/horde').exists())
+
+    def test_repair_uses_verified_new_updater(self):
+        self.assertEqual(self.install().returncode, 0)
+        result = subprocess.run(['sh',str(self.dist/'install.sh'),'--repair'],env=self.env,capture_output=True,text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('repair-update', result.stdout)
+        (self.dist/'manifest.json').write_text('{}')
+        result = subprocess.run(['sh',str(self.dist/'install.sh'),'--repair'],env=self.env,capture_output=True,text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('repair-update', result.stdout)
 
     def test_corrupt_archive_creates_no_install(self):
         for archive in self.dist.glob('*.tar'):

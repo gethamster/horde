@@ -25,6 +25,15 @@ flowchart LR
 
 SQLite uses WAL, foreign keys, FULL synchronous mode, and immediate write transactions for coordination mutations. Hordes pin their objective, repository, merged settings, and expanded plan. Revisions retain prior plans. Every invocation creates an attempt with identity, timestamps, PID when executing a command, result, and provider-reported usage.
 
+Before additive migrations, Horde recognizes the historical schema 2 layout with
+`outcomes` as workflows and `tasks` as steps. With the daemon stopped, it saves a
+private SQLite backup, then transactionally renames tables and references to the
+current layout. Unfinished workflows become blocked so pinned provider settings
+and historical work cannot replay automatically. Incomplete outcome trees,
+federation records, or conflicting populated replacement tables prevent migration
+and leave the records untouched. See [installation](installing.md#recovering-an-older-database)
+for recovery when the installed updater cannot open this layout.
+
 Messages and recipient receipts commit together before returning a sender acknowledgement. Message identity is immutable: reusing an ID with a different envelope fails. Delivery is at-least-once until explicit recipient acknowledgement. Acknowledgement cursors stop before the first unread message. A separate notification watermark prevents repeated model calls for an already-delivered wakeup.
 
 Native file writes and patches check exclusive claims. An atomic prefix handoff also transfers nested claims. Worker status updates and messages cannot implicitly release ownership. Failed and uncertain attempts preserve claims. Workspace and branch registrations are unique. Worktree allocation can recover a worktree created before its registration reached SQLite.

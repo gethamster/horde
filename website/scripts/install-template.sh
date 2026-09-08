@@ -4,12 +4,14 @@ set -eu
 release_public_key='@HORDE_RELEASE_PUBLIC_KEY_PEM@'
 version=''
 service='ask'
+repair=no
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --version) version=$2; shift 2 ;;
     --service) service=yes; shift ;;
     --no-service) service=no; shift ;;
-    --help) echo 'Usage: install.sh [--version VERSION] [--service|--no-service]'; exit 0 ;;
+    --repair) repair=yes; shift ;;
+    --help) echo 'Usage: install.sh [--version VERSION] [--service|--no-service] [--repair]'; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -94,6 +96,13 @@ chmod 755 "$scratch/horde"
 version=$(cat "$scratch/version")
 [ "$("$scratch/horde" --version)" = "horde $version" ]
 install_root="$HOME/.local/share/horde-install"
+if [ "$repair" = yes ]; then
+  [ -e "$install_root/current/horde" ] || { echo 'Repair requires an existing managed installation.' >&2; exit 1; }
+  # Run the verified new updater so old schema bugs cannot block its own fix.
+  # It retains normal update locking, migration backups and restart checks.
+  "$scratch/horde" update --version "$version"
+  exit $?
+fi
 mkdir -p "$install_root" "$HOME/.local/bin"
 # Shared lock format with the native updater is held by Python during installation.
 python3 -I - "$scratch/horde" "$install_root" "$version" <<'PY'
