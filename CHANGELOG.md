@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0
+
 - Fix macOS Tailscale discovery during `horde network setup`. The Tailscale app
   now runs in CLI mode when Horde checks its status, avoiding a malformed JSON
   error caused by the app trying to launch its GUI.
