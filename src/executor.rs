@@ -443,7 +443,8 @@ mod final_result_parse_tests {
 
     #[test]
     fn unfenced_extracts_fence_after_prose() {
-        let text = "Repository inspected.\n\n```json\n{\"result\":\"plan\",\"accepted\":true}\n```\n";
+        let text =
+            "Repository inspected.\n\n```json\n{\"result\":\"plan\",\"accepted\":true}\n```\n";
         assert_eq!(unfenced(text), "{\"result\":\"plan\",\"accepted\":true}");
     }
 

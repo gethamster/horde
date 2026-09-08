@@ -17,11 +17,14 @@ or worker transcripts.
 
 ## Writing
 
-Use [writer-responsible-prose](.agents/skills/writer-responsible-prose/SKILL.md)
-when writing or revising PR descriptions and project prose. Read its instructions
-and the references relevant to the edit. The same skill is available to Claude
-through `.claude/skills/writer-responsible-prose`.
+Use [people-first-pr-descriptions](.agents/skills/people-first-pr-descriptions/SKILL.md)
+for every pull-request title and body (Studio’s people-first structure: What
+changed → Why it matters → How it works → User impact → Scope → Validation →
+optional Technical details). Use
+[writer-responsible-prose](.agents/skills/writer-responsible-prose/SKILL.md)
+when drafting or revising that prose so it stays human. The writer skill is also
+available to Claude through `.claude/skills/writer-responsible-prose`.
 
-PR descriptions should explain the concrete problem and changed behavior with an
-example. Include a Mermaid diagram of the relevant flow and validate it before
-publishing. State the checks that passed and any remaining limits.
+Include a Mermaid diagram of the relevant flow when it clarifies the change, and
+validate it before publishing. State only checks that actually ran and any
+remaining limits.
