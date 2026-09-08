@@ -117,9 +117,24 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
         format!("[bundles]\napp = {:?}\n", source),
     )
     .unwrap();
+    let skill_source = dir.join("root-only-skill");
+    std::fs::create_dir_all(skill_source.join("references")).unwrap();
+    std::fs::write(
+        skill_source.join("SKILL.md"),
+        "Use the distributed report skill. Read references/format.md.",
+    )
+    .unwrap();
+    std::fs::write(
+        skill_source.join("references/format.md"),
+        "Report CSV without email addresses.",
+    )
+    .unwrap();
     std::fs::write(
         rootuser.join("horde/config.toml"),
-        "secret_bundles = ['app']\n",
+        format!(
+            "secret_bundles = ['app']\n[skills]\nreport = {:?}\n",
+            skill_source
+        ),
     )
     .unwrap();
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -203,7 +218,8 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
         .unwrap()
         .to_owned();
     cli(&root,&rootuser,&["call","update_context",&json!({"task":oid,"content":"Never export email addresses","provenance":"original caller statement 7"}).to_string()],None);
-    let request=json!({"task":oid,"id":"remote-once","objective":"Run the app and verify it","template":"app","peer":"worker"}).to_string();
+    std::fs::remove_dir_all(&skill_source).unwrap();
+    let request=json!({"task":oid,"id":"remote-once","objective":"Run the app and verify it","template":"app","peer":"worker","skills":["report"]}).to_string();
     let child = cli(&root, &rootuser, &["call", "delegate_task", &request], None)["id"]
         .as_str()
         .unwrap()
@@ -230,6 +246,17 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
         .unwrap()
         .to_owned();
     let remotedb = Store::open(&remote).unwrap();
+    assert_eq!(
+        horde::skills::catalog(&rootdb, &child).unwrap(),
+        horde::skills::catalog(&remotedb, &remoteid).unwrap()
+    );
+    assert!(
+        horde::skills::read(&remotedb, &remoteid, &json!({"name":"report"})).unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("distributed report skill")
+    );
+
     let input = rootdb
         .rows(
             "SELECT hash FROM artifact_links WHERE task=? AND name='federation-input'",
@@ -271,6 +298,18 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
         .unwrap()
         .to_owned();
     let worker = remotedb.register(&remoteid, Some(&step)).unwrap();
+    let resource = horde::protocol::dispatch(
+        &remotedb,
+        "read_skill",
+        json!({"name":"report","path":"references/format.md"}),
+        worker["token"].as_str(),
+    )
+    .unwrap();
+    assert_eq!(resource["content"], "Report CSV without email addresses.");
+    assert!(
+        Path::new(resource["base_directory"].as_str().unwrap())
+            .starts_with(remote.canonicalize().unwrap())
+    );
 
     remotedb
         .conn
@@ -492,5 +531,66 @@ fn remote_answer_sync_does_not_reopen_consumed_questions() {
         db.rows("SELECT purpose FROM question_context", &[])
             .unwrap()[0]["purpose"],
         "input_consumed"
+    );
+}
+
+#[test]
+fn repository_writing_skill_survives_remote_snapshot() {
+    fn copy_tree(source: &Path, target: &Path) {
+        let metadata = std::fs::symlink_metadata(source).unwrap();
+        if metadata.file_type().is_symlink() {
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(std::fs::read_link(source).unwrap(), target).unwrap();
+        } else if metadata.is_dir() {
+            std::fs::create_dir_all(target).unwrap();
+            for entry in std::fs::read_dir(source).unwrap() {
+                let entry = entry.unwrap();
+                copy_tree(&entry.path(), &target.join(entry.file_name()));
+            }
+        } else {
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::copy(source, target).unwrap();
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for path in [
+        ".agents/skills/writer-responsible-prose",
+        ".claude/skills/writer-responsible-prose",
+    ] {
+        copy_tree(&source.join(path), &repo.join(path));
+    }
+    for argv in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.name", "Fixture"],
+        vec!["config", "user.email", "fixture@example.invalid"],
+        vec!["add", "."],
+        vec!["commit", "-m", "Add writing skill"],
+    ] {
+        horde::git::run(&repo, &argv).unwrap();
+    }
+    let snapshot = horde::federation::snapshot(&repo).unwrap();
+    let remote = temp.path().join("remote");
+    horde::federation::unpack(&snapshot, &remote).unwrap();
+    for path in [
+        ".agents/skills/writer-responsible-prose/SKILL.md",
+        ".agents/skills/writer-responsible-prose/references/guardrails.md",
+        ".claude/skills/writer-responsible-prose/SKILL.md",
+    ] {
+        assert_eq!(
+            std::fs::read(source.join(path)).unwrap(),
+            std::fs::read(remote.join(path)).unwrap()
+        );
+    }
+    let entrypoint = remote.join(".claude/skills/writer-responsible-prose/SKILL.md");
+    assert!(
+        entrypoint
+            .parent()
+            .unwrap()
+            .join("../../../.agents/skills/writer-responsible-prose/SKILL.md")
+            .canonicalize()
+            .unwrap()
+            .starts_with(remote.canonicalize().unwrap())
     );
 }

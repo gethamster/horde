@@ -22,8 +22,10 @@ for every pull-request title and body (Studio’s people-first structure: What
 changed → Why it matters → How it works → User impact → Scope → Validation →
 optional Technical details). Use
 [writer-responsible-prose](.agents/skills/writer-responsible-prose/SKILL.md)
-when drafting or revising that prose so it stays human. The writer skill is also
-available to Claude through `.claude/skills/writer-responsible-prose`.
+when drafting or revising that prose so it stays human. Read its instructions
+and the references relevant to the edit. Claude uses a regular-file entrypoint in
+`.claude/skills/writer-responsible-prose` that points to the shared skill. Keep
+repository skill entrypoints free of symlinks because remote snapshots reject them.
 
 Include a Mermaid diagram of the relevant flow when it clarifies the change, and
 validate it before publishing. State only checks that actually ran and any

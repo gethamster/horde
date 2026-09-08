@@ -53,6 +53,8 @@ Settings merge in this order:
 
 The merged settings are pinned to the task. Later file changes affect new tasks.
 
+Configure skill directories under `[skills]` and select their names with a step’s `skills` field. Horde loads the selected instructions into the worker prompt, pins referenced files and scripts, and distributes those bundles to child tasks. See [runtime skills](docs/runtime-skills.md) for configuration, worker tools, and remote delivery.
+
 ```toml
 concurrency = 4
 autonomy = true
@@ -81,7 +83,7 @@ The key itself belongs in the **daemon** environment before starting it, or in a
 
 `kind`, `auth_mode`, `base_url`, and `api_key_env` belong to a provider and cannot be restated on a role, so no role can pair one provider's harness with another's key. Nothing is inherited between providers either: one that omits `base_url` or `api_key_env` while it needs one is rejected at load.
 
-The default provider asks Tuara for `qwen/qwen3.8-27b`. Every native invocation verifies its exact configured identifier against `/models`; unavailable models fail without substitution. `horde doctor --probe-tuara` checks the catalog and performs a small streaming tool-call probe. The native loop uses non-streaming tool calls with string content. See [provider evidence](docs/verification.md).
+The default provider asks Tuara for `qwen/qwen3.8-27b`. Every native invocation verifies its configured identifier against `/models`; `model = "auto"` resolves a catalog with exactly one model. Set `stream = true` on a provider to surface first-token and tool-intent events. `horde doctor --probe --provider local` checks the catalog and the same streaming parser used by the executor. See the [native provider contract](docs/native-providers.md) for stable history bytes, request options, loop detection, and telemetry.
 
 For example, an API-backed Claude provider shared by two roles:
 

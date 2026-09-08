@@ -15,6 +15,8 @@ limitations.
 | Guide | What it covers |
 | --- | --- |
 | [Installation and releases](installing.md) | Install and update Horde, verify signed downloads, and publish releases. |
+| [Native providers](native-providers.md) | Preserve request history, configure streaming and model options, and inspect provider telemetry. |
+| [Runtime skills](runtime-skills.md) | Load pinned skill instructions and distribute their resources to local and remote workers. |
 | [Authoring templates](templates.md) | Define workflows in TOML with inputs, dependencies, parallel steps, and outputs. |
 | [Delegation](delegation.md) | Connect your own agent and delegate work through bounded task trees. |
 | [Application secrets and environments](environments.md) | Share application configuration and run disposable process or Compose environments. |

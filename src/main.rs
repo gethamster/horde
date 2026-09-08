@@ -77,12 +77,16 @@ enum Commands {
         #[arg(long, default_value = "example task")]
         objective: String,
     },
-    /// Print merged settings or verify a configured Tuara model and streaming tools.
+    /// Print merged settings or probe a native provider model and streaming tools.
     Doctor {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]
         probe_tuara: bool,
+        #[arg(long, conflicts_with = "probe_tuara")]
+        probe: bool,
+        #[arg(long, requires = "probe")]
+        provider: Option<String>,
     },
     /// Print a starter TOML configuration.
     Config {
@@ -454,15 +458,28 @@ async fn main() -> Result<()> {
             &horde::template::load_templates(&horde::branding::templates(&repo))?,
             std::collections::BTreeMap::from([("task".into(), objective)])
         )?),
-        Commands::Doctor { repo, probe_tuara } => {
+        Commands::Doctor {
+            repo,
+            probe_tuara,
+            probe,
+            provider,
+        } => {
             let settings = horde::config::Settings::load(&repo)?;
-            if probe_tuara {
-                horde::executor::probe_tools(
-                    &settings
+            if probe || probe_tuara {
+                let config = if probe_tuara {
+                    settings
                         .executor("native")
-                        .context("native executor missing")?,
-                )
-                .await?
+                        .context("native executor missing")?
+                } else {
+                    settings
+                        .provider(provider.as_deref().unwrap_or("default"))
+                        .context("provider missing")?
+                };
+                anyhow::ensure!(
+                    config.kind == "tuara",
+                    "streaming probe requires a native tuara provider"
+                );
+                horde::executor::probe_tools(&config).await?
             } else {
                 json!({"settings":settings,"data_dir":root,"daemon":root.join("daemon.sock").exists()})
             }

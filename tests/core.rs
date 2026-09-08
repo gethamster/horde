@@ -1061,3 +1061,28 @@ fn mcp_returns_nested_step_validation_as_a_tool_result() {
             .contains("steps[0].when.status")
     );
 }
+
+#[test]
+fn native_extra_body_cannot_replace_workflow_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    for key in [
+        "model",
+        "messages",
+        "tools",
+        "stream",
+        "max_tokens",
+        "max_price",
+        "n",
+    ] {
+        std::fs::write(
+            dir.path().join(".horde.toml"),
+            format!("[providers.default.extra_body]\n{key}=\"override\"\n"),
+        )
+        .unwrap();
+        let error = Settings::load(dir.path()).unwrap_err().to_string();
+        assert!(
+            error.contains(&format!("extra_body.{key} is reserved")),
+            "{error}"
+        );
+    }
+}

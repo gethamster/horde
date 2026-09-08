@@ -47,6 +47,9 @@ pub struct Step {
     /// Allowed native tools, e.g. read_file, search, write_file, apply_patch, command.
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Pinned skill names to include in this step prompt. Names must be available in the task catalog.
+    #[serde(default)]
+    pub skills: Vec<String>,
     /// Repository-relative artifact paths to collect after execution.
     #[serde(default)]
     pub artifacts: Vec<String>,
@@ -249,6 +252,11 @@ fn expand(
                 plan,
             )?;
             for child in &mut plan.steps[child_start..] {
+                if child.kind == "agent" {
+                    child.skills.extend(s.skills.clone());
+                    child.skills.sort();
+                    child.skills.dedup();
+                }
                 if child.needs.is_empty() {
                     child.needs.extend(s.needs.clone());
                 }
