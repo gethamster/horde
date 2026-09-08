@@ -374,24 +374,88 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
 }
 /// The JSON body of a final message, with any code fence removed. Empty when the
 /// turn carried no answer at all, which callers treat as "not finished yet".
+///
+/// Claude Code often emits a short prose preamble, then a fenced JSON block.
+/// Prefer that fenced body over requiring the whole turn to be JSON-only.
 fn unfenced(text: &str) -> &str {
     let text = text.trim();
-    text.strip_prefix("```json")
+    if let Some(rest) = text
+        .strip_prefix("```json")
         .or_else(|| text.strip_prefix("```"))
-        .unwrap_or(text)
-        .trim()
-        .trim_end_matches("```")
-        .trim()
+    {
+        return rest.trim().trim_end_matches("```").trim();
+    }
+    if let Some(start) = text.find("```json") {
+        let after = &text[start + "```json".len()..];
+        if let Some(end) = after.find("```") {
+            return after[..end].trim();
+        }
+    }
+    if let Some(start) = text.find("```") {
+        let after = &text[start + 3..];
+        let after = after.strip_prefix('\n').unwrap_or(after);
+        if let Some(end) = after.find("```") {
+            return after[..end].trim();
+        }
+    }
+    text
 }
 fn parse_result(text: &str) -> Result<Value> {
-    let text = unfenced(text);
-    let result: Value = serde_json::from_str(text).with_context(|| {
-        format!(
-            "executor final result must be JSON with result and accepted; received {text:.200?}"
-        )
-    })?;
+    let body = unfenced(text);
+    let result: Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(primary) => {
+            let Some(start) = body.find('{') else {
+                return Err(primary).with_context(|| {
+                    format!(
+                        "executor final result must be JSON with result and accepted; received {body:.200?}"
+                    )
+                });
+            };
+            let Some(end) = body.rfind('}') else {
+                return Err(primary).with_context(|| {
+                    format!(
+                        "executor final result must be JSON with result and accepted; received {body:.200?}"
+                    )
+                });
+            };
+            serde_json::from_str(&body[start..=end]).with_context(|| {
+                format!(
+                    "executor final result must be JSON with result and accepted; received {body:.200?}"
+                )
+            })?
+        }
+    };
     accepted(result)
 }
+
+#[cfg(test)]
+mod final_result_parse_tests {
+    use super::{parse_result, unfenced};
+
+    #[test]
+    fn unfenced_strips_leading_fence() {
+        assert_eq!(
+            unfenced("```json\n{\"accepted\":true}\n```"),
+            "{\"accepted\":true}"
+        );
+    }
+
+    #[test]
+    fn unfenced_extracts_fence_after_prose() {
+        let text = "Repository inspected.\n\n```json\n{\"result\":\"plan\",\"accepted\":true}\n```\n";
+        assert_eq!(unfenced(text), "{\"result\":\"plan\",\"accepted\":true}");
+    }
+
+    #[test]
+    fn parse_result_accepts_prose_wrapped_fence() {
+        let text = "Looks good.\n\n```json\n{\"result\":\"PLAN ready\",\"accepted\":true,\"artifacts\":[]}\n```\n";
+        let value = parse_result(text).expect("parse");
+        assert_eq!(value["accepted"], true);
+        assert_eq!(value["result"], "PLAN ready");
+    }
+}
+
 /// A step is complete only when the executor says so in the agreed shape.
 fn accepted(result: Value) -> Result<Value> {
     if result["accepted"] != true || !result["result"].is_string() {
