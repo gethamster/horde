@@ -19,8 +19,9 @@ or worker transcripts.
 
 Use [writer-responsible-prose](.agents/skills/writer-responsible-prose/SKILL.md)
 when writing or revising PR descriptions and project prose. Read its instructions
-and the references relevant to the edit. The same skill is available to Claude
-through `.claude/skills/writer-responsible-prose`.
+and the references relevant to the edit. Claude uses a regular-file entrypoint in
+`.claude/skills/writer-responsible-prose` that points to the shared skill. Keep
+repository skill entrypoints free of symlinks because remote snapshots reject them.
 
 PR descriptions should explain the concrete problem and changed behavior with an
 example. Include a Mermaid diagram of the relevant flow and validate it before
