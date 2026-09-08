@@ -187,7 +187,26 @@ fn string<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
 fn strings(v: &Value, k: &str) -> Result<Vec<String>> {
     serde_json::from_value(v[k].clone()).with_context(|| format!("{k} must be a string array"))
 }
+/// Published worker tools omit fields supplied or controlled by the runtime.
 pub fn schema(name: &str) -> Value {
+    let mut schema = admin_schema(name);
+    if worker_allowed(name) {
+        let owned = |key: &str| {
+            ["task", "worker", "step", "verified"].contains(&key) || key.starts_with('_')
+        };
+        schema["properties"]
+            .as_object_mut()
+            .expect("object schema")
+            .retain(|key, _| !owned(key));
+        schema["required"]
+            .as_array_mut()
+            .expect("required fields")
+            .retain(|key| !owned(key.as_str().expect("field name")));
+    }
+    schema
+}
+/// Operator tools keep explicit task selection and verification controls.
+pub fn admin_schema(name: &str) -> Value {
     let fields: &[(&str, &str)] = match name {
         "runtime_updates_resume" => &[],
         "runtime_reconcile" => &[
@@ -493,8 +512,17 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             bail!("cannot attribute to another worker's step");
         }
         // Workers may report evidence, but verification is an authoritative runtime decision.
-        if args["verified"] == true {
-            bail!("workers cannot certify artifacts or knowledge");
+        if args
+            .as_object_mut()
+            .expect("arguments object")
+            .remove("verified")
+            .is_some()
+        {
+            db.event(w["task"].as_str().context("worker task")?, "tool.argument_dropped",
+                json!({"tool":name,"worker":w["id"],"field":"verified","reason":"verification is runtime-owned"}))?;
+        }
+        if matches!(name, "put_artifact" | "add_knowledge") {
+            args["step"] = w["step"].clone();
         }
     }
     if let Some(result) = crate::management::dispatch(db, name, &args)? {
@@ -956,7 +984,7 @@ pub fn mcp_response(
         ),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(
-            json!({"tools":OPERATIONS.iter().map(|(n,d)|json!({"name":n,"description":d,"inputSchema":schema(n)})).collect::<Vec<_>>()}),
+            json!({"tools":OPERATIONS.iter().map(|(n,d)|json!({"name":n,"description":d,"inputSchema":admin_schema(n)})).collect::<Vec<_>>()}),
         ),
         "tools/call" => {
             let p = &request["params"];

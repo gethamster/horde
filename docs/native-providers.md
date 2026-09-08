@@ -116,3 +116,16 @@ sent back to the model. Telemetry strings are redacted before encoding; unavaila
 application secrets cause diagnostic content to be withheld. Usage and extra-field
 objects each have a 64 KiB diagnostic limit. No assistant transcript is copied into
 the usage record.
+
+## Worker tool arguments
+
+Published worker schemas omit task, worker, step attribution, and verification
+fields. The native executor and worker MCP bridge use these schemas; the operator
+MCP bridge retains explicit task selection and verification controls. Nested Step
+objects still contain their workflow fields, such as a condition's `step`.
+
+Worker credentials supply identity and artifact/knowledge step attribution. A call
+that repeats its own task or worker ID is accepted; a different ID remains an
+error. A supplied `verified` field is discarded with a `tool.argument_dropped`
+event. The resulting artifact or knowledge record remains unverified. Reserved
+underscore-prefixed arguments are still rejected.

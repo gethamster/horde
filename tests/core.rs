@@ -261,11 +261,47 @@ fn worker_tokens_cannot_cross_tasks_or_invoke_admin_operations() {
         .is_err()
     );
     assert!(protocol::dispatch(&f.db, "list_workers", json!({}), Some(token)).is_ok());
+    let artifact = protocol::dispatch(
+        &f.db,
+        "put_artifact",
+        json!({"name":"x","content":"x","verified":true,"task":f.oid,"worker":w["id"]}),
+        Some(token),
+    )
+    .unwrap();
+    assert!(artifact["hash"].is_string());
+    let knowledge = protocol::dispatch(&f.db, "add_knowledge", json!({"kind":"fact","content":"x","provenance":{},"verified":true,"task":f.oid,"worker":w["id"]}), Some(token)).unwrap();
+    assert!(knowledge["id"].is_string());
+    assert_eq!(
+        f.db.rows(
+            "SELECT verified FROM artifact_links WHERE task=?",
+            &[&f.oid]
+        )
+        .unwrap()[0]["verified"],
+        0
+    );
+    assert_eq!(
+        f.db.rows("SELECT verified FROM knowledge WHERE task=?", &[&f.oid])
+            .unwrap()[0]["verified"],
+        0
+    );
+    let warnings =
+        f.db.rows(
+            "SELECT data FROM events WHERE task=? AND kind='tool.argument_dropped'",
+            &[&f.oid],
+        )
+        .unwrap();
+    assert_eq!(warnings.len(), 2);
+    for row in warnings {
+        assert_eq!(
+            serde_json::from_str::<Value>(row["data"].as_str().unwrap()).unwrap()["field"],
+            "verified"
+        );
+    }
     assert!(
         protocol::dispatch(
             &f.db,
-            "put_artifact",
-            json!({"name":"x","content":"x","verified":true}),
+            "list_workers",
+            json!({"_runtime":"spoof"}),
             Some(token)
         )
         .is_err()
@@ -860,7 +896,7 @@ fn planner_proposals_evolve_the_workflow_and_gate_existing_successors() {
         .unwrap();
     let w = f.db.register(&f.oid, Some(tid)).unwrap();
     let token = w["token"].as_str().unwrap();
-    protocol::dispatch(&f.db,"propose_steps",json!({"steps":[{"id":"api","kind":"simulated","scope":["src/api"]},{"id":"ui","kind":"simulated","scope":["src/ui"]}]}),Some(token)).unwrap();
+    protocol::dispatch(&f.db,"propose_steps",json!({"task":f.oid,"worker":w["id"],"steps":[{"id":"api","kind":"simulated","scope":["src/api"]},{"id":"ui","kind":"simulated","scope":["src/ui"]}]}),Some(token)).unwrap();
     let steps = f.db.steps(&f.oid).unwrap();
     assert_eq!(steps.len(), 6);
     let left = steps.iter().find(|t| t["name"] == "left").unwrap();
