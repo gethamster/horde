@@ -596,6 +596,18 @@ fn ordinary_doctor_resolves_auto_from_a_minimal_default_provider_block() {
     );
 }
 
+#[test]
+fn a_named_auto_provider_needs_only_endpoint_key_variable_and_model() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[providers.local]\nbase_url = \"http://127.0.0.1:8122/v1\"\napi_key_env = \"PMLX_KEY\"\nmodel = \"auto\"\n").unwrap();
+    let settings = Settings::load_dir(dir.path()).unwrap();
+    let provider = settings.provider("local").unwrap();
+    assert_eq!(provider.kind, "tuara");
+    assert_eq!(provider.auth_mode, "api");
+    assert_eq!(provider.model.as_deref(), Some("auto"));
+    assert_eq!(provider.api_key_env, "PMLX_KEY");
+}
+
 #[tokio::test]
 async fn auto_model_requires_one_named_catalog_entry() {
     for (data, expected) in [

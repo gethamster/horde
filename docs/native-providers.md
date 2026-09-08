@@ -79,8 +79,9 @@ asking for an explicit choice. Horde resolves the ID once per invocation and rec
 `executor.model_resolved` event. A path-shaped model ID works without copying it
 into every configuration. Explicit IDs continue to require an exact catalog match.
 
-The built-in default provider already selects the native executor. Its local
-configuration can contain just these three fields:
+A provider with `model = "auto"`, an endpoint, and a key-variable name selects the
+native executor when `kind` is omitted. Named providers and the built-in default
+can both use only these three fields:
 
 ```toml
 [providers.default]

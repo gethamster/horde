@@ -366,7 +366,19 @@ impl Settings {
             }
         }
         moved_to_provider(&value)?;
-        let settings: Self = value.try_into()?;
+        let mut settings: Self = value.try_into()?;
+        // An auto catalog plus an endpoint and key variable fully identifies
+        // the native connection; no additional kind tag is needed.
+        for provider in settings.providers.values_mut() {
+            if provider.kind.is_empty()
+                && provider.model.as_deref() == Some("auto")
+                && !provider.base_url.is_empty()
+                && !provider.api_key_env.is_empty()
+            {
+                provider.kind = "tuara".into();
+                provider.auth_mode = "api".into();
+            }
+        }
         settings.validate()?;
         Ok(settings)
     }
