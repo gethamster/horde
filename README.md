@@ -265,7 +265,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-Tests use real SQLite databases, independent daemon/CLI/MCP processes, real Git worktrees/conflicts, and local HTTP/harness fixtures. `python3 scripts/live_smoke.py codex` (or `claude`, `tuara`) runs an opt-in, isolated live-provider task and may consume paid or subscription capacity. See [architecture](docs/architecture.md) and [verification](docs/verification.md).
+Tests use real SQLite databases, independent daemon/CLI/MCP processes, real Git worktrees/conflicts, and local HTTP/harness fixtures. `python3 scripts/live_smoke.py codex` (or `claude`) runs an opt-in, isolated live-provider task and may consume paid or subscription capacity. Native `tuara` and `local` runs require an explicit model; see the [smoke harness instructions](docs/verification.md#running-the-smoke-harness). See [architecture](docs/architecture.md) and [verification](docs/verification.md).
 
 See the [contributing guide](CONTRIBUTING.md) for development expectations and the
 [changelog](CHANGELOG.md) for release history.
