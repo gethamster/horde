@@ -586,14 +586,25 @@ async fn native_options_are_merged_and_auto_model_is_resolved_before_dispatch() 
                 ),
             ]);
             settings.executors.get_mut("worker").unwrap().max_tokens = Some(37);
+            settings.executors.get_mut("worker").unwrap().extra_body = BTreeMap::from([
+                ("temperature".into(), json!(0.7)),
+                ("min_p".into(), json!(0.05)),
+                (
+                    "chat_template_kwargs".into(),
+                    json!({"enable_thinking":true}),
+                ),
+            ]);
         },
     )
     .await;
     assert!(result.is_ok());
     assert_eq!(sent[1]["model"], "z-ai/glm-5.3-flash");
     assert_eq!(sent[1]["max_tokens"], 37);
-    assert_eq!(sent[1]["temperature"], json!(0.2));
-    assert_eq!(sent[1]["chat_template_kwargs"]["enable_thinking"], false);
+    assert_eq!(sent[1]["temperature"], json!(0.7));
+    assert_eq!(sent[1]["top_p"], json!(0.9));
+    assert_eq!(sent[1]["min_p"], json!(0.05));
+    assert_eq!(sent[1]["repetition_penalty"], json!(1.1));
+    assert_eq!(sent[1]["chat_template_kwargs"]["enable_thinking"], true);
     assert!(sent[1].get("extra_body").is_none());
 }
 
@@ -739,4 +750,32 @@ async fn native_worker_receives_selected_skill_and_reads_its_pinned_reference() 
     );
     assert_eq!(events[0]["tool"], "read_skill");
     assert_eq!(events[0]["success"], true);
+}
+
+#[test]
+fn provider_and_role_extra_body_reject_reserved_fields_at_config_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    for table in ["providers.default", "executors.worker"] {
+        for field in ["messages", "tools", "model", "stream"] {
+            std::fs::write(
+                &path,
+                format!("[{table}.extra_body]\n{field} = 'override'\n"),
+            )
+            .unwrap();
+            let error = Settings::load_dir(dir.path()).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!("extra_body.{field} is reserved")),
+                "{error}"
+            );
+            assert!(
+                error.contains(if table.starts_with("providers") {
+                    "provider default"
+                } else {
+                    "executor role worker"
+                }),
+                "{error}"
+            );
+        }
+    }
 }

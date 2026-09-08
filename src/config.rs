@@ -78,7 +78,12 @@ impl Provider {
             max_price: e.max_price.clone().or_else(|| self.max_price.clone()),
             max_tokens: e.max_tokens.unwrap_or(self.max_tokens),
             max_api_cost_usd: e.max_api_cost_usd.or(self.max_api_cost_usd),
-            extra_body: self.extra_body.clone(),
+            extra_body: self
+                .extra_body
+                .iter()
+                .chain(e.extra_body.iter())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             stream: self.stream,
         }
     }
@@ -96,6 +101,7 @@ pub struct Executor {
     pub max_price: Option<String>,
     pub max_tokens: Option<u64>,
     pub max_api_cost_usd: Option<f64>,
+    pub extra_body: BTreeMap<String, serde_json::Value>,
 }
 impl Executor {
     pub fn provider(&self) -> &str {
@@ -402,6 +408,18 @@ impl Settings {
             }
         }
         for (role, executor) in &self.executors {
+            crate::native_protocol::validate_extra_body(&executor.extra_body)
+                .map_err(|e| anyhow::anyhow!("executor role {role}: {e}"))?;
+            if !executor.extra_body.is_empty()
+                && self
+                    .providers
+                    .get(executor.provider())
+                    .is_some_and(|p| p.kind != "tuara")
+            {
+                bail!(
+                    "executor role {role}: extra_body is supported only by the native tuara executor"
+                );
+            }
             if !self.providers.contains_key(executor.provider()) {
                 bail!(
                     "executor role {role} names provider {}, which is not configured",
