@@ -426,6 +426,29 @@ pub async fn probe(config: &ExecutorConfig) -> Result<Value> {
     }
     Ok(json!({"model":model,"catalog_verified":true}))
 }
+// Redact before truncation so a secret crossing the boundary cannot leak a prefix.
+fn tool_error_summary(db: &Store, task: &str, error: &str, provider_key: &str) -> (String, bool) {
+    let Ok(mut values) = crate::secrets::values(db, task) else {
+        return (
+            "Error withheld: application bundle unavailable or changed".into(),
+            false,
+        );
+    };
+    // Redact all known values together, longest first, including overlapping keys.
+    values.insert("HORDE_ACTIVE_PROVIDER_KEY".into(), provider_key.into());
+    let mut text = crate::secrets::redact_values(error, &values);
+    const LIMIT: usize = 2048;
+    let truncated = text.len() > LIMIT;
+    if truncated {
+        let mut end = LIMIT;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    (text, truncated)
+}
+
 async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     probe(config).await?;
     let key = crate::config::credential(&config.api_key_env)?;
@@ -510,12 +533,14 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         if let Some(calls) = message["tool_calls"].as_array().filter(|x| !x.is_empty()) {
             for call in calls {
                 let name = call["function"]["name"].as_str().context("tool name")?;
-                let args: Result<Value> = serde_json::from_str(
-                    call["function"]["arguments"]
-                        .as_str()
-                        .context("tool arguments")?,
-                )
-                .map_err(Into::into);
+                let tool_started = Instant::now();
+                let args: Result<Value> = (|| {
+                    Ok(serde_json::from_str(
+                        call["function"]["arguments"]
+                            .as_str()
+                            .context("tool arguments must be a JSON string")?,
+                    )?)
+                })();
                 let result = match args {
                     Err(e) => Err(e),
                     Ok(args) => {
@@ -534,11 +559,21 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                         }
                     }
                 };
-                messages.push(json!({"role":"tool","tool_call_id":call["id"],"content":match result {Ok(v)=>crate::secrets::redact(i.db,i.task,&v).to_string(),Err(e)=>crate::secrets::redact(i.db,i.task,&json!({"error":e.to_string()})).to_string()}}));
+                let duration_ms = tool_started.elapsed().as_millis();
+                let (error, error_truncated) = match &result {
+                    Ok(_) => (None, false),
+                    Err(e) => {
+                        let (text, truncated) =
+                            tool_error_summary(i.db, i.task, &format!("{e:#}"), &key);
+                        (Some(text), truncated)
+                    }
+                };
+                messages.push(json!({"role":"tool","tool_call_id":call["id"],"content":match &result {Ok(v)=>crate::secrets::redact(i.db,i.task,v).to_string(),Err(e)=>crate::secrets::redact(i.db,i.task,&json!({"error":e.to_string()})).to_string()}}));
                 i.db.event(
                     i.task,
                     "tool.completed",
-                    json!({"step":i.step,"worker":i.worker,"tool":name,"time":now()}),
+                    json!({"step":i.step,"attempt":i.attempt,"worker":i.worker,"tool":name,"time":now(),
+                        "success":result.is_ok(),"duration_ms":duration_ms,"error":error,"error_truncated":error_truncated}),
                 )?;
             }
         } else {
@@ -634,4 +669,75 @@ pub async fn probe_tools(config: &ExecutorConfig) -> Result<Value> {
         bail!("model did not satisfy streaming tool-call contract");
     }
     Ok(json!({"model":config.model,"catalog_verified":true,"streaming_tool_calls_verified":true}))
+}
+
+#[cfg(test)]
+mod tool_event_tests {
+    use super::*;
+
+    #[test]
+    fn tool_errors_redact_secrets_before_utf8_safe_truncation_and_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(dir.path()).unwrap();
+        let settings = Settings::default();
+        let plan = crate::template::compile(
+            "simulated",
+            &crate::template::load_templates(Path::new("absent")).unwrap(),
+            std::collections::BTreeMap::from([("task".into(), "diagnostics".into())]),
+        )
+        .unwrap();
+        let task = db
+            .submit("diagnostics", dir.path(), &settings, &plan)
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO task_bundles VALUES(?,?,?)",
+                rusqlite::params![task, "app", "v1"],
+            )
+            .unwrap();
+        let secret_dir = dir.path().join("remote-secrets").join(&task);
+        std::fs::create_dir_all(&secret_dir).unwrap();
+        let packet = secret_dir.join(crate::store::hash(b"app"));
+        std::fs::write(
+            &packet,
+            json!({"version":"v1","values":{"APP_KEY":"synthetic-app-secret"}}).to_string(),
+        )
+        .unwrap();
+        let (text, truncated) = tool_error_summary(
+            &db,
+            &task,
+            "failed: synthetic-app-secret and synthetic-provider-secret",
+            "synthetic-provider-secret",
+        );
+        assert_eq!(text, "failed: [REDACTED] and [REDACTED]");
+        assert!(!truncated);
+        let (text, _) = tool_error_summary(
+            &db,
+            &task,
+            "synthetic-app-secret-provider-suffix",
+            "synthetic-app-secret-provider-suffix",
+        );
+        assert_eq!(text, "[REDACTED]");
+        // The secret straddles the cutoff, so truncating first would retain its prefix.
+        let long = format!(
+            "{}synthetic-app-secret{}",
+            "x".repeat(2044),
+            "界".repeat(100)
+        );
+        let (text, truncated) = tool_error_summary(&db, &task, &long, "synthetic-provider-secret");
+        assert!(truncated);
+        assert!(text.len() <= 2048);
+        assert!(!text.contains("synt"));
+        let (text, truncated) = tool_error_summary(&db, &task, &"界".repeat(1000), "");
+        assert!(truncated);
+        assert_eq!(text.len(), 2046);
+        // A changed bundle must withhold errors instead of persisting unredacted output.
+        std::fs::write(&packet, json!({"version":"v2","values":{}}).to_string()).unwrap();
+        let (text, truncated) = tool_error_summary(&db, &task, "synthetic-app-secret", "");
+        assert_eq!(
+            text,
+            "Error withheld: application bundle unavailable or changed"
+        );
+        assert!(!truncated);
+    }
 }

@@ -181,3 +181,18 @@ horde call link_knowledge '{"task":"TASK_ID","source":"KID_A","target":"KID_B","
 Execution state is never inferred from a knowledge claim or from conversation. A
 worker saying it finished proves nothing; the attempt record and the integration
 result do.
+
+## Native tool diagnostics
+
+`horde events TASK_ID` includes `tool.completed` events for native tool and
+coordination calls. Each records `attempt`, `success`, `duration_ms`, `error`
+(null on success), and `error_truncated`, alongside the existing step, worker,
+tool name, and timestamp. A failed call is evidence for diagnosis; it does not
+by itself fail the step, and the worker still receives the tool response.
+
+Error summaries redact selected application-bundle values and the active provider
+key before truncating to at most 2,048 UTF-8 bytes. If bundle values cannot be
+loaded, the error is withheld. Successful tool output and arguments are not
+included. Redaction covers known literal secrets, not arbitrary sensitive text.
+These events cover the native executor; external CLI harness internals are not
+captured. Older events may omit the new fields.
