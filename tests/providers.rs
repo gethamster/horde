@@ -165,7 +165,9 @@ async fn native_worker_executes_claimed_file_tool_and_retains_usage() {
 }
 /// A reasoning model can end a turn with its thinking in a separate field and
 /// `content` blank or whitespace. That is no result yet, not a malformed one.
-async fn native_result_after(turns: Vec<(u16, String)>) -> (Result<Value, String>, Vec<Value>) {
+async fn native_result_after(
+    turns: Vec<(u16, String)>,
+) -> (Result<Value, String>, Vec<Value>, Vec<Value>) {
     let mut responses = vec![(
         200,
         json!({"data":[{"id":"z-ai/glm-5.3-flash"}]}).to_string(),
@@ -209,7 +211,16 @@ async fn native_result_after(turns: Vec<(u16, String)>) -> (Result<Value, String
     let result = execute(&i).await.map_err(|e| e.to_string());
     handle.join().unwrap();
     let sent = requests.lock().unwrap().clone();
-    (result, sent)
+    let events = db
+        .rows(
+            "SELECT data FROM events WHERE task=? AND kind='tool.completed' ORDER BY seq",
+            &[&oid],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| serde_json::from_str(row["data"].as_str().unwrap()).unwrap())
+        .collect();
+    (result, sent, events)
 }
 fn turn(content: Value) -> (u16, String) {
     (
@@ -226,7 +237,7 @@ async fn a_final_turn_without_the_object_is_asked_again_rather_than_failing() {
         json!("Planning is complete; no files were edited."),
         json!("\n\n"),
     ] {
-        let (result, sent) = native_result_after(vec![turn(first), turn(json!(good))]).await;
+        let (result, sent, _) = native_result_after(vec![turn(first), turn(json!(good))]).await;
         assert_eq!(result.unwrap()["result"], "planned");
         // The nudge is a plain user turn naming the object that is wanted.
         let asked = sent[2]["messages"].as_array().unwrap().last().unwrap()["content"]
@@ -240,7 +251,7 @@ async fn a_final_turn_without_the_object_is_asked_again_rather_than_failing() {
 async fn a_worker_that_never_produces_the_object_says_what_it_did_send() {
     // Exactly two turns: the fixture serves one reply per connection, and the
     // worker must give up after the second rather than asking again.
-    let (result, _) =
+    let (result, _, _) =
         native_result_after(vec![turn(json!("still prose")), turn(Value::Null)]).await;
     let error = result.unwrap_err();
     assert!(
@@ -252,7 +263,7 @@ async fn a_worker_that_never_produces_the_object_says_what_it_did_send() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_well_formed_refusal_is_an_answer_and_is_not_asked_again() {
     let refused = json!({"result":"tests fail","accepted":false}).to_string();
-    let (result, sent) = native_result_after(vec![turn(json!(refused))]).await;
+    let (result, sent, _) = native_result_after(vec![turn(json!(refused))]).await;
     let error = result.unwrap_err();
     assert!(error.contains("did not accept step"), "{error}");
     // Only the catalogue check and the one turn: no nudge was sent.
@@ -403,4 +414,49 @@ async fn health_checks_fail_explicitly_and_can_recover() {
         .await
         .unwrap();
     handle.join().unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_tool_errors_are_visible_in_events_and_the_worker_can_continue() {
+    let calls = json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[
+        {"id":"rejected","type":"function","function":{"name":"propose_steps","arguments":"{\"steps\":[]}"}},
+        {"id":"malformed","type":"function","function":{"name":"propose_steps","arguments":"{"}},
+        {"id":"nonstring","type":"function","function":{"name":"propose_steps","arguments":{}}},
+        {"id":"success","type":"function","function":{"name":"pending_questions","arguments":"{}"}}
+    ]}}]}).to_string();
+    let (result, sent, events) = native_result_after(vec![
+        (200, calls),
+        turn(json!(json!({"result":"done","accepted":true}).to_string())),
+    ])
+    .await;
+    assert!(result.is_ok());
+    assert_eq!(events.len(), 4);
+    for event in &events[..3] {
+        assert_eq!(event["success"], false);
+        assert_eq!(event["attempt"], "test");
+        assert_eq!(event["tool"], "propose_steps");
+        assert!(event["duration_ms"].is_u64());
+        assert_eq!(event["error_truncated"], false);
+        assert!(!event["error"].as_str().unwrap().is_empty());
+    }
+    assert!(
+        events[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("only an actively assigned planner")
+    );
+    assert!(events[1]["error"].as_str().unwrap().contains("EOF"));
+    assert!(events[2]["error"].as_str().unwrap().contains("JSON string"));
+    assert_eq!(events[3]["success"], true);
+    assert!(events[3]["error"].is_null());
+    assert!(events[3].get("result").is_none());
+    let messages = sent[2]["messages"].as_array().unwrap();
+    let replies: Vec<_> = messages.iter().filter(|m| m["role"] == "tool").collect();
+    assert_eq!(replies.len(), 4);
+    assert!(
+        replies[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("only an actively assigned planner")
+    );
 }
