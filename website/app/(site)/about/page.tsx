@@ -16,7 +16,7 @@ export default function About() {
       Horde is a developer tool: a local Rust daemon that turns one objective into a durable
       workflow and coordinates coding agents against a Git repository. It is licensed under
       {" "}{site.license}, free to use, and distributed as signed releases you install with a
-      single command from <a href={site.releases}>{site.releases}</a>.
+      single command from <Link href="/docs">the installation guide</Link>.
     </p>
 
     <h2>What it is for</h2>

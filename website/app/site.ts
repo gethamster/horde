@@ -13,12 +13,12 @@ export const site = {
   tagline: "Durable task orchestration for coding agents",
   description:
     "Horde is a local Rust daemon that turns a task into a durable workflow and coordinates coding agents. Submit work from your terminal or connect your own agent over MCP; execution continues after the client disconnects.",
-  // Source is public; signed releases and agent skills keep their existing URLs.
+  // Source and agent skills share one public repository.
   repository: "https://github.com/gethamster/horde",
-  skills: "https://github.com/asomervell/horde-skills",
-  releases: "https://github.com/asomervell/horde-releases",
+  skills: "https://github.com/gethamster/horde/tree/main/skills",
+  releases: "https://horde.sh/releases/latest/manifest.json",
   issues: "https://github.com/gethamster/horde/issues",
-  skillsInstall: "npx skills add asomervell/horde-skills",
+  skillsInstall: "npx skills add gethamster/horde",
   email: "andrew@somervell.com",
   author: "Andrew Somervell",
   address: {

@@ -33,7 +33,7 @@ horde call management_events '{"after":0}'`}</code></pre>
     <p>Reuse a request ID only to retry the same operation. Wait for an update to report <code>succeeded</code> before updating the next host. Failed or uncertain updates pause the fleet; inspect the result before resuming it.</p>
     <p>Binary updates verify signatures and checksums, drain active work, and restart. If the replacement cannot start and its helper was terminated by the service manager, operator recovery is required. Worker certificates expire after 30 days; renewal currently requires operator-managed re-enrollment.</p>
     <h2>Containers and sandboxes</h2>
-    <p>Horde also supports Docker, Kubernetes, E2B, and Daytona profiles in <code>runtimes.toml</code>. Docker and Kubernetes require a digest-pinned image. Find the signed image digest in <a href="/releases/latest/manifest.json">the release manifest</a>.</p>
+    <p>Horde also supports Docker, Kubernetes, E2B, and Daytona profiles in <code>runtimes.toml</code>. Docker and Kubernetes require a digest-pinned image. Replace <code>IMAGE_FROM_SIGNED_RELEASE_MANIFEST</code> with the <code>image</code> value, including its immutable digest, from <a href="/releases/latest/manifest.json">the release manifest</a>.</p>
     <pre><code>{`# Top-level enrollment settings; use your controller's CA and address.
 issuer_key = "/absolute/path/to/controller/ca.key"
 controller_address = "CONTROLLER_TAILNET_IP:7443"
@@ -42,7 +42,7 @@ controller_tls_name = "controller.your-tailnet.ts.net"
 [profiles.containers]
 provider = "docker"
 context = "default"
-image = "ghcr.io/asomervell/horde@sha256:REPLACE_WITH_SIGNED_DIGEST"
+image = "IMAGE_FROM_SIGNED_RELEASE_MANIFEST"
 concurrency = 4
 cpus = 2
 memory_mb = 2048

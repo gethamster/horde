@@ -1,6 +1,6 @@
 # Horde
 
-[Source](https://github.com/gethamster/horde) · [Website](https://horde.sh) · [Apache-2.0 license](LICENSE)
+[Source](https://github.com/gethamster/horde) · [Website](https://horde.sh) · [Documentation](docs/README.md) · [Apache-2.0 license](LICENSE)
 
 A local Rust daemon for assigning software tasks to coding agents. Submit work through the CLI or connect your own agent through the stdio MCP bridge.
 
@@ -243,12 +243,13 @@ for the signed installer, machine-boot service opt-in, and release CI setup.
 
 ## Agent skills
 
+[![skills.sh](https://skills.sh/b/gethamster/horde)](https://skills.sh/gethamster/horde)
+
 Three skills teach a coding agent what Horde is and how to drive it. They are
-maintained in [`skills/`](skills/) and published from the public
-[`asomervell/horde-skills`](https://github.com/asomervell/horde-skills) repository:
+maintained and distributed directly from [`skills/`](skills/) in this repository:
 
 ```sh
-npx skills add asomervell/horde-skills
+npx skills add gethamster/horde
 ```
 
 `horde` covers installation, MCP wiring, submission, monitoring, and recovery.

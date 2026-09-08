@@ -23,7 +23,7 @@ const catalog = JSON.parse(readFileSync(join(root, "public/.well-known/tools.jso
 // agents to install something that does not exist. Fail the build instead.
 const RELEASE_MANIFEST =
   process.env.HORDE_RELEASE_MANIFEST_URL ??
-  "https://github.com/asomervell/horde-releases/releases/latest/download/manifest.json";
+  "https://horde.sh/releases/latest/manifest.json";
 const response = await fetch(RELEASE_MANIFEST, { redirect: "follow" });
 if (!response.ok) {
   throw new Error(
@@ -184,12 +184,12 @@ ${pages
   .filter((page) => !page.path.startsWith("/docs") && page.path !== "/")
   .map((page) => `- [${page.title}](${url(page.path)}): ${page.summary}`)
   .join("\n")}
-- [Agent skills](https://github.com/asomervell/horde-skills): three installable skills for the
+- [Agent skills](https://github.com/gethamster/horde/tree/main/skills): three installable skills for the
   Agent Skills Protocol -- \`horde\` for driving Horde, \`horde-templates\` for authoring
   workflow templates, \`horde-worker\` for agents running inside a task. Install with
-  \`npx skills add asomervell/horde-skills\`.
+  \`npx skills add gethamster/horde\`.
 - [Source code](https://github.com/gethamster/horde): public Apache-2.0 repository.
-- [Signed releases](https://github.com/asomervell/horde-releases): published binaries, checksums, and the installer.
+- [Release manifest](https://horde.sh/releases/latest/manifest.json): latest version, artifact URLs, and checksums.
 - Issues: https://github.com/gethamster/horde/issues
 - Contact: andrew@somervell.com
 
@@ -254,8 +254,8 @@ json(".well-known/mcp.json", {
   documentation: url("/docs/agents"),
   homepage: url("/"),
   repository: "https://github.com/gethamster/horde",
-  skills: "https://github.com/asomervell/horde-skills",
-  releases: "https://github.com/asomervell/horde-releases",
+  skills: "https://github.com/gethamster/horde/tree/main/skills",
+  releases: "https://horde.sh/releases/latest/manifest.json",
   license: "Apache-2.0",
   protocolVersion: catalog.transport.version,
   // Horde runs on the user's own machine. The server is the installed binary,

@@ -42,10 +42,10 @@ export default function Contact() {
     <h2>Public repositories</h2>
     <ul>
       <li><a href={site.repository}>Source code</a> — Horde’s public Apache-2.0 repository</li>
-      <li><a href={site.releases}>Signed releases</a> — published binaries, checksums, and the installer</li>
+      <li><a href={site.releases}>Release manifest</a> — the latest version, artifact URLs, and checksums</li>
       <li><a href={site.skills}>Agent skills</a> — the Horde skills for the Agent Skills Protocol</li>
     </ul>
-    <p>Source code, signed releases, and agent skills are all publicly available.</p>
+    <p>Source code, release metadata, and agent skills are all publicly available.</p>
 
     <h2>For agents</h2>
     <p>

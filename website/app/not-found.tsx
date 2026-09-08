@@ -39,7 +39,7 @@ export default function NotFound() {
 
       <h2>Elsewhere</h2>
       <ul>
-        <li><a href={site.releases}>Signed releases</a></li>
+        <li><a href={site.releases}>Release manifest</a></li>
         <li><a href={site.skills}>Agent skills</a></li>
         <li><a href={site.issues}>Report an issue</a></li>
         <li><Link href="/contact">Contact</Link></li>

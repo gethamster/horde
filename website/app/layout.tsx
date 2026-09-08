@@ -75,7 +75,7 @@ const structuredData = {
       logo: { "@type": "ImageObject", url: url("/icon.svg") },
       founder: { "@id": url("/#person") },
       address: site.address,
-      sameAs: [site.repository, site.skills, site.releases],
+      sameAs: [site.repository],
       contactPoint: [
         {
           "@type": "ContactPoint",

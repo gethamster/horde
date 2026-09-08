@@ -8,15 +8,22 @@ Skills that teach a coding agent what Horde is, why it exists, and how to use it
 | `horde-templates` | Authoring the versioned TOML workflow templates Horde compiles into a task graph |
 | `horde-worker` | An agent running *inside* a Horde task: claims, mail, questions, artifacts, integration |
 
-These files are maintained here and mirrored to the public
-[`asomervell/horde-skills`](https://github.com/asomervell/horde-skills)
-repository, which is what skills.sh indexes and what
-`npx skills add asomervell/horde-skills` installs. This README stays behind;
-the public repository keeps its own.
+These skills are maintained and distributed from the `skills/` folder in
+[gethamster/horde](https://github.com/gethamster/horde). Install all three:
 
 ```sh
-scripts/sync_skills.sh /path/to/horde-skills-checkout
+npx skills add gethamster/horde
 ```
+
+Or install one:
+
+```sh
+npx skills add gethamster/horde --skill horde
+```
+
+[View on skills.sh](https://skills.sh/gethamster/horde). The root
+`skills.sh.json` groups the skills on that page. Skills.sh discovers repositories
+through CLI installation telemetry; there is no separate mirror to synchronize.
 
 ## Maintaining them
 

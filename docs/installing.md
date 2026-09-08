@@ -46,7 +46,7 @@ Configure GitHub Actions with:
 - A `release` environment containing secret `HORDE_RELEASE_PRIVATE_KEY`:
   its PEM private signing key. Only the publish job uses this environment.
 - The same environment contains `HORDE_ARTIFACT_DEPLOY_KEY`, a write deploy key
-  scoped solely to `asomervell/horde-releases`. It delivers signed files under
+  scoped solely to the public artifact mirror configured in `.github/workflows/release.yml`. It delivers signed files under
   a version tag; that repository verifies signatures and checksums before
   publishing public release assets. It has no access to the source repository.
 
@@ -69,7 +69,8 @@ The Vercel configuration serves the static website, `/release-key.pem`, and
 release’s `install.sh`, keeping website deployment independent of binary releases. Its `/releases/latest/<file>` and
 `/releases/v<version>/<file>` routes redirect to GitHub Release assets. Release
 archives, signatures, checksums, and manifests are stored in the public
-`asomervell/horde-releases` repository; source is public at `gethamster/horde`. No binary
+artifact mirror reached through `https://horde.sh/releases/latest/manifest.json`;
+source is public at `gethamster/horde`. No binary
 archives need to be committed or included in a Vercel build. Deploy the website
 and assign the domain before relying on these URLs; configuring routes alone
 does not make them live.
@@ -89,7 +90,7 @@ git push origin v0.3.0
 ```
 
 Wait for the source repository’s Release workflow's four platform builds, container publication,
-signing, and delivery to `asomervell/horde-releases`. Then wait for that public
+signing, and delivery to the public artifact mirror. Then wait for that public
 repository's verification and release workflow to publish the assets. The website
 routes resolve the new latest stable release only after public publication.
 
