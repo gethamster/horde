@@ -19,6 +19,7 @@ pub struct Settings {
     pub max_identical_tool_calls: usize,
     pub allow_commands: bool,
     pub secret_bundles: Vec<String>,
+    pub skills: BTreeMap<String, PathBuf>,
     pub providers: BTreeMap<String, Provider>,
     pub executors: BTreeMap<String, Executor>,
     pub fallbacks: BTreeMap<String, String>,
@@ -198,6 +199,7 @@ impl Default for Settings {
             max_identical_tool_calls: 3,
             allow_commands: true,
             secret_bundles: vec![],
+            skills: BTreeMap::new(),
             providers,
             executors,
             fallbacks: BTreeMap::new(),
@@ -218,6 +220,11 @@ timeout_seconds = 1800
 max_tool_rounds = 64
 max_identical_tool_calls = 3 # 0 disables repeated-call detection
 allow_commands = true
+
+# Optional skill directories, captured when a task is submitted. Select their
+# names in step.skills. Use absolute paths for skills outside the repository.
+[skills]
+# report = ".agents/skills/report"
 
 # Providers are declared once and referenced by name. Put the API key itself in
 # ~/.config/horde/credentials.env (mode 0600) or the daemon environment, never

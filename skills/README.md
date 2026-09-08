@@ -46,3 +46,9 @@ than no skill.
 ```sh
 npx skills add ./ --list      # must find all three skills
 ```
+
+## Skills used by workers
+
+Horde can also load and distribute skills during task execution. Configure named
+directories in `[skills]`, select names in workflow steps, and pass a subset through
+`delegate_task.skills` when assigning child work. See [runtime skills](../docs/runtime-skills.md).

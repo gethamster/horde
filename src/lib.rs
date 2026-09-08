@@ -29,3 +29,5 @@ pub mod service;
 pub mod update;
 
 pub mod pairing;
+
+pub mod skills;

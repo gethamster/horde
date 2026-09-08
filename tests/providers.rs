@@ -223,7 +223,7 @@ async fn native_result_after_configured(
     let w = db.register(&oid, Some(&tid)).unwrap();
     let wid = w["id"].as_str().unwrap();
     let step: Step =
-        serde_json::from_value(json!({"id":"native","role":if planner {"planner"} else {"worker"},"tools":[],"instructions":"think"})).unwrap();
+        serde_json::from_value(json!({"id":"native","role":if planner {"planner"} else {"worker"},"tools":[],"instructions":"think","skills":settings.skills.keys().collect::<Vec<_>>()})).unwrap();
     let i = Invocation {
         db: &db,
         task: &oid,
@@ -698,4 +698,45 @@ fn doctor_probes_a_named_provider_with_auto_model() {
     assert_eq!(result["model"], "/models/local");
     handle.join().unwrap();
     assert_eq!(requests.lock().unwrap()[1]["stream"], true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_worker_receives_selected_skill_and_reads_its_pinned_reference() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("references")).unwrap();
+    std::fs::write(
+        dir.path().join("SKILL.md"),
+        "Follow the report skill. Read references/style.md before writing.",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("references/style.md"),
+        "Name each metric and its unit.",
+    )
+    .unwrap();
+    let (result, sent, events) = native_result_after_configured(vec![
+        (200,json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"read1","type":"function","function":{"name":"read_skill","arguments":json!({"name":"report","path":"references/style.md"}).to_string()}}]}}]}).to_string()),
+        turn(json!(json!({"result":"report complete","accepted":true}).to_string())),
+    ], false, |s| {s.skills.insert("report".into(),dir.path().to_owned());}).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        sent[1]["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Follow the report skill.")
+    );
+    let reply = sent[2]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .unwrap();
+    assert!(
+        reply["content"]
+            .as_str()
+            .unwrap()
+            .contains("Name each metric and its unit.")
+    );
+    assert_eq!(events[0]["tool"], "read_skill");
+    assert_eq!(events[0]["success"], true);
 }

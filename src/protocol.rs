@@ -57,6 +57,14 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     ),
     ("list_children", "Inspect immediate child tasks"),
     (
+        "list_skills",
+        "List the task’s pinned skill names and hashes",
+    ),
+    (
+        "read_skill",
+        "Read a pinned skill or relative resource; default path SKILL.md, paged by byte offset",
+    ),
+    (
         "read_context",
         "Read original source context using bounded pages",
     ),
@@ -296,6 +304,15 @@ pub fn schema(name: &str) -> Value {
             ("template", "string"),
             ("peer", "string"),
             ("bundles", "array"),
+            ("skills", "array"),
+        ],
+        "read_skill" => &[
+            ("task", "string"),
+            ("worker", "string"),
+            ("name", "string"),
+            ("path", "string"),
+            ("offset", "integer"),
+            ("limit", "integer"),
         ],
         "read_context" => &[
             ("task", "string"),
@@ -393,6 +410,7 @@ pub fn schema(name: &str) -> Value {
         "management_ack" => &["consumer", "seq"],
         "submit_task" => &["objective", "repo"],
         "delegate_task" => &["id", "objective"],
+        "read_skill" => &["name"],
         "integrate_child" => &["child", "validation"],
         "update_context" => &["content", "provenance"],
         "ack_events" => &["consumer", "seq"],
@@ -418,6 +436,8 @@ pub fn schema(name: &str) -> Value {
 }
 pub fn worker_allowed(name: &str) -> bool {
     [
+        "list_skills",
+        "read_skill",
         "integrate_child",
         "environments",
         "delegate_task",
@@ -724,6 +744,8 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             db.atomic(||{db.conn.execute("UPDATE attempts SET state='interrupted',finished=? WHERE worker=? AND state='uncertain'",rusqlite::params![now(),wid])?;db.conn.execute("UPDATE workers SET status='stopped' WHERE id=?",[wid])?;db.event(oid,"worker.reconciled",json!({"worker":wid}))?;Ok(())})?;
             Ok(json!({"reconciled":true,"claims_preserved":true}))
         }
+        "list_skills" => crate::skills::catalog(db, oid),
+        "read_skill" => crate::skills::read(db, oid, &args),
         "propose_steps" => {
             let wid = string(&args, "worker")?;
             let w = db.worker(wid)?;
@@ -780,6 +802,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             }
             plan.steps.extend(added.clone());
             template::validate(&plan.steps)?;
+            crate::skills::validate_steps(&crate::skills::packet(db, oid)?, &plan.steps)?;
             db.atomic(|| {
                 crate::delegation::invalidate_acceptance(db, oid)?;
                 for step in &added {
@@ -824,6 +847,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
                 serde_json::from_str(task["plan"].as_str().context("plan")?)?;
             plan.steps.extend(added.clone());
             template::validate(&plan.steps)?;
+            crate::skills::validate_steps(&crate::skills::packet(db, oid)?, &plan.steps)?;
             db.atomic(||{crate::delegation::invalidate_acceptance(db,oid)?;for s in &added{db.conn.execute("INSERT INTO steps(id,task,name,spec,state) VALUES(?,?,?,?,'pending')",rusqlite::params![id(),oid,s.id,serde_json::to_string(s)?])?;}let rev:i64=db.conn.query_row("SELECT COALESCE(MAX(revision),0)+1 FROM revisions WHERE task=?",[oid],|r|r.get(0))?;let serialized=serde_json::to_string(&plan)?;db.conn.execute("INSERT INTO revisions VALUES(?,?,?,?)",rusqlite::params![oid,rev,serialized,now()])?;db.conn.execute("UPDATE tasks SET plan=?,status=CASE WHEN status='succeeded' THEN 'running' ELSE status END WHERE id=?",rusqlite::params![serialized,oid])?;db.event(oid,"workflow.revised",json!({"revision":rev}))?;Ok(json!({"revision":rev}))})
         }
         "put_artifact" => Ok(

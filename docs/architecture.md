@@ -83,6 +83,22 @@ env files. Identity mismatch holds cleanup for inspection. Uncertain step effect
 still require reconciliation; cleanup does not assert that interrupted tests did
 nothing. Unreachable remote runtimes keep root reservations until reconciled.
 
+## Pinned worker skills
+
+Schema version 3 adds task-owned skill bindings and attempt load records. Submission
+captures explicitly configured skill directories into the existing artifact store.
+Workflow steps select names from that pinned catalog. The shared invocation prompt
+loads selected instructions once; `read_skill` serves bounded resource pages.
+Materialized bundles live outside Git worktrees and preserve executable flags.
+No script runs as a consequence of loading a skill.
+
+Delegation inherits the captured catalog or an explicit subset. Remote assignment
+packets include the exact bundles, covered by assignment deduplication and verified
+on receipt. A receiving runtime never resolves sender-local skill paths. Resource
+reads verify stored hashes and materialized bytes. Task and attempt bindings remain
+authoritative across restart; source-directory edits only affect new submissions.
+See [runtime skills](runtime-skills.md) for usage and limits.
+
 ## Trust and authority
 
 Optional direct and Tailscale providers share tonic/rustls mutual TLS, with
@@ -106,6 +122,7 @@ The native loop offers file reads, search, full-file writes, unified patches, co
 - `store.rs`: persistence, mailboxes, claims, artifacts, step completion.
 - `protocol.rs`: shared operation handlers, worker scope checks, MCP schemas.
 - `runtime.rs`: scheduler, context assembly, questions, retries, wakeups, daemon.
+- `skills.rs`: pinned instruction bundles, resource reads, prompt loading and transfer.
 - `executor.rs` / `native.rs`: harness adapters, Tuara loop and probe, process lifecycle, tools.
 - `git.rs`: worktrees, scope inspection, integration evidence.
 - `template.rs`: composition, pinning, output references and contracts.

@@ -1,5 +1,5 @@
 {
-  "count": 59,
+  "count": 61,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -463,6 +463,12 @@
           "peer": {
             "type": "string"
           },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "task": {
             "type": "string"
           },
@@ -492,6 +498,53 @@
           }
         },
         "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "List the task’s pinned skill names and hashes",
+      "name": "list_skills",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Read a pinned skill or relative resource; default path SKILL.md, paged by byte offset",
+      "name": "read_skill",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
         "type": "object"
       },
       "scope": "worker"
@@ -831,6 +884,14 @@
                 "scope": {
                   "default": [],
                   "description": "Repository-relative files/directory prefixes to claim for writes; use . for the whole repo.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "skills": {
+                  "default": [],
+                  "description": "Pinned skill names to include in this step prompt. Names must be available in the task catalog.",
                   "items": {
                     "type": "string"
                   },
@@ -1584,6 +1645,14 @@
                 "scope": {
                   "default": [],
                   "description": "Repository-relative files/directory prefixes to claim for writes; use . for the whole repo.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "skills": {
+                  "default": [],
+                  "description": "Pinned skill names to include in this step prompt. Names must be available in the task catalog.",
                   "items": {
                     "type": "string"
                   },
