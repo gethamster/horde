@@ -990,3 +990,74 @@ fn a_provider_whose_settings_would_not_load_is_reported_not_silently_written() {
         .to_string();
     assert!(error.contains("no longer load"), "{error}");
 }
+
+#[test]
+fn workflow_input_errors_name_the_field_without_mutating_the_plan() {
+    let invalid = [
+        (json!([{"id":"bad","needs":"init"}]), "steps[0].needs"),
+        (
+            json!([{"id":"bad","environment":{"timeout_seconds":"slow"}}]),
+            "steps[0].environment.timeout_seconds",
+        ),
+        (json!([{"name":"bad"}]), "unknown field `name`"),
+        (json!([{"instructions":"missing id"}]), "missing field `id`"),
+        (json!([{"id":"bad","attempts":0}]), ".attempts"),
+        (json!([{"id":"bad","needs":["missing"]}]), ".needs"),
+    ];
+    for operation in ["add_steps", "propose_steps"] {
+        let f = Fixture::new();
+        let row = f.db.steps(&f.oid).unwrap()[0].clone();
+        let mut step = Store::step(&row).unwrap();
+        step.role = "planner".into();
+        let tid = row["id"].as_str().unwrap();
+        f.db.conn
+            .execute(
+                "UPDATE steps SET state='running',spec=? WHERE id=?",
+                rusqlite::params![serde_json::to_string(&step).unwrap(), tid],
+            )
+            .unwrap();
+        let worker = f.db.register(&f.oid, Some(tid)).unwrap();
+        let before_steps = f.db.steps(&f.oid).unwrap();
+        let before_plan = f.db.task(&f.oid).unwrap()["plan"].clone();
+        let before_revisions =
+            f.db.rows("SELECT * FROM revisions WHERE task=?", &[&f.oid])
+                .unwrap();
+        for (steps, expected) in &invalid {
+            let error = protocol::dispatch(
+                &f.db,
+                operation,
+                json!({"task":f.oid,"worker":worker["id"],"steps":steps}),
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains(expected),
+                "{operation}: {error}; expected {expected}"
+            );
+            assert_eq!(f.db.steps(&f.oid).unwrap(), before_steps);
+            assert_eq!(f.db.task(&f.oid).unwrap()["plan"], before_plan);
+            assert_eq!(
+                f.db.rows("SELECT * FROM revisions WHERE task=?", &[&f.oid])
+                    .unwrap(),
+                before_revisions
+            );
+        }
+    }
+}
+
+#[test]
+fn mcp_returns_nested_step_validation_as_a_tool_result() {
+    let f = Fixture::new();
+    let reply = protocol::mcp_response(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+        "name":"add_steps","arguments":{"task":f.oid,"steps":[{"id":"check","when":{"step":"verify","status":12}}]}
+    }}), |name, args| protocol::dispatch(&f.db, name, args, None)).unwrap();
+    assert!(reply.get("error").is_none());
+    assert_eq!(reply["result"]["isError"], true);
+    assert!(
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("steps[0].when.status")
+    );
+}

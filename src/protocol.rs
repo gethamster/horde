@@ -360,11 +360,22 @@ pub fn schema(name: &str) -> Value {
         .map(|(k, t)| {
             let mut s = json!({"type":t});
             if *t == "array" {
-                s["items"] = if ["steps", "context"].contains(k) {
+                s["items"] = if *k == "steps" {
+                    template::step_schema()
+                } else if *k == "context" {
                     json!({"type":"object"})
                 } else {
                     json!({"type":"string"})
                 };
+            }
+            if *k == "steps" {
+                s["description"] = json!("Workflow Step objects. Call this tool with a steps array; step IDs are data, never tool names. Use expanded steps, not nested template invocations.");
+                if name == "propose_steps" {
+                    s["minItems"] = json!(1);
+                    s["maxItems"] = json!(32);
+                    s["items"]["properties"]["kind"]["enum"] = json!(["agent", "command", "simulated", "environment"]);
+                    s["items"]["properties"]["template"] = json!({"type":"null","description":"Planner proposals must be expanded; omit template."});
+                }
             }
             (k.to_string(), s)
         })
@@ -733,19 +744,22 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
                 serde_json::from_str(task["settings"].as_str().context("settings")?)?;
             let mut plan: template::Plan =
                 serde_json::from_str(task["plan"].as_str().context("plan")?)?;
-            let mut added: Vec<template::Step> = serde_json::from_value(args["steps"].clone())?;
+            let mut added = template::parse_steps(&args["steps"])?;
             if added.is_empty() || added.len() > 32 {
                 bail!("propose between 1 and 32 steps");
             }
-            for step in &mut added {
-                if step.template.is_some() || step.kind == "delivery" {
-                    bail!("planner proposals must be expanded coding or verification steps");
+            for (index, step) in added.iter_mut().enumerate() {
+                if step.template.is_some() {
+                    bail!("steps[{index}].template: planner proposals must be expanded coding or verification steps; omit template");
+                }
+                if step.kind == "delivery" {
+                    bail!("steps[{index}].kind: planner proposals cannot request delivery; use agent, command, simulated, or environment");
                 }
                 if !settings.executors.contains_key(&step.role) {
-                    bail!("unknown executor role {}", step.role);
+                    bail!("steps[{index}].role: unknown executor role {}; choose one of: {}", step.role, settings.executors.keys().cloned().collect::<Vec<_>>().join(", "));
                 }
                 if !settings.allow_commands && step.kind == "command" {
-                    bail!("commands are disabled");
+                    bail!("steps[{index}].kind: commands are disabled");
                 }
                 if !step.needs.contains(&planner.id) {
                     step.needs.push(planner.id.clone());
@@ -803,8 +817,8 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             })
         }
         "add_steps" => {
+            let added = template::parse_steps(&args["steps"])?;
             if let Some(result)=crate::federation::revise_child(db,oid,&args["steps"])?{return Ok(result);}
-            let added: Vec<template::Step> = serde_json::from_value(args["steps"].clone())?;
             let task = db.task(oid)?;
             let mut plan: template::Plan =
                 serde_json::from_str(task["plan"].as_str().context("plan")?)?;

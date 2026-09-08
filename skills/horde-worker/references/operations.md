@@ -93,3 +93,20 @@ sandboxing, with the same coordination operations supplied as MCP tools. Those
 edits cannot all be checked before they happen, so they are inspected before
 integration and out-of-scope results are held for reconciliation rather than
 merged.
+
+
+## Planner step proposals
+
+`propose_steps` takes a `steps` array of Step objects, not a map of tool names.
+Each step requires `id`; `role` defaults to `worker`, `kind` to `agent`, and
+`attempts` to `1` (allowed range 1–20). Use arrays of strings for `needs`, `scope`,
+`tools`, `acceptance`, `artifacts`, and command argv. `when` is an object with
+`step` and `status` (`succeeded`, `failed`, or `skipped`). The published tool schema
+also describes nested environment settings and result types.
+
+Use `propose_steps` as the function name even when a proposed step is named
+`implement_json`. The runtime accepts 1–32 steps from an active planner, adds the
+planner dependency, and rejects delivery or unexpanded nested templates. On a
+validation error, correct the reported field (for example `steps[0].needs`) and
+retry the tool. Graph errors name the expanded workflow position and step ID;
+no rejected proposal is partially applied.

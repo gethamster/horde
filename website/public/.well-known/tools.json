@@ -628,9 +628,262 @@
         "additionalProperties": false,
         "properties": {
           "steps": {
+            "description": "Workflow Step objects. Call this tool with a steps array; step IDs are data, never tool names. Use expanded steps, not nested template invocations.",
             "items": {
+              "additionalProperties": false,
+              "properties": {
+                "acceptance": {
+                  "default": [],
+                  "description": "Criteria that must pass before the step is accepted.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "artifacts": {
+                  "default": [],
+                  "description": "Repository-relative artifact paths to collect after execution.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "attempts": {
+                  "default": 1,
+                  "description": "Maximum number of attempts, from 1 through 20.",
+                  "format": "uint32",
+                  "maximum": 20,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "command": {
+                  "default": [],
+                  "description": "Command argv for a command step, not a shell string.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "environment": {
+                  "additionalProperties": false,
+                  "default": null,
+                  "description": "Required when kind is environment; describes the disposable app and its test.",
+                  "properties": {
+                    "allow_external_resources": {
+                      "default": false,
+                      "type": "boolean"
+                    },
+                    "compose_file": {
+                      "default": "compose.yaml",
+                      "type": "string"
+                    },
+                    "cpus": {
+                      "default": 2.0,
+                      "exclusiveMinimum": 0,
+                      "format": "double",
+                      "type": "number"
+                    },
+                    "docker_context": {
+                      "default": null,
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "env_file": {
+                      "default": ".env",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "memory_mb": {
+                      "default": 2048,
+                      "format": "uint64",
+                      "minimum": 64,
+                      "type": "integer"
+                    },
+                    "readiness_seconds": {
+                      "default": 60,
+                      "description": "Positive readiness deadline, no greater than timeout_seconds.",
+                      "format": "uint64",
+                      "maximum": 86400,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "ready_service": {
+                      "default": null,
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ready_url": {
+                      "default": "http://127.0.0.1:${PORT}/",
+                      "type": "string"
+                    },
+                    "runner": {
+                      "default": "process",
+                      "enum": [
+                        "process",
+                        "compose"
+                      ],
+                      "type": "string"
+                    },
+                    "services": {
+                      "default": [],
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "start": {
+                      "default": [],
+                      "description": "Start command argv, required for the process runner.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "test": {
+                      "description": "Test command argv; required for both process and Compose runners.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "timeout_seconds": {
+                      "default": 1800,
+                      "format": "uint64",
+                      "maximum": 86400,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "test"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "description": "Unique workflow-local name for this step, not a tool/function name.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "inputs": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "default": {},
+                  "description": "String substitutions for nested template compilation.",
+                  "type": "object"
+                },
+                "instructions": {
+                  "default": "",
+                  "description": "Assignment for this step; use ${dependency.result} for a direct dependency's output.",
+                  "type": "string"
+                },
+                "kind": {
+                  "default": "agent",
+                  "description": "Execution kind. Planner proposals cannot request delivery.",
+                  "enum": [
+                    "agent",
+                    "command",
+                    "simulated",
+                    "environment"
+                  ],
+                  "type": "string"
+                },
+                "needs": {
+                  "default": [],
+                  "description": "Workflow-local IDs of dependencies, not task UUIDs. Planner dependency is added automatically.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "output_types": {
+                  "additionalProperties": {
+                    "enum": [
+                      "string",
+                      "number",
+                      "integer",
+                      "boolean",
+                      "array",
+                      "object",
+                      "null"
+                    ],
+                    "type": "string"
+                  },
+                  "default": {},
+                  "description": "Extra result field names mapped to string, number, integer, boolean, array, object, or null.",
+                  "type": "object"
+                },
+                "role": {
+                  "default": "worker",
+                  "description": "Configured executor role (defaults to worker). Must exist for planner proposals.",
+                  "type": "string"
+                },
+                "scope": {
+                  "default": [],
+                  "description": "Repository-relative files/directory prefixes to claim for writes; use . for the whole repo.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "template": {
+                  "description": "Planner proposals must be expanded; omit template.",
+                  "type": "null"
+                },
+                "tools": {
+                  "default": [],
+                  "description": "Allowed native tools, e.g. read_file, search, write_file, apply_patch, command.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "when": {
+                  "additionalProperties": false,
+                  "default": null,
+                  "description": "Optional condition on a direct dependency's terminal status.",
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "succeeded",
+                        "failed",
+                        "skipped"
+                      ],
+                      "type": "string"
+                    },
+                    "step": {
+                      "description": "Workflow-local ID that must also appear in needs.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "step",
+                    "status"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "title": "Step",
               "type": "object"
             },
+            "maxItems": 32,
+            "minItems": 1,
             "type": "array"
           },
           "task": {
@@ -1127,7 +1380,263 @@
         "additionalProperties": false,
         "properties": {
           "steps": {
+            "description": "Workflow Step objects. Call this tool with a steps array; step IDs are data, never tool names. Use expanded steps, not nested template invocations.",
             "items": {
+              "additionalProperties": false,
+              "properties": {
+                "acceptance": {
+                  "default": [],
+                  "description": "Criteria that must pass before the step is accepted.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "artifacts": {
+                  "default": [],
+                  "description": "Repository-relative artifact paths to collect after execution.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "attempts": {
+                  "default": 1,
+                  "description": "Maximum number of attempts, from 1 through 20.",
+                  "format": "uint32",
+                  "maximum": 20,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "command": {
+                  "default": [],
+                  "description": "Command argv for a command step, not a shell string.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "environment": {
+                  "additionalProperties": false,
+                  "default": null,
+                  "description": "Required when kind is environment; describes the disposable app and its test.",
+                  "properties": {
+                    "allow_external_resources": {
+                      "default": false,
+                      "type": "boolean"
+                    },
+                    "compose_file": {
+                      "default": "compose.yaml",
+                      "type": "string"
+                    },
+                    "cpus": {
+                      "default": 2.0,
+                      "exclusiveMinimum": 0,
+                      "format": "double",
+                      "type": "number"
+                    },
+                    "docker_context": {
+                      "default": null,
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "env_file": {
+                      "default": ".env",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "memory_mb": {
+                      "default": 2048,
+                      "format": "uint64",
+                      "minimum": 64,
+                      "type": "integer"
+                    },
+                    "readiness_seconds": {
+                      "default": 60,
+                      "description": "Positive readiness deadline, no greater than timeout_seconds.",
+                      "format": "uint64",
+                      "maximum": 86400,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "ready_service": {
+                      "default": null,
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ready_url": {
+                      "default": "http://127.0.0.1:${PORT}/",
+                      "type": "string"
+                    },
+                    "runner": {
+                      "default": "process",
+                      "enum": [
+                        "process",
+                        "compose"
+                      ],
+                      "type": "string"
+                    },
+                    "services": {
+                      "default": [],
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "start": {
+                      "default": [],
+                      "description": "Start command argv, required for the process runner.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "test": {
+                      "description": "Test command argv; required for both process and Compose runners.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "timeout_seconds": {
+                      "default": 1800,
+                      "format": "uint64",
+                      "maximum": 86400,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "test"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "description": "Unique workflow-local name for this step, not a tool/function name.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "inputs": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "default": {},
+                  "description": "String substitutions for nested template compilation.",
+                  "type": "object"
+                },
+                "instructions": {
+                  "default": "",
+                  "description": "Assignment for this step; use ${dependency.result} for a direct dependency's output.",
+                  "type": "string"
+                },
+                "kind": {
+                  "default": "agent",
+                  "description": "Execution kind. Planner proposals cannot request delivery.",
+                  "enum": [
+                    "agent",
+                    "command",
+                    "delivery",
+                    "simulated",
+                    "environment"
+                  ],
+                  "type": "string"
+                },
+                "needs": {
+                  "default": [],
+                  "description": "Workflow-local IDs of dependencies, not task UUIDs. Planner dependency is added automatically.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "output_types": {
+                  "additionalProperties": {
+                    "enum": [
+                      "string",
+                      "number",
+                      "integer",
+                      "boolean",
+                      "array",
+                      "object",
+                      "null"
+                    ],
+                    "type": "string"
+                  },
+                  "default": {},
+                  "description": "Extra result field names mapped to string, number, integer, boolean, array, object, or null.",
+                  "type": "object"
+                },
+                "role": {
+                  "default": "worker",
+                  "description": "Configured executor role (defaults to worker). Must exist for planner proposals.",
+                  "type": "string"
+                },
+                "scope": {
+                  "default": [],
+                  "description": "Repository-relative files/directory prefixes to claim for writes; use . for the whole repo.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "template": {
+                  "default": null,
+                  "description": "Nested template name, expanded only during template compilation. Submit expanded steps to revision tools.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tools": {
+                  "default": [],
+                  "description": "Allowed native tools, e.g. read_file, search, write_file, apply_patch, command.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "when": {
+                  "additionalProperties": false,
+                  "default": null,
+                  "description": "Optional condition on a direct dependency's terminal status.",
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "succeeded",
+                        "failed",
+                        "skipped"
+                      ],
+                      "type": "string"
+                    },
+                    "step": {
+                      "description": "Workflow-local ID that must also appear in needs.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "step",
+                    "status"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "title": "Step",
               "type": "object"
             },
             "type": "array"

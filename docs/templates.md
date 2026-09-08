@@ -78,3 +78,54 @@ A step with `attempts = 2` tries its configured worker first and the configured 
 The shipped Next.js template assumes npm and a committed `package-lock.json`: after local implementation/review it runs `npm ci`, the test script if present, and the production build in the integrated worktree. Override the template for pnpm, Yarn, a monorepo, or a custom validation sequence. Native/CLI coding workers install any dependencies they need in their own worktrees.
 
 GitHub delivery is a separate opt-in step. For non-Next.js projects, include your local template and follow it with a `kind = "delivery"` step. Recovery for a transient external failure can retry the delivery step. A failed combined check that requires code changes should enter an explicit repair branch; the service does not invent an unbounded repair loop.
+
+
+## Proposing and appending steps through tools
+
+`propose_steps` and `add_steps` publish a self-contained JSON schema derived from
+Rust's `Step`, `Condition`, and `Environment` types. It is shared by MCP tool
+listing, the native executor, and the generated website catalog. Unknown fields
+are rejected. A step requires `id`; omitted `role`, `kind`, and `attempts` default
+to `worker`, `agent`, and `1`. Other fields, including nested environment settings,
+are described in the tool schema. Graph dependencies, configured roles, permissions,
+and cross-field constraints are still checked by the runtime.
+
+Call the tool named `propose_steps` with a `steps` array. Step IDs are data inside
+that array, never tool names. For example, an active planner can send:
+
+```json
+{
+  "steps": [
+    {
+      "id": "implement_json",
+      "instructions": "Add JSON output and tests. Run checks and commit changes.",
+      "scope": ["cli.py", "tests"],
+      "tools": ["read_file", "search", "write_file", "apply_patch", "command"],
+      "acceptance": ["Existing text output is unchanged", "JSON tests pass"]
+    },
+    {
+      "id": "verify_json",
+      "kind": "command",
+      "needs": ["implement_json"],
+      "command": ["python3", "-m", "unittest"],
+      "when": {"step": "implement_json", "status": "succeeded"}
+    }
+  ]
+}
+```
+
+Worker credentials supply task/worker identity. Operator calls must supply the
+task and, for proposals, the active planner worker. Proposals accept 1–32 expanded
+steps, automatically depend on the planner, and gate its pending successors.
+They cannot include delivery steps or nested template invocations. `add_steps`
+is the operator's append operation; it also takes Step objects and does not expand
+nested templates. Compile nested templates before passing expanded steps.
+
+Type errors identify the input path, for example `steps[0].needs: invalid type:
+string ..., expected a sequence`. Unknown or missing fields retain Serde's field
+names. Semantic errors identify the expanded workflow index and step ID, such as
+`workflow.steps[4] (id="verify_json").needs: unknown dependency ...`. Inspect the
+named step, correct the arguments, and call the same tool again. MCP returns
+validation failures as `isError` tool results; the native executor sends a tool
+error response and records the bounded error in events. Invalid proposals do not
+create a revision or insert partial steps.
