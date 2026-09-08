@@ -494,3 +494,64 @@ fn remote_answer_sync_does_not_reopen_consumed_questions() {
         "input_consumed"
     );
 }
+
+#[test]
+fn repository_writing_skill_survives_remote_snapshot() {
+    fn copy_tree(source: &Path, target: &Path) {
+        let metadata = std::fs::symlink_metadata(source).unwrap();
+        if metadata.file_type().is_symlink() {
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(std::fs::read_link(source).unwrap(), target).unwrap();
+        } else if metadata.is_dir() {
+            std::fs::create_dir_all(target).unwrap();
+            for entry in std::fs::read_dir(source).unwrap() {
+                let entry = entry.unwrap();
+                copy_tree(&entry.path(), &target.join(entry.file_name()));
+            }
+        } else {
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::copy(source, target).unwrap();
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for path in [
+        ".agents/skills/writer-responsible-prose",
+        ".claude/skills/writer-responsible-prose",
+    ] {
+        copy_tree(&source.join(path), &repo.join(path));
+    }
+    for argv in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.name", "Fixture"],
+        vec!["config", "user.email", "fixture@example.invalid"],
+        vec!["add", "."],
+        vec!["commit", "-m", "Add writing skill"],
+    ] {
+        horde::git::run(&repo, &argv).unwrap();
+    }
+    let snapshot = horde::federation::snapshot(&repo).unwrap();
+    let remote = temp.path().join("remote");
+    horde::federation::unpack(&snapshot, &remote).unwrap();
+    for path in [
+        ".agents/skills/writer-responsible-prose/SKILL.md",
+        ".agents/skills/writer-responsible-prose/references/guardrails.md",
+        ".claude/skills/writer-responsible-prose/SKILL.md",
+    ] {
+        assert_eq!(
+            std::fs::read(source.join(path)).unwrap(),
+            std::fs::read(remote.join(path)).unwrap()
+        );
+    }
+    let entrypoint = remote.join(".claude/skills/writer-responsible-prose/SKILL.md");
+    assert!(
+        entrypoint
+            .parent()
+            .unwrap()
+            .join("../../../.agents/skills/writer-responsible-prose/SKILL.md")
+            .canonicalize()
+            .unwrap()
+            .starts_with(remote.canonicalize().unwrap())
+    );
+}
