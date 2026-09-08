@@ -6,7 +6,7 @@ result = "review.result"
 [[steps]]
 id = "plan"
 role = "planner"
-instructions = "Inspect the repository and plan this task: {{task}}. Infer acceptance criteria. Do not edit files. Return a concrete implementation plan. If independent subtasks with non-overlapping write scopes would improve execution, use propose_tasks to assign them; the runtime will insert them before implementation and review."
+instructions = "Inspect the repository and plan this task: {{task}}. Infer acceptance criteria. Do not edit files. Return a concrete implementation plan. If independent subtasks with non-overlapping write scopes would improve execution, use propose_steps to assign them; the runtime will insert them before implementation and review."
 acceptance = ["Repository inspected and a concrete implementation plan produced; passing implementation tests is not required for this planning task"]
 tools = ["read_file", "search", "command"]
 [[steps]]
