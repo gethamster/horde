@@ -129,3 +129,45 @@ loaded, the error is withheld. Successful tool output and arguments are not
 included. Redaction covers known literal secrets, not arbitrary sensitive text.
 These events cover the native executor; external CLI harness internals are not
 captured. Older events may omit the new fields.
+
+## Running the smoke harness
+
+Build the source binary first with `cargo build --locked`. The smoke harness uses
+current named-provider configuration and a short temporary data path. It isolates
+Horde settings from your normal config, disables delivery, and leaves your source
+checkout alone. CLI runs retain your HOME and existing CLI login. API credentials
+must be exported in the named environment variable; the harness does not read your
+normal Horde `credentials.env` or write the key into configuration.
+
+```sh
+python3 scripts/live_smoke.py codex
+python3 scripts/live_smoke.py claude
+# Export TUARA_API_KEY first; choose an exact available catalog model.
+python3 scripts/live_smoke.py tuara --model YOUR_MODEL_ID
+# An unauthenticated local server can use a dummy key; use its real key otherwise.
+HORDE_SMOKE_API_KEY=local-test python3 scripts/live_smoke.py local \
+  --base-url http://127.0.0.1:8122/v1 --model YOUR_LOCAL_MODEL_ID
+```
+
+`local` selects the native executor (internally named `tuara`) against the given
+endpoint. The endpoint must implement `/models` and native tool calls through
+`/chat/completions`; this option is not a promise of compatibility with every
+OpenAI-shaped server. No model identifier is silently substituted.
+
+Use `--prepare-only` to load the configuration and compile the template without
+starting a daemon or calling a provider. Use `--api-key-env NAME`, `--timeout N`,
+`--max-tool-rounds N`, and `--binary PATH` to select credentials, bounds, or a build.
+Native runs still require `--model` during preparation, and `local` requires an
+explicit `--base-url`.
+
+The printed temporary directory retains `daemon.log` and, when the daemon remains
+available, `result.json`, `events.json`, and `metrics.json` for the task, including
+on failure/timeout. These snapshots are taken before shutting down the owned
+daemon. The harness verifies exact integrated file bytes and that the original
+checkout has no hello.txt. It remains a one-step hello-world executor smoke, not
+acceptance of the full planning/implementation/review workflow.
+
+`python3 scripts/test_live_smoke.py` runs offline regressions against the built
+binary: settings isolation, explicit endpoint/model requirements, and a local
+mock provider that writes, commits, integrates, and produces retained evidence.
+It does not call a real model, use a GPU, or publish changes.
