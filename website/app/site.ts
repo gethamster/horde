@@ -19,7 +19,7 @@ export const site = {
   releases: "https://horde.sh/releases/latest/manifest.json",
   issues: "https://github.com/gethamster/horde/issues",
   skillsInstall: "npx skills add gethamster/horde",
-  email: "andrew@somervell.com",
+  email: "andrew@tryhamster.com",
   author: "Andrew Somervell",
   address: {
     "@type": "PostalAddress",
