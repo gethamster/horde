@@ -168,6 +168,12 @@ async fn native_worker_executes_claimed_file_tool_and_retains_usage() {
 async fn native_result_after(
     turns: Vec<(u16, String)>,
 ) -> (Result<Value, String>, Vec<Value>, Vec<Value>) {
+    native_result_after_as(turns, false).await
+}
+async fn native_result_after_as(
+    turns: Vec<(u16, String)>,
+    planner: bool,
+) -> (Result<Value, String>, Vec<Value>, Vec<Value>) {
     let mut responses = vec![(
         200,
         json!({"data":[{"id":"z-ai/glm-5.3-flash"}]}).to_string(),
@@ -178,7 +184,10 @@ async fn native_result_after(
     let db = Store::open(&dir.path().join("data")).unwrap();
     let settings = Settings {
         providers: BTreeMap::from([("default".into(), provider(url))]),
-        executors: BTreeMap::from([("worker".into(), Default::default())]),
+        executors: BTreeMap::from([
+            ("worker".into(), Default::default()),
+            ("planner".into(), Default::default()),
+        ]),
         ..Default::default()
     };
     let plan = template::compile(
@@ -192,10 +201,21 @@ async fn native_result_after(
         .as_str()
         .unwrap()
         .to_owned();
+    if planner {
+        let row = db.steps(&oid).unwrap()[0].clone();
+        let mut step = Store::step(&row).unwrap();
+        step.role = "planner".into();
+        db.conn
+            .execute(
+                "UPDATE steps SET state='running',spec=? WHERE id=?",
+                rusqlite::params![serde_json::to_string(&step).unwrap(), tid],
+            )
+            .unwrap();
+    }
     let w = db.register(&oid, Some(&tid)).unwrap();
     let wid = w["id"].as_str().unwrap();
     let step: Step =
-        serde_json::from_value(json!({"id":"native","tools":[],"instructions":"think"})).unwrap();
+        serde_json::from_value(json!({"id":"native","role":if planner {"planner"} else {"worker"},"tools":[],"instructions":"think"})).unwrap();
     let i = Invocation {
         db: &db,
         task: &oid,
@@ -459,4 +479,57 @@ async fn native_tool_errors_are_visible_in_events_and_the_worker_can_continue() 
             .unwrap()
             .contains("only an actively assigned planner")
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_planner_corrects_a_nested_step_after_receiving_its_field_error() {
+    let proposal = |id: &str, steps: Value| {
+        (200, json!({"choices":[{"message":{
+        "role":"assistant","content":"","tool_calls":[{"id":id,"type":"function","function":{
+            "name":"propose_steps","arguments":json!({"steps":steps}).to_string()
+        }}]
+    }}]}).to_string())
+    };
+    let (result, sent, events) = native_result_after_as(vec![
+        proposal("invalid", json!([{"id":"implement_json","needs":"init"}])),
+        proposal("corrected", json!([
+            {"id":"implement_json","instructions":"Add JSON output","scope":["cli.py"],"tools":["read_file","apply_patch","command"]},
+            {"id":"verify_json","kind":"command","needs":["implement_json"],"command":["python3","-m","unittest"],"when":{"step":"implement_json","status":"succeeded"}}
+        ])),
+        turn(json!(json!({"result":"planned","accepted":true}).to_string())),
+    ], true).await;
+    assert!(result.is_ok(), "{result:?}");
+    let error_reply = sent[2]["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(error_reply["role"], "tool");
+    assert!(
+        error_reply["content"]
+            .as_str()
+            .unwrap()
+            .contains("steps[0].needs")
+    );
+    let accepted_reply: Value = serde_json::from_str(
+        sent[3]["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        accepted_reply["steps"],
+        json!(["implement_json", "verify_json"])
+    );
+    assert!(accepted_reply["revision"].is_number());
+    assert_eq!(events[0]["success"], false);
+    assert_eq!(events[1]["success"], true);
+    let tools = sent[1]["tools"].as_array().unwrap();
+    let proposal_tool = tools
+        .iter()
+        .find(|t| t["function"]["name"] == "propose_steps")
+        .unwrap();
+    assert_eq!(
+        proposal_tool["function"]["parameters"]["properties"]["steps"]["items"]["properties"]["needs"]
+            ["items"]["type"],
+        "string"
+    );
+    assert_eq!(sent[1]["tools"], sent[2]["tools"]);
+    assert_eq!(sent[2]["tools"], sent[3]["tools"]);
 }

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -18,47 +19,105 @@ pub struct Template {
     pub outputs: BTreeMap<String, String>,
     pub steps: Vec<Step>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
+    /// Unique workflow-local name for this step, not a tool/function name.
+    #[schemars(length(min = 1))]
     pub id: String,
+    /// Configured executor role (defaults to worker). Must exist for planner proposals.
     #[serde(default = "worker")]
     pub role: String,
+    /// Execution kind. Planner proposals cannot request delivery.
     #[serde(default = "agent")]
+    #[schemars(extend("enum" = ["agent", "command", "delivery", "simulated", "environment"]))]
     pub kind: String,
+    /// Assignment for this step; use ${dependency.result} for a direct dependency's output.
     #[serde(default)]
     pub instructions: String,
+    /// Criteria that must pass before the step is accepted.
     #[serde(default)]
     pub acceptance: Vec<String>,
+    /// Workflow-local IDs of dependencies, not task UUIDs. Planner dependency is added automatically.
     #[serde(default)]
     pub needs: Vec<String>,
+    /// Repository-relative files/directory prefixes to claim for writes; use . for the whole repo.
     #[serde(default)]
     pub scope: Vec<String>,
+    /// Allowed native tools, e.g. read_file, search, write_file, apply_patch, command.
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Repository-relative artifact paths to collect after execution.
     #[serde(default)]
     pub artifacts: Vec<String>,
+    /// Extra result field names mapped to string, number, integer, boolean, array, object, or null.
     #[serde(default)]
+    #[schemars(extend("additionalProperties" = {"type":"string","enum":["string","number","integer","boolean","array","object","null"]}))]
     pub output_types: BTreeMap<String, String>,
+    /// Command argv for a command step, not a shell string.
     #[serde(default)]
     pub command: Vec<String>,
+    /// Required when kind is environment; describes the disposable app and its test.
     #[serde(default)]
     pub environment: Option<crate::environment::Environment>,
+    /// Nested template name, expanded only during template compilation. Submit expanded steps to revision tools.
     #[serde(default)]
     pub template: Option<String>,
+    /// String substitutions for nested template compilation.
     #[serde(default)]
     pub inputs: BTreeMap<String, String>,
+    /// Optional condition on a direct dependency's terminal status.
     #[serde(default)]
     pub when: Option<Condition>,
+    /// Maximum number of attempts, from 1 through 20.
     #[serde(default = "one")]
+    #[schemars(range(min = 1, max = 20))]
     pub attempts: u32,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Condition {
+    /// Workflow-local ID that must also appear in needs.
     pub step: String,
+    #[schemars(extend("enum" = ["succeeded", "failed", "skipped"]))]
     pub status: String,
 }
+
+/// Inline nested schemas so MCP and native providers receive a self-contained contract.
+pub fn step_schema() -> Value {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SCHEMA
+        .get_or_init(|| {
+            let settings =
+                schemars::generate::SchemaSettings::draft07().with(|s| s.inline_subschemas = true);
+            let mut schema =
+                serde_json::to_value(settings.into_generator().into_root_schema_for::<Step>())
+                    .expect("Step schema serializes");
+            schema
+                .as_object_mut()
+                .expect("Step object schema")
+                .remove("$schema");
+            // Environment's Serde defaults support TOML merging, but runtime
+            // validation requires a nonempty test argv whenever it is supplied.
+            schema["properties"]["environment"]["required"] = serde_json::json!(["test"]);
+            schema["properties"]["environment"]["properties"]["test"]
+                .as_object_mut()
+                .expect("test schema")
+                .remove("default");
+            schema
+        })
+        .clone()
+}
+
+/// Report the nested input path without changing the accepted Step representation.
+pub fn parse_steps(value: &Value) -> Result<Vec<Step>> {
+    serde_path_to_error::deserialize(value.clone()).map_err(|error| {
+        let path = error.path().to_string();
+        let suffix = if path == "." { String::new() } else { path };
+        anyhow::anyhow!("steps{suffix}: {}", error.inner())
+    })
+}
+
 fn worker() -> String {
     "worker".into()
 }
@@ -235,22 +294,34 @@ pub fn validate(steps: &[Step]) -> Result<()> {
         bail!("workflow must contain steps");
     }
     let ids: BTreeSet<_> = steps.iter().map(|s| s.id.as_str()).collect();
-    if ids.len() != steps.len() {
-        bail!("duplicate step id");
-    }
-    for s in steps {
-        if s.id.is_empty() || s.attempts == 0 || s.attempts > 20 {
-            bail!("invalid step or attempts");
+    let mut seen = BTreeSet::new();
+    for (index, s) in steps.iter().enumerate() {
+        let path = format!("workflow.steps[{index}] (id={:?})", s.id);
+        if !seen.insert(&s.id) {
+            bail!(
+                "{path}.id: duplicate step id {}; choose a unique workflow-local ID",
+                s.id
+            );
+        }
+        if s.id.is_empty() {
+            bail!("{path}.id: must not be empty");
+        }
+        if s.attempts == 0 || s.attempts > 20 {
+            bail!("{path}.attempts: must be between 1 and 20");
         }
         if !["agent", "command", "delivery", "simulated", "environment"].contains(&s.kind.as_str())
         {
-            bail!("unknown kind {}", s.kind);
+            bail!(
+                "{path}.kind: unknown kind {}; use agent, command, delivery, simulated, or environment",
+                s.kind
+            );
         }
         if let Some(e) = &s.environment {
-            e.validate()?;
+            e.validate()
+                .map_err(|e| anyhow::anyhow!("{path}.environment: {e:#}"))?;
         }
         if s.kind == "environment" && s.environment.is_none() {
-            bail!("environment step requires environment configuration");
+            bail!("{path}.environment: environment step requires environment configuration");
         }
         for text in std::iter::once(&s.instructions).chain(s.command.iter()) {
             let mut rest = text.as_str();
@@ -291,22 +362,26 @@ pub fn validate(steps: &[Step]) -> Result<()> {
             ]
             .contains(&ty.as_str())
             {
-                bail!("unknown output type {ty}");
+                bail!(
+                    "{path}.output_types: unknown output type {ty}; use string, number, integer, boolean, array, object, or null"
+                );
             }
         }
         for p in &s.scope {
-            crate::store::scope(p)?;
+            crate::store::scope(p).map_err(|e| anyhow::anyhow!("{path}.scope: {e:#}"))?;
         }
         for n in &s.needs {
             if !ids.contains(n.as_str()) {
-                bail!("unknown dependency {n}");
+                bail!("{path}.needs: unknown dependency {n}; use an existing or proposed step ID");
             }
         }
         if let Some(c) = &s.when
             && (!s.needs.contains(&c.step)
                 || !["succeeded", "failed", "skipped"].contains(&c.status.as_str()))
         {
-            bail!("condition must reference a dependency and terminal status");
+            bail!(
+                "{path}.when: condition must reference a dependency and terminal status (succeeded, failed, or skipped)"
+            );
         }
     }
     let mut done = BTreeSet::new();

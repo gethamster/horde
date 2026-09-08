@@ -10,22 +10,31 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Environment {
     pub docker_context: Option<String>,
     pub env_file: Option<String>,
+    #[schemars(extend("enum" = ["process", "compose"]))]
     pub runner: String,
+    /// Start command argv, required for the process runner.
     pub start: Vec<String>,
+    /// Test command argv; required for both process and Compose runners.
+    #[schemars(length(min = 1))]
     pub test: Vec<String>,
     pub ready_url: String,
     pub compose_file: String,
     pub services: Vec<String>,
     pub ready_service: Option<String>,
+    #[schemars(range(min = 1, max = 86400))]
     pub timeout_seconds: u64,
+    /// Positive readiness deadline, no greater than timeout_seconds.
+    #[schemars(range(min = 1, max = 86400))]
     pub readiness_seconds: u64,
     pub allow_external_resources: bool,
+    #[schemars(range(min = 64))]
     pub memory_mb: u64,
+    #[schemars(extend("exclusiveMinimum" = 0))]
     pub cpus: f64,
 }
 impl Default for Environment {

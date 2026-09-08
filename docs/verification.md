@@ -171,3 +171,14 @@ acceptance of the full planning/implementation/review workflow.
 binary: settings isolation, explicit endpoint/model requirements, and a local
 mock provider that writes, commits, integrates, and produces retained evidence.
 It does not call a real model, use a GPU, or publish changes.
+
+
+## Workflow proposal contract checks
+
+The Step schema is derived from the Rust types and inlined for MCP/native tools
+and the website catalog. Offline fixtures exercise a native planner receiving a
+field-specific `needs` error, correcting a proposal with nested `when` data, and
+receiving a successful revision. Tests also check MCP error-result envelopes,
+unknown/missing fields, nested environment type errors, unchanged workflow state
+on rejection, and stable tool definitions across successive model requests.
+These checks do not establish live pmlx planner convergence or prefix-cache speed.

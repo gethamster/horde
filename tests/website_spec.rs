@@ -93,3 +93,53 @@ fn every_published_tool_is_function_calling_compatible() {
         .len();
     assert_eq!(unique, names.len(), "operation names must be unique");
 }
+
+#[test]
+fn workflow_tools_publish_the_rust_step_fields_and_inline_nested_types() {
+    let step: horde::template::Step = serde_json::from_value(json!({"id":"sample"})).unwrap();
+    let serialized = serde_json::to_value(step).unwrap();
+    for name in ["propose_steps", "add_steps"] {
+        let parameters = schema(name);
+        let steps = &parameters["properties"]["steps"];
+        let item = &steps["items"];
+        assert_eq!(item["type"], "object");
+        assert_eq!(item["additionalProperties"], false);
+        assert_eq!(item["required"], json!(["id"]));
+        let fields = item["properties"].as_object().unwrap();
+        assert_eq!(
+            fields.keys().collect::<Vec<_>>(),
+            serialized.as_object().unwrap().keys().collect::<Vec<_>>()
+        );
+        assert_eq!(fields["needs"]["items"]["type"], "string");
+        assert_eq!(fields["command"]["items"]["type"], "string");
+        assert_eq!(fields["attempts"]["minimum"], 1);
+        assert_eq!(fields["attempts"]["maximum"], 20);
+        assert!(
+            !item.to_string().contains("\"$ref\""),
+            "nested schemas must be self-contained"
+        );
+        for (field, nested) in [("when", "status"), ("environment", "runner")] {
+            let object = &fields[field];
+            assert_eq!(object["type"], json!(["object", "null"]));
+            assert_eq!(object["additionalProperties"], false);
+            assert!(object["properties"][nested]["enum"].is_array());
+        }
+        assert_eq!(fields["environment"]["required"], json!(["test"]));
+        assert!(
+            fields["environment"]["properties"]["test"]
+                .get("default")
+                .is_none()
+        );
+        if name == "propose_steps" {
+            assert_eq!(steps["minItems"], 1);
+            assert_eq!(steps["maxItems"], 32);
+            assert!(
+                !fields["kind"]["enum"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("delivery"))
+            );
+            assert_eq!(fields["template"]["type"], "null");
+        }
+    }
+}
