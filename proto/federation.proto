@@ -1,0 +1,5 @@
+syntax = "proto3";
+package task.federation.v1;
+service Federation { rpc Call(CallRequest) returns (CallReply); rpc Control(stream CallRequest) returns (stream CallReply); }
+message CallRequest { string method = 1; string json = 2; }
+message CallReply { string json = 1; }

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Using Horde",
+      "description": "Install Horde, connect it to your agent, and run work on it.",
+      "skills": ["horde"]
+    },
+    {
+      "title": "Building on Horde",
+      "description": "Author workflow templates and operate as a worker inside a Horde task.",
+      "skills": ["horde-templates", "horde-worker"]
+    }
+  ]
+}

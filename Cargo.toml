@@ -1,0 +1,45 @@
+[package]
+name = "horde"
+version = "0.4.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/gethamster/horde"
+homepage = "https://horde.sh"
+readme = "README.md"
+description = "Local-first durable task orchestration and worker coordination"
+
+[dependencies]
+rcgen = { version = "0.14", features = ["x509-parser"] }
+pem = "3"
+time = "0.3"
+ring = "0.17.14"
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+fs2 = "0.4"
+hex = "0.4"
+libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+toml = "0.9"
+uuid = { version = "1", features = ["v4"] }
+futures-util = "0.3"
+tonic = { version = "0.14", features = ["tls-ring"] }
+tonic-health = "0.14"
+tokio-stream = { version = "0.1.19", features = ["net"] }
+prost = "0.14"
+tonic-prost = "0.14"
+tar = "0.4"
+toml_edit = "0.25.13"
+
+[dev-dependencies]
+rcgen = "0.14"
+tempfile = "3"
+
+[build-dependencies]
+protoc-bin-vendored = "3"
+tonic-prost-build = "0.14"

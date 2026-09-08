@@ -1,0 +1,28 @@
+name = "local-implementation"
+version = "1.0.0"
+inputs = ["task"]
+[outputs]
+result = "review.result"
+[[steps]]
+id = "plan"
+role = "planner"
+instructions = "Inspect the repository and plan this task: {{task}}. Infer acceptance criteria. Do not edit files. Return a concrete implementation plan. If independent subtasks with non-overlapping write scopes would improve execution, use propose_tasks to assign them; the runtime will insert them before implementation and review."
+acceptance = ["Repository inspected and a concrete implementation plan produced; passing implementation tests is not required for this planning task"]
+tools = ["read_file", "search", "command"]
+[[steps]]
+id = "implement"
+needs = ["plan"]
+instructions = "Implement {{task}}. Follow the dependency plan: ${plan.result}. Check messages before editing and submitting. Run relevant tests and commit your changes."
+acceptance = ["Requested behavior is implemented", "Relevant checks pass"]
+scope = ["."]
+tools = ["read_file", "search", "write_file", "apply_patch", "command"]
+attempts = 3
+[[steps]]
+id = "review"
+role = "reviewer"
+needs = ["implement"]
+instructions = "Verify the integrated implementation for {{task}}. Inspect diff and run relevant tests. Repair concrete defects, test and commit repairs. Fail if acceptance criteria remain unmet."
+acceptance = ["Combined result passes repository checks", "No unresolved correctness defects"]
+scope = ["."]
+tools = ["read_file", "search", "write_file", "apply_patch", "command"]
+attempts = 3

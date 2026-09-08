@@ -1,0 +1,15 @@
+name = "github-actions"
+version = "1.0.0"
+inputs = ["task"]
+[outputs]
+result = "deliver.result"
+[[steps]]
+id = "application"
+template = "nextjs"
+[steps.inputs]
+task = "{{task}}"
+[[steps]]
+id = "deliver"
+kind = "delivery"
+needs = ["application"]
+instructions = "{{task}}"

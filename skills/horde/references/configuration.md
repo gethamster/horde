@@ -1,0 +1,253 @@
+# Configuration
+
+`horde config init` writes a starter `config.toml` and a private `credentials.env`
+into the configuration directory, creating neither if it is already there. The CLI
+installer runs it, so a fresh install has a file to edit. `horde config` prints the
+complete default TOML.
+
+Settings merge in this order, later winning:
+
+1. Built-in defaults.
+2. `$XDG_CONFIG_HOME/horde/config.toml`, or `~/.config/horde/config.toml`.
+3. `.horde.toml` in the submitted repository.
+
+The merged result is **pinned to the task at submission**. Later edits affect new
+tasks only. Repository settings can restrict the daemon but never raise its
+ceiling: concurrency, limits, and network trust stay user-owned.
+
+## Defaults
+
+```toml
+concurrency = 4
+autonomy = true
+default_template = "local-implementation"
+timeout_seconds = 1800
+max_tool_rounds = 64
+allow_commands = true
+secret_bundles = []
+```
+
+- `concurrency` — daemon-wide worker ceiling, 1 to 64. A project may lower it for
+  its own task.
+- `autonomy = false` holds every new task until its initial question is answered
+  with `horde answer TASK_ID QUESTION_ID yes`.
+- `timeout_seconds` — per-invocation ceiling.
+- `max_tool_rounds` — cap on native model/tool rounds per invocation.
+- `allow_commands = false` removes the native `command` tool.
+
+Live concurrency, without restarting or interrupting work:
+
+```sh
+horde config get concurrency
+horde config set concurrency 8
+horde runtime status
+horde runtime drain      # stop new dispatches, let running work finish
+horde runtime resume
+```
+
+## Adding a provider from the CLI
+
+Installing offers this walkthrough, and it can be run again at any time. It keeps
+asking until you say you are done, so several keys go in one sitting:
+
+```sh
+horde config init --interactive    # what the installer runs
+horde config provider add          # pick a provider, a model, paste the key
+horde config provider list         # what is configured, and whether each key reads
+horde config models default        # what that endpoint will accept as a model
+```
+
+Prompts go to the controlling terminal rather than standard input, so they still
+appear under `curl ... | sh`. With no terminal — a CI install, or an agent's tool
+call — `config init --interactive` prints the command to run later rather than
+failing, and `provider add` says to use the flags below.
+
+Scriptable, with the key on standard input rather than an argument:
+
+```sh
+printf '%s\n' "$KEY" | horde config provider add tuara \
+  --key-stdin --model qwen/qwen3.8-27b --use-for planner,worker,reviewer
+
+horde config provider add claude --use-for reviewer     # login: no key prompted
+```
+
+Presets: `tuara`, `codex`, `claude` (subscription login), `openai`, `anthropic`
+(the same CLIs against their API with a key). Anything else is described with
+`--kind`, `--base-url`, and `--api-key-env`.
+
+The key is never accepted as a command-line argument — it would land in the shell
+history and in `ps` — so it is prompted for without echo, or piped in with
+`--key-stdin`. It is written only to `credentials.env`; `config.toml` gets the
+variable name. Adding a preset that matches a provider you already have configures
+that one rather than leaving a duplicate behind; pass a different name to get a
+genuinely separate provider. Comments and hand-written stanzas in `config.toml`
+survive the edit, and settings that would no longer load are reported instead of
+being left on disk.
+
+## Providers
+
+A provider is a named endpoint and credential, declared once. Every executor role
+points at one, so an API key is written in exactly one place no matter how many
+roles use it.
+
+```toml
+[providers.default]
+kind = "tuara"
+auth_mode = "api"
+base_url = "https://tuara.com/router/v1"
+api_key_env = "TUARA_API_KEY"
+model = "qwen/qwen3.8-27b"    # what roles get unless they name their own
+max_tokens = 8192
+max_price = "1.00"             # dollars per million tokens, not a total budget
+```
+
+Preconfigured providers: `default` (Tuara over an API key), `codex` and `claude`
+(the installed CLIs under subscription login), and `simulated`.
+
+Nothing is inherited between providers. A provider that omits `base_url` or
+`api_key_env` while it needs one is rejected at load rather than quietly picking up
+another provider's endpoint or key.
+
+`kind` is one of:
+
+| kind | Behavior |
+| --- | --- |
+| `codex` | Runs the installed Codex CLI with workspace-write sandboxing and a preapproved coordination MCP server |
+| `claude` | Runs the installed Claude Code CLI with explicit allowed tools and a scoped MCP config |
+| `tuara` | Horde's own native tool loop against an OpenAI-compatible chat-completions endpoint |
+| `simulated` | Returns a fixed accepted result; used to exercise scheduling with no model calls |
+
+Model names for the harness kinds inherit their upstream default unless set
+explicitly. For `tuara`, every invocation verifies the exact configured identifier
+against `/models` and fails rather than substituting an alias.
+
+## Executor roles
+
+A role is a name a template step asks for. A role chooses two things: which provider
+it goes through, and which model it asks that provider for.
+
+```toml
+[executors.worker]                 # provider omitted: providers.default
+model = "a-fast-model"
+
+[executors.reviewer]
+provider = "claude"                # a different endpoint and credential
+max_tokens = 16384
+```
+
+Preconfigured roles: `planner`, `worker`, `reviewer`, `native` (all on
+`providers.default`), plus `codex`, `claude`, and `simulated` on the providers of
+the same name.
+
+Besides `provider` and `model`, a role may set `account`, `program`, `max_price`,
+`max_tokens`, and `max_api_cost_usd`; each falls back to the provider's value.
+
+A role cannot restate `kind`, `auth_mode`, `base_url`, or `api_key_env` — those four
+travel together on a provider, so no role can pair one provider's harness with
+another's key. Setting them on a role is an error that names the provider to declare
+instead.
+
+## Authentication
+
+Two modes, per provider.
+
+**Subscription login (`auth_mode = "login"`).** Codex and Claude use their own
+installed CLI and existing credential store. Horde does not read or copy those
+credentials.
+
+**API keys (`auth_mode = "api"`, the default provider's mode).** Set `base_url` and
+`api_key_env` on the provider:
+
+```toml
+[providers.anthropic]
+kind = "claude"
+auth_mode = "api"
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.openai]
+kind = "codex"
+auth_mode = "api"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+```
+
+The named variable must be set in the **daemon's** environment before
+`horde start`, or in a private mode-0600 `credentials.env` beside `config.toml`
+for a service install.
+
+Real keys are never injected into harness child environments. For each invocation
+Horde starts a loopback broker that holds the real key, issues the harness a
+temporary credential, restricts requests to that invocation's model endpoints,
+passes SSE and provider errors through unchanged, and revokes the token when the
+invocation completes. Worker command environments use an allowlist that omits
+provider keys entirely.
+
+Budget controls are honest about what they can enforce. `max_price` is a per-token
+price ceiling. Claude's CLI budget option is passed through when configured. A
+total-spend cap that a provider does not support fails explicitly rather than being
+silently ignored.
+
+## Fallbacks
+
+A role can escalate to another configured role after a failed attempt:
+
+```toml
+[fallbacks]
+worker = "reviewer"
+```
+
+With `attempts = 2` on a step, the first attempt uses `worker` and the second uses
+`reviewer`. Fallbacks are opt-in, cycle-checked, and recorded as escalation events.
+Missing roles and cycles are rejected at load. Nothing falls back without a mapping;
+this is a configured change of executor, not a silent model alias.
+
+Capacity-aware routing uses the same chain: at the configured switch threshold new
+invocations follow the fallback chain, and if every alternative is unavailable the
+work stays queued. Unknown capacity permits execution. See `fleet.md`.
+
+## Delegation limits
+
+```toml
+[limits]
+workers = 4          # active workers in the whole tree
+children = 16        # total child tasks ever created, including finished ones
+depth = 3            # levels below the root
+environments = 2     # concurrent app environments
+```
+
+Pinned at submission and inherited. Children cannot reset them. See
+`delegation.md`.
+
+## App secret bundles
+
+```toml
+secret_bundles = ["app"]
+```
+
+Names a bundle defined in `~/.config/horde/secrets.toml`. These are credentials for
+the software being built and tested, never provider API keys. See
+`environments.md`.
+
+## Delivery
+
+Off by default. See `delivery.md` before enabling.
+
+```toml
+[delivery]
+enabled = true
+repository = "owner/repo"
+base = "main"
+merge = true
+deploy_workflow = "deploy.yml"
+health_url = "https://example.com/health"
+```
+
+## Inspecting the merged result
+
+```sh
+horde doctor --repo /path/to/repo
+```
+
+This prints exactly what a task submitted from that repository would be pinned to.
+Read it before blaming a model for a configuration problem.

@@ -1,0 +1,27 @@
+name = "nextjs"
+version = "1.0.0"
+inputs = ["task"]
+[outputs]
+result = "build.result"
+[[steps]]
+id = "local"
+template = "local-implementation"
+[steps.inputs]
+task = "{{task}}"
+[[steps]]
+id = "install"
+kind = "command"
+needs = ["local"]
+command = ["npm", "ci"]
+[[steps]]
+id = "test"
+kind = "command"
+needs = ["install"]
+command = ["npm", "test", "--if-present"]
+[[steps]]
+id = "build"
+kind = "command"
+needs = ["test"]
+command = ["npm", "run", "build"]
+acceptance = ["Next.js production build succeeds"]
+attempts = 2

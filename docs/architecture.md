@@ -1,0 +1,155 @@
+# Architecture
+
+One local daemon owns scheduling. CLI and MCP clients connect over a private Unix socket using one newline-delimited JSON request per connection. The stdio MCP bridge supports initialization, tool discovery, and tool calls; it writes protocol messages only to stdout. Disconnecting a client does not cancel tasks.
+
+```mermaid
+flowchart LR
+  CLI[CLI] --> RPC[Private Unix socket]
+  MCP[Personal agent / stdio MCP] --> RPC
+  RPC --> DB[(SQLite WAL)]
+  DB --> Scheduler[Dependency scheduler]
+  Scheduler --> Native[Tuara native tool loop]
+  Scheduler --> Harness[Codex / Claude CLI]
+  Native --> Coordination[Messages and ownership]
+  Harness --> Coordination
+  Coordination --> DB
+  Native --> Worktrees[Worker Git worktrees]
+  Harness --> Worktrees
+  Worktrees --> Integration[Serialized integration]
+  Integration --> Checks[Combined verification]
+  Checks --> Delivery[Configured GitHub delivery]
+  DB --> CAS[SHA-256 artifact store]
+```
+
+## Durability
+
+SQLite uses WAL, foreign keys, FULL synchronous mode, and immediate write transactions for coordination mutations. Hordes pin their objective, repository, merged settings, and expanded plan. Revisions retain prior plans. Every invocation creates an attempt with identity, timestamps, PID when executing a command, result, and provider-reported usage.
+
+Messages and recipient receipts commit together before returning a sender acknowledgement. Message identity is immutable: reusing an ID with a different envelope fails. Delivery is at-least-once until explicit recipient acknowledgement. Acknowledgement cursors stop before the first unread message. A separate notification watermark prevents repeated model calls for an already-delivered wakeup.
+
+Native file writes and patches check exclusive claims. An atomic prefix handoff also transfers nested claims. Worker status updates and messages cannot implicitly release ownership. Failed and uncertain attempts preserve claims. Workspace and branch registrations are unique. Worktree allocation can recover a worktree created before its registration reached SQLite.
+
+Artifact bytes are addressed by SHA-256, synced before the database reference commits, and checked on retrieval. Each link records inputs and verification status. Knowledge has its own provenance and relationship tables. Execution state is never inferred from a knowledge claim or conversation.
+
+## Scheduling and recovery
+
+A step becomes eligible after its dependencies reach terminal states and its condition is satisfied. Unhandled failed dependencies skip downstream work. Retry counts are bounded. Explicit failure branches can repair a failure and lead to another verification step. Role fallbacks are opt-in, cycle-checked TOML mappings and are recorded as escalation events.
+
+The daemon applies its user-level concurrency ceiling across tasks; a project's concurrency setting can further restrict its own task. Claims prevent overlapping coding steps from dispatching. Verification and delivery commands run exclusively against the combined workspace. Git integration is serialized with a per-task file lock and a durable queue record. There is no distributed lease service.
+
+A hard restart marks running attempts uncertain and blocks their tasks. It never assumes an interrupted process, model call, merge, or external write did nothing. Reconciliation checks recorded PIDs, preserves claims, and requires inspection of local/external effects. A subsequent delivery attempt queries PR/merge/deployment state before retrying. Graceful SIGINT/SIGTERM and cancellation stop command process groups.
+
+An actionable message delivered to an idle managed worker schedules a new step revision using the same worker identity. Messages arriving during an invocation remain durable and can trigger a follow-up if still actionable and unread when that invocation finishes. Presence and acknowledgement updates never invoke a model.
+
+## Delegation, questions, and app lifetimes
+
+Schema version 2 adds task trees, immutable context sources, attempt context
+pins, question routes, event receipts, named bundle bindings, app ownership,
+remote links, and child acceptance. Existing tasks retain their original
+objective during the additive migration. Nested atomic operations use SQLite
+savepoints; sender receipts, child identities, and assignment hashes commit
+before acknowledgement.
+
+Every child sees the original contract and source IDs. Mandatory context is
+bounded to 256 KiB; supporting sources are paged, with provenance retained.
+Caller corrections append a new source and can supersede old constraints without
+deleting them. Answers preserve the exact question envelope and advance the
+family context version. Results pinned to older versions fail acceptance.
+
+A question blocks its assigned worker, leaving independent branches eligible.
+The immediate caller answers within its scope or escalates one level. Escalation
+commentary is separate from the question. Human-only answers require an external
+caller attestation. Native workers receive pending questions at tool boundaries;
+harnesses use the same MCP operations and invocation context.
+
+Remote acceptance is deduplicated by owner identity and assignment hash. A lost
+response retries the pinned manifest; changed assignments with the same ID fail.
+Remote calls reserve one root worker slot. Deeper delegation remains counted at
+the original root. Children return snapshots; `integrate_child` imports them
+relative to the recorded base and runs explicit combined validation through the
+existing integration queue. Conflicts and failed checks never count as acceptance.
+
+Named app bundles store only names and version hashes in SQLite. Local private
+files supply values; approved mTLS peers receive private temporary copies.
+Copies are removed after completion and on restart, and fetched again for active
+work. App logs and command evidence redact selected literal values before
+persistence. Provider authentication stays in the existing credential broker.
+
+Managed process and Compose steps persist resource intent before starting. Each
+has a bounded lifetime, readiness check, test command, and cleanup record. App and
+test process groups carry a recorded process identity. Startup stops matching
+owned groups, tears down the uniquely named Compose project, and removes owned
+env files. Identity mismatch holds cleanup for inspection. Uncertain step effects
+still require reconciliation; cleanup does not assert that interrupted tests did
+nothing. Unreachable remote runtimes keep root reservations until reconciled.
+
+## Trust and authority
+
+Optional direct and Tailscale providers share tonic/rustls mutual TLS, with
+explicit client certificate enrollment. A separate listener exposes health and
+restricted runtime federation RPCs. User-owned execution grants and bundle grants
+are separate from certificate enrollment; project files cannot expand them.
+Each runtime owns its SQLite store. The original root owns the delegation tree,
+context version, worker reservations, environment leases, and child acceptance.
+Remote callers forward further delegation to that authority. Committed Git
+snapshots and artifact hashes cross the transport; no SQLite files are shared.
+See [networking](networking.md) for setup and the protocol boundary.
+
+This is a cooperative, single-user runtime, not a hostile-code sandbox. The data directory is mode 0700 and the socket is mode 0600. A personal-agent connection has administrative authority. Worker tokens limit operations and identity at the RPC layer; they do not isolate programs that can read the same user's filesystem. Never treat a worker token as protection against a malicious local process with that user's full account access.
+
+Provider credentials are read by the daemon. Child commands receive an explicit environment allowlist, omitting API keys. Subscription harness authentication uses the installed CLI's credential store. API-backed harnesses use an invocation-scoped loopback broker that injects the real provider key upstream, restricts paths and configured models, and revokes its temporary token at invocation completion. Native arbitrary commands and external harness edits cannot be completely enforced before execution; their changes are inspected before integration. For stronger isolation, run the service under a dedicated OS account or inside an externally managed sandbox.
+
+The native loop offers file reads, search, full-file writes, unified patches, command execution, and coordination. File tools reject path traversal and symlink traversal. The external Codex adapter uses workspace-write sandboxing and preapproves only the supplied coordination MCP server. Claude receives explicit allowed tools and its scoped MCP configuration. The runtime does not disable the harnesses' managed restrictions.
+
+## Source map
+
+- `store.rs`: persistence, mailboxes, claims, artifacts, step completion.
+- `protocol.rs`: shared operation handlers, worker scope checks, MCP schemas.
+- `runtime.rs`: scheduler, context assembly, questions, retries, wakeups, daemon.
+- `executor.rs` / `native.rs`: harness adapters, Tuara loop and probe, process lifecycle, tools.
+- `git.rs`: worktrees, scope inspection, integration evidence.
+- `template.rs`: composition, pinning, output references and contracts.
+- `delivery.rs`: GitHub/Actions/health reconciliation.
+- `metrics.rs`: reported usage, costs, latency and coordination counts.
+
+- `delegation.rs`: root limits, context sources, questions, caller receipts.
+- `secrets.rs` / `environment.rs`: app bundle inheritance, redaction, owned lifecycles.
+- `network.rs` / `federation.rs`: discovery, mTLS identity, snapshot exchange and caller forwarding.
+
+## Runtime management and distribution
+
+Administrative runtime settings, capacity snapshots, enrollment fingerprints,
+management receipts, provider resources, and operation intents are stored separately
+from worker conversation. A user-owned concurrency override applies live to each
+runtime; repository settings cannot raise the daemon ceiling. Capacity selection
+uses explicit fallback roles before dispatch and leaves uncertain attempts under
+normal recovery rules.
+
+A configured daemon supervises networking and provider maintenance independently
+of scheduling. Managed remotes use an outbound mTLS bidirectional control stream.
+Provisioning issues unique certificates through an explicitly configured dedicated
+CA signer; short-lived bootstrap tokens are consumed on enrollment. The signer
+never leaves the controller. The stream carries transport correlations; durable
+workflow and management IDs remain authoritative across reconnects.
+
+Signed updates drain active work, preserve storage, and verify the resulting
+version before resuming. The release key is embedded by CI. Management APIs are
+excluded from worker-token scope and remote management grants are independent
+of execution grants. See [runtime management](runtime-management.md) and
+[installation](installing.md) for operational boundaries and configuration.
+
+User-directed Tailscale setup creates controller trust in its private data directory.
+Pairing discovers candidates through the local Tailscale client, bootstraps only
+the selected non-root host over Tailscale SSH, and confirms readiness through the
+existing mTLS enrollment and heartbeat path. Exact private bootstrap packets and
+receiver intents are retained for retry recovery; SQLite retains only enrollment
+hashes and authoritative state. Discovery never creates execution grants.
+
+
+Update handoff intent lives in authoritative runtime settings, separate from
+worker conversation. Before switching a running binary, the updater records the
+expected executable file identity, version, and management operation. After recovery,
+the replacement daemon atomically checks this identity, clears the drain hold,
+and completes the operation. A mismatch blocks completion; startup cannot replay
+a completed or cancelled handoff. This survives service managers terminating the
+original updater with the old daemon.

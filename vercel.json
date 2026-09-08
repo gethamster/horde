@@ -1,0 +1,521 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm ci --prefix website",
+  "buildCommand": "npm run build --prefix website",
+  "outputDirectory": "website/out",
+  "routes": [
+    {
+      "src": "^/$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs/agents$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs/configuration$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs/deployment$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/about$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/contact$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/privacy$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/index\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs/agents\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs/configuration\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs/deployment\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/about\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/contact\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/privacy\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/404\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/\\.well-known/mcp\\.json$",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "public, max-age=300, must-revalidate"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/\\.well-known/tools\\.json$",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "public, max-age=300, must-revalidate"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/llms\\.txt$",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "public, max-age=300, must-revalidate"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/llms-full\\.txt$",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "public, max-age=300, must-revalidate"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/sitemap\\.xml$",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "public, max-age=300, must-revalidate"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/robots\\.txt$",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "public, max-age=300, must-revalidate"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/install$",
+      "headers": {
+        "Cache-Control": "no-store"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/release-key(?:\\.((?:(?!\\.)[^/])+?))$",
+      "headers": {
+        "Cache-Control": "public, max-age=3600",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/releases(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))?$",
+      "headers": {
+        "Cache-Control": "no-store"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/(?:(.+)/)?index(?:\\.html)?/?$",
+      "headers": {
+        "Location": "/$1"
+      },
+      "status": 308
+    },
+    {
+      "src": "^/(.*)\\.html/?$",
+      "headers": {
+        "Location": "/$1"
+      },
+      "status": 308
+    },
+    {
+      "src": "^/(.*)/$",
+      "headers": {
+        "Location": "/$1"
+      },
+      "status": 308
+    },
+    {
+      "src": "^/$",
+      "headers": {
+        "Location": "/index.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
+      "src": "^/docs$",
+      "headers": {
+        "Location": "/docs.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
+      "src": "^/docs/agents$",
+      "headers": {
+        "Location": "/docs/agents.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
+      "src": "^/docs/configuration$",
+      "headers": {
+        "Location": "/docs/configuration.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
+      "src": "^/docs/deployment$",
+      "headers": {
+        "Location": "/docs/deployment.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
+      "src": "^/about$",
+      "headers": {
+        "Location": "/about.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
+      "src": "^/contact$",
+      "headers": {
+        "Location": "/contact.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
+      "src": "^/privacy$",
+      "headers": {
+        "Location": "/privacy.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
+      "src": "^/docs/api$",
+      "headers": {
+        "Location": "/docs/agents"
+      },
+      "status": 308
+    },
+    {
+      "src": "^/docs/api\\.md$",
+      "headers": {
+        "Location": "/docs/agents.md"
+      },
+      "status": 308
+    },
+    {
+      "src": "^/api/v1/tools\\.json$",
+      "headers": {
+        "Location": "/.well-known/tools.json"
+      },
+      "status": 308
+    },
+    {
+      "src": "^/api/v1/index\\.json$",
+      "headers": {
+        "Location": "/.well-known/mcp.json"
+      },
+      "status": 308
+    },
+    {
+      "src": "^/install$",
+      "headers": {
+        "Location": "https://github.com/asomervell/horde-releases/releases/latest/download/install.sh"
+      },
+      "status": 307
+    },
+    {
+      "src": "^/releases/latest(?:/([^/]+?))$",
+      "headers": {
+        "Location": "https://github.com/asomervell/horde-releases/releases/latest/download/$1"
+      },
+      "status": 307
+    },
+    {
+      "src": "^/releases(?:/([^/]+?))(?:/([^/]+?))$",
+      "headers": {
+        "Location": "https://github.com/asomervell/horde-releases/releases/download/$1/$2"
+      },
+      "status": 307
+    },
+    {
+      "src": "^/$",
+      "dest": "/index.html"
+    },
+    {
+      "src": "^/docs$",
+      "dest": "/docs.html"
+    },
+    {
+      "src": "^/docs/agents$",
+      "dest": "/docs/agents.html"
+    },
+    {
+      "src": "^/docs/configuration$",
+      "dest": "/docs/configuration.html"
+    },
+    {
+      "src": "^/docs/deployment$",
+      "dest": "/docs/deployment.html"
+    },
+    {
+      "src": "^/about$",
+      "dest": "/about.html"
+    },
+    {
+      "src": "^/contact$",
+      "dest": "/contact.html"
+    },
+    {
+      "src": "^/privacy$",
+      "dest": "/privacy.html"
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "^/.*$",
+      "dest": "/404.json",
+      "status": 404,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": ".*application/(?:problem\\+)?json.*"
+        }
+      ],
+      "headers": {
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "X-Robots-Tag": "noindex",
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "Content-Type": "application/problem+json; charset=utf-8"
+      }
+    },
+    {
+      "src": "^/.*$",
+      "dest": "/404.md",
+      "status": 404,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": ".*text/markdown.*"
+        }
+      ],
+      "headers": {
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "X-Robots-Tag": "noindex",
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "Content-Type": "text/markdown; charset=utf-8"
+      }
+    },
+    {
+      "src": "^/.*$",
+      "dest": "/404.html",
+      "status": 404,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": ".*text/html.*"
+        }
+      ],
+      "headers": {
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "X-Robots-Tag": "noindex",
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "Content-Type": "text/html; charset=utf-8"
+      }
+    },
+    {
+      "src": "^/.*$",
+      "dest": "/404.md",
+      "status": 404,
+      "headers": {
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "X-Robots-Tag": "noindex",
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "Content-Type": "text/markdown; charset=utf-8"
+      }
+    }
+  ]
+}

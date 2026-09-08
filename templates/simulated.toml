@@ -1,0 +1,21 @@
+name = "simulated"
+version = "1.0.0"
+inputs = ["task"]
+[outputs]
+result = "verify.result"
+[[steps]]
+id = "plan"
+kind = "simulated"
+instructions = "{{task}}"
+[[steps]]
+id = "left"
+kind = "simulated"
+needs = ["plan"]
+[[steps]]
+id = "right"
+kind = "simulated"
+needs = ["plan"]
+[[steps]]
+id = "verify"
+kind = "simulated"
+needs = ["left", "right"]

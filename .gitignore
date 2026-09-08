@@ -1,0 +1,12 @@
+/target/
+/.horde/
+/.horde/
+/.gstack/
+.env
+.env.*
+!.env.example
+/.vercel/
+
+__pycache__/
+*.pyc
+.gstack/

@@ -1,0 +1,77 @@
+name: Website
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - name: Verify the agent-facing surface
+        run: npm test
+      - name: Verify release installer
+        working-directory: .
+        run: python3 scripts/test_release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horde-website
+          path: website/out
+          if-no-files-found: error
+
+  # A release redeploys the site itself. This is the net for a lost deploy hook:
+  # if what horde.sh advertises ever falls behind what is published, rebuild it.
+  sync:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare the advertised version with the published release
+        id: drift
+        run: |
+          read_version() {
+            curl --fail --silent --location --proto '=https' "$1" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || true
+          }
+          published=$(read_version https://github.com/asomervell/horde-releases/releases/latest/download/manifest.json)
+          advertised=$(read_version https://horde.sh/.well-known/mcp.json)
+          echo "published=$published advertised=$advertised"
+          if [ -z "$published" ]; then
+            echo "::error::Cannot read the published release manifest"
+            exit 1
+          fi
+          if [ "$published" = "$advertised" ]; then
+            echo "in-sync=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::horde.sh advertises ${advertised:-nothing} but ${published} is published; rebuilding"
+            echo "in-sync=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Rebuild horde.sh
+        if: steps.drift.outputs.in-sync == 'false'
+        env:
+          DEPLOY_HOOK: ${{ secrets.HORDE_WEBSITE_DEPLOY_HOOK }}
+        run: |
+          if [ -z "${DEPLOY_HOOK:-}" ]; then
+            echo "::error::HORDE_WEBSITE_DEPLOY_HOOK is not set, so the drift cannot be corrected automatically"
+            exit 1
+          fi
+          curl --fail --silent --show-error --location --proto '=https' -X POST "$DEPLOY_HOOK" -o /dev/null
+          echo "Requested a production rebuild of horde.sh"

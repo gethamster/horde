@@ -1,0 +1,33 @@
+{
+  "name": "horde-website",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "check": "next typegen && tsc --noEmit",
+    "prebuild": "node scripts/prepare-release.mjs && node scripts/generate-og-image.mjs",
+    "postbuild": "node scripts/generate-agent-files.mjs",
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "next": "16.3.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vercel/routing-utils": "6.5.0",
+    "typescript": "~5.9.3"
+  },
+  "overrides": {
+    "@vercel/routing-utils": {
+      "path-to-regexp": "6.3.0"
+    }
+  }
+}

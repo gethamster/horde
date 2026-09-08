@@ -1,0 +1,1341 @@
+{
+  "$schema": "https://horde.sh/api/v1/tools.schema.json",
+  "count": 59,
+  "product": "Horde",
+  "scopes": {
+    "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
+    "worker": "Also available to task-scoped worker credentials."
+  },
+  "specVersion": "1.0",
+  "tools": [
+    {
+      "description": "Resume queued fleet updates after inspecting a failed rollout",
+      "name": "runtime_updates_resume",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Inspect and adopt a provider resource after uncertain provisioning",
+      "name": "runtime_reconcile",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "request_id",
+          "resource"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "List managed runtime",
+      "name": "runtime_list",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Inspect managed runtime",
+      "name": "runtime_inspect",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Create managed runtime",
+      "name": "runtime_create",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "profile",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Destroy managed runtime",
+      "name": "runtime_destroy",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Restart managed runtime",
+      "name": "runtime_restart",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Update managed runtime",
+      "name": "runtime_update",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "request_id",
+          "version"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Stop managed runtime",
+      "name": "runtime_stop",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Start managed runtime",
+      "name": "runtime_start",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Read runtime concurrency",
+      "name": "runtime_config_get",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Change runtime concurrency without interrupting work",
+      "name": "runtime_config_set",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "concurrency": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "concurrency"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Stop new dispatches",
+      "name": "runtime_drain",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Resume runtime dispatch",
+      "name": "runtime_resume",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Inspect version and drain status",
+      "name": "runtime_status",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Inspect account capacity and freshness",
+      "name": "account_status",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Record an explicit account quota observation",
+      "name": "account_observe",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "integer"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reset_at": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "used_percent": {
+            "type": "number"
+          },
+          "window": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "provider",
+          "window",
+          "observed_at",
+          "source"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Read runtime management events",
+      "name": "management_events",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Acknowledge management events",
+      "name": "management_ack",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "consumer": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "consumer",
+          "seq"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Import a completed child and verify the combined result",
+      "name": "integrate_child",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "child": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "validation": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "child",
+          "validation"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Inspect owned application environments and cleanup state",
+      "name": "environments",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Explicitly refresh selected application bundle versions",
+      "name": "refresh_bundles",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Create a bounded child task; id is required for retry deduplication",
+      "name": "delegate_task",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "bundles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "peer": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "objective"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Inspect immediate child tasks",
+      "name": "list_children",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Read original source context using bounded pages",
+      "name": "read_context",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Root caller: append authoritative context with provenance and invalidate stale acceptance",
+      "name": "update_context",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "mandatory": {
+            "type": "boolean"
+          },
+          "provenance": {
+            "type": "string"
+          },
+          "supersedes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "provenance"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Read questions addressed to this caller",
+      "name": "pending_questions",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Forward the original question one level to your parent",
+      "name": "escalate_question",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "commentary": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Acknowledge durable events through a consumer cursor",
+      "name": "ack_events",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "consumer": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "consumer",
+          "seq"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Planner-only: propose parallel or dependent steps. Runtime validates and inserts them before the planning step’s pending successors",
+      "name": "propose_steps",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Ask for required information; hold this worker while its caller answers or escalates",
+      "name": "request_question",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "type": "string"
+          },
+          "human_only": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Reported usage, cost, latency, retries, and coordination overhead",
+      "name": "metrics",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Submit objective, repo, and optional template; returns durable task id",
+      "name": "submit_task",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "objective": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "objective",
+          "repo"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Inspect a task including steps, attempts, workers, questions, and integration",
+      "name": "inspect",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "List submitted tasks and their status",
+      "name": "list_tasks",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Read ordered activity events",
+      "name": "events",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "integer"
+          },
+          "consumer": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Cancel a task",
+      "name": "cancel",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Resume paused or failed work; interrupted processes require reconciliation",
+      "name": "resume",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Answer a pending question",
+      "name": "answer_question",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "human": {
+            "type": "boolean"
+          },
+          "question": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "answer"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Create task-scoped worker identity and token",
+      "name": "register_worker",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "step": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Register path, branch and base before editing",
+      "name": "register_workspace",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "branch",
+          "base"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Persist a message to worker id, group:name, or task. Supply id for deduplication",
+      "name": "send_message",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "actionable": {
+            "type": "boolean"
+          },
+          "body": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "refs": {
+            "type": "object"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "destination",
+          "body"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Read unacknowledged messages; after is an optional sequence cursor",
+      "name": "read_messages",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Acknowledge an explicit list of message ids",
+      "name": "acknowledge_messages",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "List worker identities and status",
+      "name": "list_workers",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Set idle, working, blocked, or stopped status",
+      "name": "set_worker_status",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Join a named group channel",
+      "name": "join_channel",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Acquire exclusive paths in a registered workspace",
+      "name": "claim_paths",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Atomically hand off a claim to another worker",
+      "name": "transfer_claim",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "path"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Release claims after worker is stopped or idle",
+      "name": "release_claims",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Confirm an interrupted process exited, then make step resumable",
+      "name": "reconcile_worker",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Append validated steps as a durable workflow revision",
+      "name": "add_steps",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Store content with input fingerprint and verification status",
+      "name": "put_artifact",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "step": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "content"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Read a task artifact by hash",
+      "name": "get_artifact",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "hash": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Find a verified artifact with identical input fingerprint",
+      "name": "reuse_artifact",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "inputs"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Store fact, decision or evidence with provenance",
+      "name": "add_knowledge",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "object"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "object"
+          },
+          "step": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "content",
+          "provenance"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Read knowledge for this task",
+      "name": "knowledge",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Link two knowledge records with a relationship",
+      "name": "link_knowledge",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "relation": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "relation"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Integrate a committed worker worktree; optional validation argv",
+      "name": "integrate",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          },
+          "validation": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    }
+  ],
+  "transport": {
+    "args": [
+      "mcp"
+    ],
+    "command": "horde",
+    "kind": "stdio",
+    "protocol": "mcp",
+    "version": "2024-11-05"
+  }
+}
