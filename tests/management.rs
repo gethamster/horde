@@ -204,13 +204,31 @@ fn signed_release_rejects_tampering_and_incompatibility() {
     let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
     let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
     let manifest =
-        json!({"version":"0.2.1","protocol":1,"schema_min":2,"schema_max":2,"artifacts":[]})
+        json!({"version":"0.5.0","protocol":1,"schema_min":2,"schema_max":3,"artifacts":[]})
             .to_string();
     let sig = key.sign(manifest.as_bytes());
     assert!(
         horde::update::verify(manifest.as_bytes(), sig.as_ref(), key.public_key().as_ref()).is_ok()
     );
     assert!(horde::update::verify(b"changed", sig.as_ref(), key.public_key().as_ref()).is_err());
+    for (minimum, maximum, compatible) in [(2, 3, true), (3, 3, true), (2, 2, false), (4, 4, false)]
+    {
+        let mut candidate: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        candidate["schema_min"] = json!(minimum);
+        candidate["schema_max"] = json!(maximum);
+        let candidate = candidate.to_string();
+        let signature = key.sign(candidate.as_bytes());
+        assert_eq!(
+            horde::update::verify(
+                candidate.as_bytes(),
+                signature.as_ref(),
+                key.public_key().as_ref()
+            )
+            .is_ok(),
+            compatible,
+            "schema range {minimum}..={maximum}"
+        );
+    }
     let incompatible = manifest.replace("\"protocol\":1", "\"protocol\":2");
     let sig = key.sign(incompatible.as_bytes());
     assert!(

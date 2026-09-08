@@ -11,6 +11,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub const SCHEMA_VERSION: u32 = 3;
+
 pub fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -70,7 +72,7 @@ impl Store {
         let conn = Connection::open(root.join("state.sqlite3"))?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 3 {
+        if version > i64::from(SCHEMA_VERSION) {
             bail!("database schema {version} is newer than this runtime supports");
         }
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;

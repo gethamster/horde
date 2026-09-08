@@ -82,6 +82,7 @@ class InstallerTest(unittest.TestCase):
         result = subprocess.run(['openssl', 'pkeyutl', '-verify', '-pubin', '-inkey', str(self.dist/'release-key.pem'), '-rawin', '-in', str(self.dist/'manifest.json'), '-sigfile', str(self.dist/'manifest.sig')], capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads((self.dist/'manifest.json').read_text())
+        self.assertEqual((manifest['schema_min'], manifest['schema_max']), (2, 3))
         self.assertTrue(all(a['url'].startswith('https://horde.sh/releases/v0.2.1/') for a in manifest['artifacts']))
 
 
