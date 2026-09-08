@@ -17,6 +17,7 @@ pub struct Settings {
     pub timeout_seconds: u64,
     pub max_tool_rounds: usize,
     pub max_identical_tool_calls: usize,
+    pub tool_event_bytes: usize,
     pub allow_commands: bool,
     pub secret_bundles: Vec<String>,
     pub skills: BTreeMap<String, PathBuf>,
@@ -197,6 +198,7 @@ impl Default for Settings {
             timeout_seconds: 1800,
             max_tool_rounds: 64,
             max_identical_tool_calls: 3,
+            tool_event_bytes: 512,
             allow_commands: true,
             secret_bundles: vec![],
             skills: BTreeMap::new(),
@@ -219,6 +221,7 @@ default_template = "local-implementation"
 timeout_seconds = 1800
 max_tool_rounds = 64
 max_identical_tool_calls = 3 # 0 disables repeated-call detection
+tool_event_bytes = 512 # Per arguments/result field; 0 omits payloads
 allow_commands = true
 
 # Optional skill directories, captured when a task is submitted. Select their
@@ -377,6 +380,9 @@ impl Settings {
             || self.max_tool_rounds == 0
         {
             bail!("invalid concurrency, timeout, or tool round limit");
+        }
+        if self.tool_event_bytes > 65536 {
+            bail!("tool_event_bytes must be between 0 and 65536");
         }
         for (slug, provider) in &self.providers {
             crate::native_protocol::validate_extra_body(&provider.extra_body)
