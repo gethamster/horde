@@ -1099,7 +1099,20 @@ fn native_tool_events_bound_and_redact_arguments_and_results() {
         ..Default::default()
     };
     let secret = "synthetic-\n\"provider-secret";
-    let payload = json!({"a_key":secret,"z_text":"界".repeat(100)});
+    f.db.conn
+        .execute(
+            "INSERT INTO task_bundles VALUES(?,?,?)",
+            rusqlite::params![f.oid, "event-app", "v1"],
+        )
+        .unwrap();
+    let bundles = f.db.root.join("remote-secrets").join(&f.oid);
+    std::fs::create_dir_all(&bundles).unwrap();
+    std::fs::write(
+        bundles.join(horde::store::hash(b"event-app")),
+        json!({"version":"v1","values":{"APP_SECRET":"synthetic-app-secret"}}).to_string(),
+    )
+    .unwrap();
+    let payload = json!({"a_key":secret,"b_key":"synthetic-app-secret","z_text":"界".repeat(100)});
     let i = Invocation {
         db: &f.db,
         task: &f.oid,
