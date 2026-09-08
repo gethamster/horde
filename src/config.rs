@@ -16,6 +16,7 @@ pub struct Settings {
     pub default_template: String,
     pub timeout_seconds: u64,
     pub max_tool_rounds: usize,
+    pub max_identical_tool_calls: usize,
     pub allow_commands: bool,
     pub secret_bundles: Vec<String>,
     pub providers: BTreeMap<String, Provider>,
@@ -38,6 +39,8 @@ pub struct Provider {
     pub max_price: Option<String>,
     pub max_tokens: u64,
     pub max_api_cost_usd: Option<f64>,
+    pub extra_body: BTreeMap<String, serde_json::Value>,
+    pub stream: bool,
 }
 /// Deliberately neutral: a provider declared in a config file inherits nothing
 /// endpoint- or credential-shaped, so an omitted `base_url` or `api_key_env` is
@@ -55,6 +58,8 @@ impl Default for Provider {
             max_price: None,
             max_tokens: 8192,
             max_api_cost_usd: None,
+            extra_body: BTreeMap::new(),
+            stream: false,
         }
     }
 }
@@ -72,6 +77,8 @@ impl Provider {
             max_price: e.max_price.clone().or_else(|| self.max_price.clone()),
             max_tokens: e.max_tokens.unwrap_or(self.max_tokens),
             max_api_cost_usd: e.max_api_cost_usd.or(self.max_api_cost_usd),
+            extra_body: self.extra_body.clone(),
+            stream: self.stream,
         }
     }
 }
@@ -114,6 +121,8 @@ pub struct ExecutorConfig {
     pub max_price: Option<String>,
     pub max_tokens: u64,
     pub max_api_cost_usd: Option<f64>,
+    pub extra_body: BTreeMap<String, serde_json::Value>,
+    pub stream: bool,
 }
 impl Default for ExecutorConfig {
     fn default() -> Self {
@@ -186,6 +195,7 @@ impl Default for Settings {
             default_template: "local-implementation".into(),
             timeout_seconds: 1800,
             max_tool_rounds: 64,
+            max_identical_tool_calls: 3,
             allow_commands: true,
             secret_bundles: vec![],
             providers,
@@ -206,6 +216,7 @@ autonomy = true
 default_template = "local-implementation"
 timeout_seconds = 1800
 max_tool_rounds = 64
+max_identical_tool_calls = 3 # 0 disables repeated-call detection
 allow_commands = true
 
 # Providers are declared once and referenced by name. Put the API key itself in
@@ -325,6 +336,9 @@ impl Settings {
         let executor = self.executors.get(role)?;
         Some(self.providers.get(executor.provider())?.resolve(executor))
     }
+    pub fn provider(&self, name: &str) -> Option<ExecutorConfig> {
+        Some(self.providers.get(name)?.resolve(&Executor::default()))
+    }
     /// Every configured role, resolved. Roles naming a missing provider are omitted;
     /// `load` rejects those, so they only arise from settings injected by a peer.
     pub fn resolved(&self) -> BTreeMap<String, ExecutorConfig> {
@@ -358,6 +372,11 @@ impl Settings {
             bail!("invalid concurrency, timeout, or tool round limit");
         }
         for (slug, provider) in &self.providers {
+            crate::native_protocol::validate_extra_body(&provider.extra_body)
+                .map_err(|e| anyhow::anyhow!("provider {slug}: {e}"))?;
+            if provider.kind != "tuara" && !provider.extra_body.is_empty() {
+                bail!("provider {slug}: extra_body is supported only by the native tuara executor");
+            }
             if provider.kind.is_empty() {
                 bail!("provider {slug} needs a kind");
             }

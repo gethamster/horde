@@ -69,12 +69,20 @@ pub fn report(db: &Store, oid: &str) -> Result<Value> {
         mut unknown_cost,
         mut frontier,
     ) = (0, 0, 0, 0.0, 0, 0, 0);
+    let mut turns = vec![];
     let mut finished = task["created"].as_i64().unwrap_or(0);
     for a in &attempts {
         let v: Value = a["usage"]
             .as_str()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or(Value::Null);
+        if let Some(requests) = v["requests"].as_array() {
+            for (index, request) in requests.iter().enumerate() {
+                turns.push(
+                    json!({"attempt":a["id"],"step":a["step"],"turn":index + 1,"usage":request}),
+                );
+            }
+        }
         let u = usage(&v);
         input += u.input;
         output += u.output;
@@ -100,6 +108,7 @@ pub fn report(db: &Store, oid: &str) -> Result<Value> {
     let count = |sql: &str| -> Result<i64> { Ok(db.conn.query_row(sql, [oid], |r| r.get(0))?) };
     let steps = count("SELECT COUNT(*) FROM steps WHERE task=?")?;
     let mut result = json!({"task":oid,"status":task["status"],"accepted_tasks":i64::from(task["status"]=="succeeded"),"attempts":attempts.len(),"retries":(attempts.len() as i64-steps).max(0),"reported_input_tokens":input,"reported_output_tokens":output,"reported_cached_tokens":cached,"planner_reviewer_reported_tokens":frontier,"reported_api_cost_usd":if unknown_cost==0{json!(cost)}else{Value::Null},"known_api_cost_subtotal_usd":cost,"attempts_without_token_usage":unreported,"attempts_without_cost":unknown_cost,"subscription_capacity":null,"elapsed_seconds":finished-task["created"].as_i64().unwrap_or(0),"coordination_messages":count("SELECT COUNT(*) FROM messages WHERE task=?")?,"coordination_tool_calls":count("SELECT COUNT(*) FROM events WHERE task=? AND kind='coordination.call'")?,"human_answers":count("SELECT COUNT(*) FROM questions WHERE task=? AND answer IS NOT NULL")? });
+    result["turns"] = json!(turns);
     if let Some(remote) = db
         .rows(
             "SELECT data FROM external_ops WHERE task=? AND name='federation.metrics'",
