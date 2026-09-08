@@ -90,7 +90,7 @@ Configure a profile for each provider in `runtimes.toml`:
 [profiles.local-containers]
 provider = "docker"
 context = "default"
-image = "ghcr.io/asomervell/horde@sha256:REPLACE_WITH_RELEASE_DIGEST"
+image = "IMAGE_FROM_SIGNED_RELEASE_MANIFEST"
 concurrency = 4
 cpus = 2
 memory_mb = 2048
@@ -100,7 +100,7 @@ executor_roles = ["planner", "worker", "reviewer"]
 provider = "kubernetes"
 context = "my-cluster"
 namespace = "task"
-image = "ghcr.io/asomervell/horde@sha256:REPLACE_WITH_RELEASE_DIGEST"
+image = "IMAGE_FROM_SIGNED_RELEASE_MANIFEST"
 concurrency = 4
 
 [profiles.e2b]
@@ -115,6 +115,10 @@ api_key_env = "DAYTONA_API_KEY"
 image = "YOUR_HORDE_SNAPSHOT_NAME"
 lifetime_seconds = 3600
 ```
+
+Use the `image` value from the signed release manifest at
+`https://horde.sh/releases/latest/manifest.json` in place of
+`IMAGE_FROM_SIGNED_RELEASE_MANIFEST`; it includes the immutable image digest.
 
 Docker uses the selected context. Kubernetes uses the selected kubeconfig context
 and namespace, creating one StatefulSet and dedicated persistent storage per

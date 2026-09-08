@@ -100,3 +100,22 @@ a:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
   .site-header { align-items: flex-start; flex-direction: column; }
   .docs h1 { font-size: 25px; }
 }
+
+.site-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px 24px;
+  max-width: 752px;
+  margin: 0 auto;
+  padding: 24px 0 32px;
+  border-top: 1px solid #dedede;
+  color: #666;
+  font-size: 13px;
+}
+@media (max-width: 800px) {
+  .site-footer { margin-inline: 24px; }
+}
+@media (max-width: 480px) {
+  .site-footer { margin-inline: 20px; }
+}

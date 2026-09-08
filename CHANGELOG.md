@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- Publish the source at `gethamster/horde` under Apache-2.0 with a single initial commit and link it from horde.sh. Existing signed downloads and agent skills keep their URLs.
+- Add company copyright, Get Hamster, and Hamster Labs on X links to every website footer.
+
+- Install all three agent skills directly from `gethamster/horde`, and find the guides through the README’s Documentation link and new documentation index.
+
+- Publish the source at `gethamster/horde` under Apache-2.0 with a single initial commit and link it from horde.sh. Existing signed downloads keep their URLs.
 
 - Make horde.sh missing-page responses recoverable as Markdown or JSON while preserving HTTP 404, clarify local MCP discovery, and publish the business address with improved developer resource links.
 

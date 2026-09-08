@@ -21,7 +21,7 @@ against `out/`, so build before testing. Release CI renders the installer from
 
 Source is maintained at [gethamster/horde](https://github.com/gethamster/horde).
 The Vercel project `horde` uses that repository’s `main` branch and the `website`
-Root Directory. Signed downloads continue to come from `asomervell/horde-releases`.
+Root Directory. Signed downloads are available through `https://horde.sh/releases/latest/manifest.json`.
 
 ## The agent-facing surface
 
@@ -104,7 +104,7 @@ HTTPS so the copy button can use the Clipboard API.
 
 The export hosts `/release-key.pem` and `/release-key.hex`. Vercel redirects
 `/install` to the latest published release’s `install.sh`, and redirects `/releases/latest/<file>` and
-`/releases/v<version>/<file>` to public GitHub Release assets in `asomervell/horde-releases`. These redirects require a
+`/releases/v<version>/<file>` to the public GitHub artifact mirror configured in `scripts/generate-vercel-config.mjs`. These redirects require a
 published release. Website deployments have their own lifecycle: edits to pages
 and docs can ship while a binary release is building. The installer changes only
 when a new release is published.

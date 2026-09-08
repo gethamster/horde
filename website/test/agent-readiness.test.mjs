@@ -336,8 +336,8 @@ describe("published documents", () => {
 });
 
 describe("published links stay public", () => {
-  // Source, signed releases, and skills have distinct public repositories.
-  const publicRepositories = ["gethamster/horde", "asomervell/horde-releases", "asomervell/horde-skills"];
+  // Source and skills share the public repository; downloads use stable Horde URLs.
+  const publicRepositories = ["gethamster/horde"];
   const files = readdirSync(out, { recursive: true })
     .map(String)
     .filter((entry) => /\.(html|md|txt|json|xml)$/.test(entry));
@@ -366,7 +366,7 @@ describe("published links stay public", () => {
       manifest.contact.issues === "https://github.com/gethamster/horde/issues",
       `the manifest points issues at ${manifest.contact.issues}`,
     );
-    assert.equal(manifest.skills, "https://github.com/asomervell/horde-skills");
+    assert.equal(manifest.skills, "https://github.com/gethamster/horde/tree/main/skills");
     assert.equal(manifest.repository, "https://github.com/gethamster/horde");
   });
 
@@ -433,7 +433,6 @@ describe("honest agent discovery", () => {
   });
 });
 
-
 test("public business address is consistent in Organization data and contact documents", () => {
   const expected = {
     "@type": "PostalAddress", streetAddress: "425 2nd St STE 500",
@@ -447,5 +446,54 @@ test("public business address is consistent in Organization data and contact doc
     const body = path.endsWith(".html") ? visibleText(read(path)) : read(path);
     assert.ok(body.includes(expected.streetAddress), path);
     assert.ok(body.includes("San Francisco, CA 94107"), path);
+  }
+});
+
+test("published documentation uses organization skills links and stable download URLs", () => {
+  const manifest = readJson(".well-known/mcp.json");
+  assert.equal(manifest.skills, "https://github.com/gethamster/horde/tree/main/skills");
+  assert.equal(manifest.releases, "https://horde.sh/releases/latest/manifest.json");
+  for (const page of pages) {
+    for (const path of [page.file, page.markdown]) assert.ok(!read(path).includes("asomervell"), path);
+  }
+  for (const path of ["llms.txt", "llms-full.txt", ".well-known/mcp.json"]) {
+    assert.ok(!read(path).includes("asomervell"), path);
+    assert.ok(read(path).includes("gethamster/horde"), path);
+  }
+  assert.ok(read("llms.txt").includes("npx skills add gethamster/horde"));
+});
+
+test("the main repository owns exactly the three discoverable skills", () => {
+  const skillsRoot = join(root, "..", "skills");
+  const names = readdirSync(skillsRoot).filter((name) => existsSync(join(skillsRoot, name, "SKILL.md"))).sort();
+  assert.deepEqual(names, ["horde", "horde-templates", "horde-worker"]);
+  const grouping = JSON.parse(readFileSync(join(root, "..", "skills.sh.json"), "utf8"));
+  assert.deepEqual(grouping.groupings.flatMap((group) => group.skills).sort(), names);
+  const readme = readFileSync(join(root, "..", "README.md"), "utf8");
+  assert.ok(readme.includes("npx skills add gethamster/horde"));
+  assert.equal(readme.split("\n").find((line) => line.startsWith("[![skills.sh]")),
+    "[![skills.sh](https://skills.sh/b/gethamster/horde)](https://skills.sh/gethamster/horde)");
+  assert.ok(!existsSync(join(root, "..", "scripts", "sync_skills.sh")));
+});
+
+
+test("README documentation entry links to a complete guide index", () => {
+  const repository = join(root, "..");
+  const readme = readFileSync(join(repository, "README.md"), "utf8");
+  assert.ok(readme.includes("[Documentation](docs/README.md)"));
+  const docs = join(repository, "docs");
+  const index = readFileSync(join(docs, "README.md"), "utf8");
+  for (const name of readdirSync(docs).filter((name) => name.endsWith(".md") && name !== "README.md")) {
+    assert.ok(index.includes(`](${name})`), `missing guide: ${name}`);
+  }
+});
+
+test("every page includes the company copyright and Hamster footer links", () => {
+  for (const file of [...pages.map((page) => page.file), "404.html"]) {
+    const footers = [...read(file).matchAll(/<footer\b[^>]*>([\s\S]*?)<\/footer>/g)];
+    assert.equal(footers.length, 1, file);
+    assert.match(visibleText(footers[0][1]), /© Wheel Go Fast, Inc\./);
+    assert.match(footers[0][1], /<a href="https:\/\/x\.com\/HamsterResearch">Hamster Labs on X<\/a>/);
+    assert.match(footers[0][1], /<a href="https:\/\/gethamster\.com">Get Hamster<\/a>/);
   }
 });
