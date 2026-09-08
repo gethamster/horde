@@ -124,7 +124,7 @@ async fn tailscale_cli_is_read_only_and_bounded() {
     let program = script(
         temp.path(),
         &format!(
-            "test \"$1\" = status && test \"$2\" = --json && test \"$#\" = 2 || exit 9\ncat <<'STATUS'\n{}\nSTATUS",
+            "test \"$1\" = status && test \"$2\" = --json && test \"$#\" = 2 || exit 9\nif [ \"$(printenv TERM)\" != dumb ]; then\n  echo 'The Tailscale GUI failed to start: (Tailscale.CLIError error 3.)'\n  exit 0\nfi\ncat <<'STATUS'\n{}\nSTATUS",
             status()
         ),
     );

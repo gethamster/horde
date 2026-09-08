@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix macOS Tailscale discovery during `horde network setup`. The Tailscale app
+  now runs in CLI mode when Horde checks its status, avoiding a malformed JSON
+  error caused by the app trying to launch its GUI.
+
 - Add company copyright, Get Hamster, and Hamster Labs on X links to every website footer.
 
 - Install all three agent skills directly from `gethamster/horde`, and find the guides through the README’s Documentation link and new documentation index.

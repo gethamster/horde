@@ -330,6 +330,9 @@ pub async fn discover(config: &NetworkConfig) -> Result<Discovery> {
             command
                 .args(["status", "--json"])
                 .env_clear()
+                // The macOS app uses terminal environment markers to select CLI mode.
+                // Set one explicitly because discovery also runs without a terminal.
+                .env("TERM", "dumb")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
