@@ -422,9 +422,14 @@ pub async fn probe(config: &ExecutorConfig) -> Result<Value> {
         .context("provider model catalog must contain a data array")?;
     let model = if requested == "auto" {
         if all.len() != 1 {
+            let ids: Vec<_> = all
+                .iter()
+                .map(|entry| entry["id"].as_str().unwrap_or("<missing id>"))
+                .collect();
             bail!(
-                "model=auto requires exactly one catalog model; found {}",
-                all.len()
+                "model=auto requires exactly one catalog model; found {}: {}. Configure an explicit model ID",
+                all.len(),
+                serde_json::to_string(&ids)?
             );
         }
         all[0]["id"]

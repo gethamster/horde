@@ -85,7 +85,7 @@ enum Commands {
         probe_tuara: bool,
         #[arg(long, conflicts_with = "probe_tuara")]
         probe: bool,
-        #[arg(long, requires = "probe")]
+        #[arg(long)]
         provider: Option<String>,
     },
     /// Print a starter TOML configuration.
@@ -481,7 +481,28 @@ async fn main() -> Result<()> {
                 );
                 horde::executor::probe_tools(&config).await?
             } else {
-                json!({"settings":settings,"data_dir":root,"daemon":root.join("daemon.sock").exists()})
+                let mut resolved_models = serde_json::Map::new();
+                if let Some(name) = &provider {
+                    let config = settings.provider(name).context("provider missing")?;
+                    anyhow::ensure!(
+                        config.kind == "tuara",
+                        "catalog resolution requires a native tuara provider"
+                    );
+                    resolved_models.insert(name.clone(), horde::executor::probe(&config).await?);
+                } else {
+                    for (name, provider) in &settings.providers {
+                        if provider.kind == "tuara" && provider.model.as_deref() == Some("auto") {
+                            resolved_models.insert(
+                                name.clone(),
+                                horde::executor::probe(
+                                    &settings.provider(name).context("provider missing")?,
+                                )
+                                .await?,
+                            );
+                        }
+                    }
+                }
+                json!({"settings":settings,"resolved_models":resolved_models,"data_dir":root,"daemon":root.join("daemon.sock").exists()})
             }
         }
         Commands::Update {
