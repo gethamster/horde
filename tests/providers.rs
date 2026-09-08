@@ -174,6 +174,13 @@ async fn native_result_after_as(
     turns: Vec<(u16, String)>,
     planner: bool,
 ) -> (Result<Value, String>, Vec<Value>, Vec<Value>) {
+    native_result_after_configured(turns, planner, |_| {}).await
+}
+async fn native_result_after_configured(
+    turns: Vec<(u16, String)>,
+    planner: bool,
+    configure: impl FnOnce(&mut Settings),
+) -> (Result<Value, String>, Vec<Value>, Vec<Value>) {
     let mut responses = vec![(
         200,
         json!({"data":[{"id":"z-ai/glm-5.3-flash"}]}).to_string(),
@@ -182,7 +189,7 @@ async fn native_result_after_as(
     let (url, requests, handle) = server(responses);
     let dir = tempfile::tempdir().unwrap();
     let db = Store::open(&dir.path().join("data")).unwrap();
-    let settings = Settings {
+    let mut settings = Settings {
         providers: BTreeMap::from([("default".into(), provider(url))]),
         executors: BTreeMap::from([
             ("worker".into(), Default::default()),
@@ -190,6 +197,7 @@ async fn native_result_after_as(
         ]),
         ..Default::default()
     };
+    configure(&mut settings);
     let plan = template::compile(
         "simulated",
         &template::load_templates(Path::new("absent")).unwrap(),
@@ -532,4 +540,162 @@ async fn native_planner_corrects_a_nested_step_after_receiving_its_field_error()
     );
     assert_eq!(sent[1]["tools"], sent[2]["tools"]);
     assert_eq!(sent[2]["tools"], sent[3]["tools"]);
+}
+
+#[tokio::test]
+async fn auto_model_requires_one_named_catalog_entry() {
+    for (data, expected) in [
+        (
+            json!([{ "id":"/models/large-pack" }]),
+            Some("/models/large-pack"),
+        ),
+        (json!([]), None),
+        (json!([{ "id":"a" }, { "id":"b" }]), None),
+        (json!([{ "id":"" }]), None),
+    ] {
+        let (url, _, handle) = server(vec![(200, json!({"data":data}).to_string())]);
+        let mut cfg = config(url);
+        cfg.model = Some("auto".into());
+        let result = horde::executor::probe(&cfg).await;
+        handle.join().unwrap();
+        if let Some(model) = expected {
+            assert_eq!(result.unwrap()["model"], model);
+        } else {
+            assert!(result.is_err());
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_options_are_merged_and_auto_model_is_resolved_before_dispatch() {
+    let (result, sent, _) = native_result_after_configured(
+        vec![turn(json!(
+            json!({"result":"done","accepted":true}).to_string()
+        ))],
+        false,
+        |settings| {
+            let provider = settings.providers.get_mut("default").unwrap();
+            provider.model = Some("auto".into());
+            provider.extra_body = BTreeMap::from([
+                ("temperature".into(), json!(0.2)),
+                ("top_p".into(), json!(0.9)),
+                ("repetition_penalty".into(), json!(1.1)),
+                (
+                    "chat_template_kwargs".into(),
+                    json!({"enable_thinking":false}),
+                ),
+            ]);
+            settings.executors.get_mut("worker").unwrap().max_tokens = Some(37);
+        },
+    )
+    .await;
+    assert!(result.is_ok());
+    assert_eq!(sent[1]["model"], "z-ai/glm-5.3-flash");
+    assert_eq!(sent[1]["max_tokens"], 37);
+    assert_eq!(sent[1]["temperature"], json!(0.2));
+    assert_eq!(sent[1]["chat_template_kwargs"]["enable_thinking"], false);
+    assert!(sent[1].get("extra_body").is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_repeated_tool_call_gets_a_completion_reminder_then_stops() {
+    let response = (200,json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call","type":"function","function":{"name":"pending_questions","arguments":"{}"}}]}}]}).to_string());
+    let (result, sent, events) = native_result_after(vec![response; 4]).await;
+    assert!(result.unwrap_err().contains("task held for inspection"));
+    assert_eq!(events.len(), 3, "fourth identical call must not execute");
+    assert!(
+        sent[4]["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("final JSON")
+    );
+    assert!(
+        sent[1]["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Completion:")
+    );
+}
+
+fn streamed(values: Vec<Value>, done: bool) -> (u16, String) {
+    let mut body = values
+        .into_iter()
+        .map(|v| format!("data: {v}\n\n"))
+        .collect::<String>();
+    if done {
+        body.push_str("data: [DONE]\n\n");
+    }
+    (200, body)
+}
+#[tokio::test(flavor = "current_thread")]
+async fn native_stream_executes_completed_calls_and_keeps_provider_telemetry() {
+    let (result, sent, events) = native_result_after_configured(vec![
+        streamed(vec![
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call1","function":{"name":"pending_","arguments":"{"}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"questions","arguments":"}"}}]},"finish_reason":"tool_calls"}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":10,"prefix_tokens_reused":15},"speculation":{"draft_tokens":12,"accepted_tokens":8}}),
+        ], true),
+        streamed(vec![
+            json!({"choices":[{"delta":{"content":json!({"result":"done","accepted":true}).to_string()},"finish_reason":"stop"}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+        ], true),
+    ], false, |s| s.providers.get_mut("default").unwrap().stream = true).await;
+    let result = result.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["result_summary"], "[]");
+    assert_eq!(events[0]["result_truncated"], false);
+    assert_eq!(sent[1]["stream"], true);
+    assert_eq!(
+        sent[2]["messages"][2]["tool_calls"][0]["function"]["name"],
+        "pending_questions"
+    );
+    assert_eq!(
+        result["usage"]["requests"][0]["provider"]["prefix_tokens_reused"],
+        15
+    );
+    assert_eq!(
+        result["usage"]["requests"][0]["provider_extras"]["speculation"]["accepted_tokens"],
+        8
+    );
+    assert_eq!(horde::metrics::totals(&result["usage"]).0, Some(65));
+}
+#[tokio::test(flavor = "current_thread")]
+async fn interrupted_native_stream_does_not_execute_a_tool() {
+    let (result, _, events) = native_result_after_configured(vec![streamed(vec![
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call1","function":{"name":"pending_questions","arguments":"{}"}}]}}]})
+    ], false)], false, |s| s.providers.get_mut("default").unwrap().stream = true).await;
+    assert!(result.is_err());
+    assert!(events.is_empty());
+}
+#[test]
+fn doctor_probes_a_named_provider_with_auto_model() {
+    let (url, requests, handle) = server(vec![
+        (200, json!({"data":[{"id":"/models/local"}]}).to_string()),
+        streamed(
+            vec![
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"ping1","function":{"name":"ping","arguments":"{\"value\":\"ok\"}"}}]}}]}),
+            ],
+            true,
+        ),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".horde")).unwrap();
+    std::fs::write(dir.path().join(".horde.toml"), format!("[providers.local]\nkind = \"tuara\"\nauth_mode = \"api\"\nbase_url = {url:?}\napi_key_env = \"PATH\"\nmodel = \"auto\"\n")).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_horde"))
+        .args(["doctor", "--probe", "--provider", "local", "--repo"])
+        .arg(dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["streaming_tool_calls_verified"], true);
+    assert_eq!(result["model"], "/models/local");
+    handle.join().unwrap();
+    assert_eq!(requests.lock().unwrap()[1]["stream"], true);
 }

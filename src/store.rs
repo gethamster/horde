@@ -442,6 +442,10 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             .next()
             .context("step")?;
         let oid = row["task"].as_str().context("task")?;
+        let loop_detected = result
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.is::<crate::native_protocol::RepeatedToolCall>());
         let success = result.is_ok();
         let value = match result {
             Ok(v) => v,
@@ -488,6 +492,10 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             if answered>0 {
                 if !success && state!="cancelled" {self.conn.execute("UPDATE steps SET state='pending' WHERE id=?",[step])?;}
                 self.conn.execute("UPDATE question_context SET purpose='input_consumed' WHERE worker=? AND purpose='input_answered'",[worker])?;
+            }
+            if loop_detected && state == "failed" {
+                self.conn.execute("UPDATE tasks SET status='blocked' WHERE id=? AND status='running'", [oid])?;
+                self.event(oid, "task.blocked", json!({"reason":"repeated_tool_call","step":step,"attempt":attempt}))?;
             }
             // Failed or uncertain workers retain claims until explicit reconciliation.
             if success {

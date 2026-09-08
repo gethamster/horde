@@ -6,6 +6,7 @@ pub mod executor;
 pub mod git;
 pub mod metrics;
 pub mod native;
+mod native_protocol;
 pub mod network;
 pub mod protocol;
 pub mod provisioning;
