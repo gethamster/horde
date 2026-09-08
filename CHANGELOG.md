@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.5.1
+
+- Recover local schema-2 databases from before the Horde rename, preserving a
+  full backup, task identities, records, and ownership. Unfinished work is held
+  for inspection. Databases with federation records require manual migration.
+- Add installer `--repair` to run the verified new updater when the installed
+  updater fails before it can download its own fix.
+- Accept Claude responses that include prose followed by fenced final JSON.
+
 ## 0.5.0
 
 - Load pinned skills into workers and carry their files to child tasks. The

@@ -37,6 +37,31 @@ Versioned executables and the `current` link live under
 `~/.local/share/horde-install`. Runtime databases and workspaces remain in the
 configured data directory. Service uninstall retains those files and credentials.
 
+## Recovering an older database
+
+Some older installations stored workflow steps in `tasks` and their objectives
+in `outcomes`, while reporting schema version 2. Their updater can fail with
+`no such column: objective` before it downloads the fix. For an existing managed
+installation, stop the daemon and run the signed installer's repair mode:
+
+```sh
+horde stop
+curl -fsSL https://horde.sh/install | sh -s -- --repair
+horde start
+```
+
+Repair verifies the release and runs the downloaded binary's updater, preserving
+the normal update lock and restart checks. The migration saves
+`pre-horde-rename-<id>.sqlite3` in the data directory before changing tables.
+It preserves stored records and holds unfinished work as blocked for inspection;
+it does not automatically replay work pinned to older provider contracts.
+
+Automatic migration requires the original schema 2 outcome trees. Databases with
+incomplete trees, federation records, or conflicting populated replacement tables
+are refused without changing their records. Keep the database for manual recovery
+if repair reports one of these conditions. Package-manager and source installations
+must use their owning installer.
+
 ## Release operator setup
 
 Configure GitHub Actions with:

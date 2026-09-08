@@ -13,6 +13,9 @@ use std::{
 
 pub const SCHEMA_VERSION: u32 = 3;
 
+#[path = "legacy_store.rs"]
+mod legacy_store;
+
 pub fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -75,6 +78,7 @@ impl Store {
         if version > i64::from(SCHEMA_VERSION) {
             bail!("database schema {version} is newer than this runtime supports");
         }
+        legacy_store::migrate(&conn, root)?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
 CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, objective TEXT NOT NULL, repo TEXT NOT NULL, status TEXT NOT NULL, settings TEXT NOT NULL, plan TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS revisions(task TEXT NOT NULL REFERENCES tasks(id), revision INTEGER NOT NULL, plan TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(task,revision));
