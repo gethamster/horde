@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS remote_context(task TEXT PRIMARY KEY,packet TEXT NOT 
 CREATE TABLE IF NOT EXISTS child_acceptance(parent TEXT NOT NULL,child TEXT NOT NULL,version INTEGER NOT NULL,evidence TEXT NOT NULL,PRIMARY KEY(parent,child));
 CREATE TABLE IF NOT EXISTS remote_links(task TEXT PRIMARY KEY,peer TEXT NOT NULL,remote_id TEXT,state TEXT NOT NULL,request TEXT NOT NULL,base TEXT);
 CREATE TABLE IF NOT EXISTS remote_origins(task TEXT PRIMARY KEY,owner_peer TEXT NOT NULL,owner_task TEXT NOT NULL,UNIQUE(owner_peer,owner_task));
-PRAGMA user_version=2;
 COMMIT;")?;
     // Upgrade existing tasks without rewriting their original objective.
     for row in {
@@ -227,18 +226,29 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
         serde_json::from_str(parent["settings"].as_str().context("settings")?)?;
     let repo = std::path::Path::new(parent["repo"].as_str().context("repo")?);
     let templates = crate::template::load_templates(&crate::branding::templates(repo))?;
-    let plan = crate::template::compile(
+    let mut plan = crate::template::compile(
         args["template"]
             .as_str()
             .unwrap_or(&settings.default_template),
         &templates,
         std::collections::BTreeMap::from([("task".into(), objective.into())]),
     )?;
+    let skills = crate::skills::select(db, oid, args.get("skills"))?;
+    if args["skills"].is_array() {
+        for step in &mut plan.steps {
+            if step.kind == "agent" {
+                step.skills.extend(skills.keys().cloned());
+                step.skills.sort();
+                step.skills.dedup();
+            }
+        }
+    }
     db.atomic(|| {
   let count:i64=db.conn.query_row("SELECT COUNT(*)-1 FROM task_tree WHERE root=?",[r],|r|r.get(0))?;
   ensure!(count<limits.children as i64 && t["depth"].as_u64().unwrap_or(0)<limits.depth as u64,"delegation tree limit reached");
   settings.secret_bundles.clear();
-  let child=db.submit(objective,repo,&settings,&plan)?;
+  settings.skills.clear();
+  let child=db.submit_pinned(objective,repo,&settings,&plan,&skills)?;
   if args["peer"].is_null(){
    let target=db.root.join("delegated-repositories").join(&child);std::fs::create_dir_all(target.parent().context("repository directory")?)?;
    let base=if let Some(snapshot)=args.get("_snapshot"){

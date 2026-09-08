@@ -70,7 +70,7 @@ impl Store {
         let conn = Connection::open(root.join("state.sqlite3"))?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version > 2 {
+        if version > 3 {
             bail!("database schema {version} is newer than this runtime supports");
         }
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
@@ -102,6 +102,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
 ")?;
         crate::delegation::migrate(&conn)?;
         crate::management::migrate(&conn)?;
+        crate::skills::migrate(&conn)?;
         Ok(Self {
             conn,
             root: root.to_owned(),
@@ -154,6 +155,19 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         settings: &Settings,
         plan: &Plan,
     ) -> Result<String> {
+        let skills = crate::skills::capture(repo, &settings.skills)?;
+        self.submit_pinned(objective, repo, settings, plan, &skills)
+    }
+    pub(crate) fn submit_pinned(
+        &self,
+        objective: &str,
+        repo: &Path,
+        settings: &Settings,
+        plan: &Plan,
+        skills: &crate::skills::Packet,
+    ) -> Result<String> {
+        crate::skills::validate(skills)?;
+        crate::skills::validate_steps(skills, &plan.steps)?;
         if objective.trim().is_empty() {
             bail!("task must not be empty");
         }
@@ -196,6 +210,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
                 )?;
             }
             crate::delegation::initialize(self, &oid, objective, settings)?;
+            crate::skills::bind(self, &oid, skills)?;
             self.event(&oid, "task.submitted", json!({"objective":objective}))?;
             Ok(())
         })?;

@@ -117,9 +117,24 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
         format!("[bundles]\napp = {:?}\n", source),
     )
     .unwrap();
+    let skill_source = dir.join("root-only-skill");
+    std::fs::create_dir_all(skill_source.join("references")).unwrap();
+    std::fs::write(
+        skill_source.join("SKILL.md"),
+        "Use the distributed report skill. Read references/format.md.",
+    )
+    .unwrap();
+    std::fs::write(
+        skill_source.join("references/format.md"),
+        "Report CSV without email addresses.",
+    )
+    .unwrap();
     std::fs::write(
         rootuser.join("horde/config.toml"),
-        "secret_bundles = ['app']\n",
+        format!(
+            "secret_bundles = ['app']\n[skills]\nreport = {:?}\n",
+            skill_source
+        ),
     )
     .unwrap();
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -203,7 +218,8 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
         .unwrap()
         .to_owned();
     cli(&root,&rootuser,&["call","update_context",&json!({"task":oid,"content":"Never export email addresses","provenance":"original caller statement 7"}).to_string()],None);
-    let request=json!({"task":oid,"id":"remote-once","objective":"Run the app and verify it","template":"app","peer":"worker"}).to_string();
+    std::fs::remove_dir_all(&skill_source).unwrap();
+    let request=json!({"task":oid,"id":"remote-once","objective":"Run the app and verify it","template":"app","peer":"worker","skills":["report"]}).to_string();
     let child = cli(&root, &rootuser, &["call", "delegate_task", &request], None)["id"]
         .as_str()
         .unwrap()
@@ -230,6 +246,17 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
         .unwrap()
         .to_owned();
     let remotedb = Store::open(&remote).unwrap();
+    assert_eq!(
+        horde::skills::catalog(&rootdb, &child).unwrap(),
+        horde::skills::catalog(&remotedb, &remoteid).unwrap()
+    );
+    assert!(
+        horde::skills::read(&remotedb, &remoteid, &json!({"name":"report"})).unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("distributed report skill")
+    );
+
     let input = rootdb
         .rows(
             "SELECT hash FROM artifact_links WHERE task=? AND name='federation-input'",
@@ -271,6 +298,18 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
         .unwrap()
         .to_owned();
     let worker = remotedb.register(&remoteid, Some(&step)).unwrap();
+    let resource = horde::protocol::dispatch(
+        &remotedb,
+        "read_skill",
+        json!({"name":"report","path":"references/format.md"}),
+        worker["token"].as_str(),
+    )
+    .unwrap();
+    assert_eq!(resource["content"], "Report CSV without email addresses.");
+    assert!(
+        Path::new(resource["base_directory"].as_str().unwrap())
+            .starts_with(remote.canonicalize().unwrap())
+    );
 
     remotedb
         .conn

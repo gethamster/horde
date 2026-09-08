@@ -364,14 +364,20 @@ impl Service {
                 settings.concurrency = 1;
                 settings.limits.workers = 1;
                 settings.secret_bundles.clear();
+                settings.skills.clear();
+                let skills: crate::skills::Packet = serde_json::from_value(
+                    args.get("skills").cloned().unwrap_or_else(|| json!({})),
+                )?;
+                crate::skills::validate(&skills)?;
                 let plan: crate::template::Plan = serde_json::from_value(args["plan"].clone())?;
                 crate::template::validate(&plan.steps)?;
                 db.atomic(|| {
-                    let oid = db.submit(
+                    let oid = db.submit_pinned(
                         args["objective"].as_str().context("objective")?,
                         &repo,
                         &settings,
                         &plan,
+                        &skills,
                     )?;
                     db.conn.execute(
                         "INSERT INTO remote_origins VALUES(?,?,?)",
@@ -872,6 +878,7 @@ pub fn revise_child(db: &Store, oid: &str, steps: &Value) -> Result<Option<Value
                 steps.clone(),
             )?);
         crate::template::validate(&plan.steps)?;
+        crate::skills::validate_steps(&crate::skills::packet(db, oid)?, &plan.steps)?;
         let result = call_sync(
             config(db)?,
             link["peer"].as_str().context("peer")?.into(),
@@ -952,7 +959,7 @@ fn prepared_packet(db: &Store, oid: &str) -> Result<Value> {
     } else {
         snapshot(&source)?
     };
-    let packet = json!({"task":oid,"objective":o["objective"],"snapshot":snapshot,"context":crate::delegation::mandatory(db,oid)?,"settings":serde_json::from_str::<Value>(o["settings"].as_str().context("settings")?)?,"plan":serde_json::from_str::<Value>(o["plan"].as_str().context("plan")?)?});
+    let packet = json!({"task":oid,"objective":o["objective"],"snapshot":snapshot,"context":crate::delegation::mandatory(db,oid)?,"settings":serde_json::from_str::<Value>(o["settings"].as_str().context("settings")?)?,"plan":serde_json::from_str::<Value>(o["plan"].as_str().context("plan")?)?,"skills":crate::skills::packet(db,oid)?});
     db.artifact(
         oid,
         None,

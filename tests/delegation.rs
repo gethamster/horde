@@ -399,7 +399,7 @@ fn upgrading_existing_tasks_preserves_intent_and_state() {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
 }
 

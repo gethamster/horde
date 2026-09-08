@@ -53,6 +53,8 @@ Settings merge in this order:
 
 The merged settings are pinned to the task. Later file changes affect new tasks.
 
+Configure skill directories under `[skills]` and select their names with a step’s `skills` field. Horde loads the selected instructions into the worker prompt, pins referenced files and scripts, and distributes those bundles to child tasks. See [runtime skills](docs/runtime-skills.md) for configuration, worker tools, and remote delivery.
+
 ```toml
 concurrency = 4
 autonomy = true
