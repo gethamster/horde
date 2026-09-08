@@ -226,6 +226,10 @@ describe("function calling compatibility", () => {
     }
   });
 
+  test("the catalog does not advertise an unpublished envelope schema", () => {
+    assert.equal(catalog().$schema, undefined);
+  });
+
   test("the catalog names its transport", () => {
     const { transport } = catalog();
     assert.equal(transport.protocol, "mcp");

@@ -1,5 +1,4 @@
 {
-  "$schema": "https://horde.sh/api/v1/tools.schema.json",
   "count": 59,
   "product": "Horde",
   "scopes": {

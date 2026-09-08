@@ -20,7 +20,6 @@ fn catalog() -> Value {
         })
         .collect();
     json!({
-        "$schema": "https://horde.sh/api/v1/tools.schema.json",
         "specVersion": "1.0",
         "product": "Horde",
         "transport": {
