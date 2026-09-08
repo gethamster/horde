@@ -487,3 +487,13 @@ test("README documentation entry links to a complete guide index", () => {
     assert.ok(index.includes(`](${name})`), `missing guide: ${name}`);
   }
 });
+
+test("every page includes the company copyright and Hamster footer links", () => {
+  for (const file of [...pages.map((page) => page.file), "404.html"]) {
+    const footers = [...read(file).matchAll(/<footer\b[^>]*>([\s\S]*?)<\/footer>/g)];
+    assert.equal(footers.length, 1, file);
+    assert.match(visibleText(footers[0][1]), /© Wheel Go Fast, Inc\./);
+    assert.match(footers[0][1], /<a href="https:\/\/x\.com\/HamsterResearch">Hamster Labs on X<\/a>/);
+    assert.match(footers[0][1], /<a href="https:\/\/gethamster\.com">Get Hamster<\/a>/);
+  }
+});

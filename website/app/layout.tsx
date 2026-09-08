@@ -125,7 +125,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
         />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        <footer className="site-footer">
+          <span>© Wheel Go Fast, Inc.</span>
+          <a href="https://gethamster.com">Get Hamster</a>
+          <a href="https://x.com/HamsterResearch">Hamster Labs on X</a>
+        </footer>
+      </body>
     </html>
   );
 }
