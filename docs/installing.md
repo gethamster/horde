@@ -77,10 +77,15 @@ Configure GitHub Actions with:
 
 Keep private signing material out of the repository. The workflow verifies that
 the signing key matches the key embedded in binaries, and that the pushed `v*`
-tag matches the package version. It runs formatting, lint, and tests on each
-platform before building, publishes digest-addressed images, then signs and
-publishes the manifest and installer. Tags containing a prerelease suffix are
-marked prerelease; automatic updates use the latest stable release.
+tag matches the package version. Formatting, platform lint and test jobs, and the
+four binary builds run concurrently. Publication waits for every check and build
+to pass, then publishes digest-addressed images, the signed manifest, and the
+installer. Tags containing a prerelease suffix are marked prerelease; automatic
+updates use the latest stable release.
+
+CI runs on pull requests and pushes to `main`, avoiding duplicate push runs for
+PR branches. New commits cancel superseded CI runs; release runs are not cancelled.
+Only `main` writes dependency caches, which PR and release jobs can restore.
 
 No release is published just by building this repository. Source builds made
 without `HORDE_RELEASE_PUBLIC_KEY` report that they lack an official update
