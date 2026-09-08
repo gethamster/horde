@@ -191,7 +191,7 @@ ${pages
 - [Source code](https://github.com/gethamster/horde): public Apache-2.0 repository.
 - [Release manifest](https://horde.sh/releases/latest/manifest.json): latest version, artifact URLs, and checksums.
 - Issues: https://github.com/gethamster/horde/issues
-- Contact: andrew@somervell.com
+- Contact: andrew@tryhamster.com
 
 ## Optional
 
@@ -273,7 +273,7 @@ json(".well-known/mcp.json", {
     worker: catalog.tools.filter((tool) => tool.scope === "worker").length,
   },
   contact: {
-    email: "andrew@somervell.com",
+    email: "andrew@tryhamster.com",
     issues: "https://github.com/gethamster/horde/issues",
   },
   tools: catalog.tools.map(({ name, description, scope }) => ({ name, description, scope })),

@@ -497,3 +497,23 @@ test("every page includes the company copyright and Hamster footer links", () =>
     assert.match(footers[0][1], /<a href="https:\/\/gethamster\.com">Get Hamster<\/a>/);
   }
 });
+
+
+test("contact email is consistent across visible pages and agent metadata", () => {
+  const email = "andrew@tryhamster.com";
+  assert.equal(readJson(".well-known/mcp.json").contact.email, email);
+  assert.match(read("contact.html"), /href="mailto:andrew@tryhamster\.com"/);
+  for (const page of pages) {
+    const graph = JSON.parse(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(read(page.file))[1])["@graph"];
+    const organization = graph.find((node) => node["@type"] === "Organization");
+    assert.equal(organization.email, email);
+    for (const contact of organization.contactPoint) assert.equal(contact.email, email);
+    assert.equal(graph.find((node) => node["@type"] === "Person").email, email);
+  }
+  for (const path of ["contact.md", "llms.txt", "llms-full.txt"]) {
+    assert.ok(read(path).includes(email), path);
+  }
+  for (const path of readdirSync(out, { recursive: true }).map(String).filter((path) => /\.(html|md|txt|json)$/.test(path))) {
+    assert.ok(!read(path).includes("andrew@somervell.com"), path);
+  }
+});
