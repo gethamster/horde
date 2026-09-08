@@ -471,7 +471,8 @@ test("the main repository owns exactly the three discoverable skills", () => {
   assert.deepEqual(grouping.groupings.flatMap((group) => group.skills).sort(), names);
   const readme = readFileSync(join(root, "..", "README.md"), "utf8");
   assert.ok(readme.includes("npx skills add gethamster/horde"));
-  assert.ok(readme.includes("https://skills.sh/gethamster/horde"));
+  assert.equal(readme.split("\n").find((line) => line.startsWith("[![skills.sh]")),
+    "[![skills.sh](https://skills.sh/b/gethamster/horde)](https://skills.sh/gethamster/horde)");
   assert.ok(!existsSync(join(root, "..", "scripts", "sync_skills.sh")));
 });
 
