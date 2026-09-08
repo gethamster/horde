@@ -29,7 +29,9 @@ pub fn verify(bytes: &[u8], signature: &[u8], key: &[u8]) -> Result<Manifest> {
     let manifest: Manifest = serde_json::from_slice(bytes)?;
     validate_version(&manifest.version)?;
     ensure!(
-        manifest.protocol == 1 && manifest.schema_min <= 2 && manifest.schema_max >= 2,
+        manifest.protocol == 1
+            && manifest.schema_min <= crate::store::SCHEMA_VERSION
+            && manifest.schema_max >= crate::store::SCHEMA_VERSION,
         "release is incompatible with this runtime's protocol or database"
     );
     Ok(manifest)
@@ -407,7 +409,7 @@ pub async fn run(
             return Ok(json!({"version":manifest.version,"updated":true}));
         }
         let schema: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if schema > 2 {
+        if schema > i64::from(crate::store::SCHEMA_VERSION) {
             phase(&db, "failed", &manifest.version)?;
             bail!(
                 "updated runtime failed health and migrated the database; automatic rollback is unsafe; retain the new binary and inspect the pre-update backup"

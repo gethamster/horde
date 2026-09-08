@@ -4,6 +4,14 @@
 
 ## 0.5.0
 
+- Load pinned skills into workers and carry their files to child tasks. The
+  additive database migration raises the schema to 3; release manifests support
+  updates from schema 2, and the updater rejects binaries that cannot read schema 3.
+- Preserve native provider conversation history, expose streaming progress, and
+  stop repeated tool calls that make no progress.
+- Replace the Claude writing-skill symlink with a regular-file entrypoint so
+  remote repository snapshots can include it.
+
 - Fix macOS Tailscale discovery during `horde network setup`. The Tailscale app
   now runs in CLI mode when Horde checks its status, avoiding a malformed JSON
   error caused by the app trying to launch its GUI.
