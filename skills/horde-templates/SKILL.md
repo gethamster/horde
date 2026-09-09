@@ -69,6 +69,7 @@ includes itself.
 | `needs` | `[]` | Dependency step ids |
 | `scope` | `[]` | Write scope; `["."]` is the whole repository |
 | `tools` | `[]` | Native tool allowlist for an agent step |
+| `skills` | `[]` | Names from the task’s pinned skill catalog to load into the step |
 | `artifacts` | `[]` | Expected artifact names |
 | `output_types` | `{}` | Named JSON outputs and their types, enforced at completion |
 | `command` | `[]` | argv for a `command` step |

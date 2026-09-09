@@ -6,6 +6,26 @@ A local Rust daemon for assigning software tasks to coding agents. Submit work t
 
 **Early release:** SQLite coordination, templates, worktrees, native Tuara execution, Codex/Claude adapters, bounded local/remote delegation, inherited context and app secrets, disposable process/Compose environments, and configured GitHub delivery are implemented. See [verification and limitations](docs/verification.md) for what has been exercised with real services versus fixtures.
 
+## Documentation
+
+These links open the guides in this repository. The [documentation index](docs/README.md)
+provides the same starting points.
+
+| Guide | What it covers |
+| --- | --- |
+| [Installation and releases](docs/installing.md) | Install and update Horde, verify signed downloads, and publish releases. |
+| [Native providers](docs/native-providers.md) | Configure local model discovery, role options, worker schemas, streaming, and bounded tool events. |
+| [Runtime skills](docs/runtime-skills.md) | Load pinned skill instructions and distribute their resources to local and remote workers. |
+| [Authoring templates](docs/templates.md) | Define workflows in TOML with inputs, dependencies, parallel steps, and outputs. |
+| [Delegation](docs/delegation.md) | Connect your own agent and delegate work through bounded task trees. |
+| [Application secrets and environments](docs/environments.md) | Share application configuration and run disposable process or Compose environments. |
+| [Runtime management](docs/runtime-management.md) | Configure execution hosts, concurrency, capacity, provisioning, and updates. |
+| [Runtime networking](docs/networking.md) | Connect machines directly or through Tailscale with authenticated enrollment. |
+| [Architecture](docs/architecture.md) | Understand scheduling, persistence, ownership, recovery, and the CLI/MCP interfaces. |
+| [Verification and limitations](docs/verification.md) | Review automated tests, live checks, and known boundaries. |
+| [Agent skills](skills/README.md) | Install the skills that teach an agent to operate Horde. |
+| [Contributing](CONTRIBUTING.md) | Run local checks and maintain the project. |
+
 ## Quick start
 
 Requires macOS or Linux, Git, and Rust (the repository pins its tested toolchain). Native search also uses `rg`. Real workers require a configured executor and its existing login or daemon-side API key. If Cargo is not on your shell path after installing Rust, run `source "$HOME/.cargo/env"`.
@@ -83,7 +103,27 @@ The key itself belongs in the **daemon** environment before starting it, or in a
 
 `kind`, `auth_mode`, `base_url`, and `api_key_env` belong to a provider and cannot be restated on a role, so no role can pair one provider's harness with another's key. Nothing is inherited between providers either: one that omits `base_url` or `api_key_env` while it needs one is rejected at load.
 
-The default provider asks Tuara for `qwen/qwen3.8-27b`. Every native invocation verifies its configured identifier against `/models`; `model = "auto"` resolves a catalog with exactly one model. Set `stream = true` on a provider to surface first-token and tool-intent events. `horde doctor --probe --provider local` checks the catalog and the same streaming parser used by the executor. See the [native provider contract](docs/native-providers.md) for stable history bytes, request options, loop detection, and telemetry.
+For a local OpenAI-compatible server, the default provider needs only:
+
+```toml
+[providers.default]
+base_url = "http://127.0.0.1:8122/v1"
+api_key_env = "LOCAL_MODEL_KEY"
+model = "auto"
+```
+
+Set `LOCAL_MODEL_KEY` in the daemon environment or its private credential file.
+`auto` selects the only model in `/models`; an ambiguous catalog produces an error
+listing its IDs. `horde doctor --provider default` prints the resolved model without
+requesting a completion. Add `--probe` to test streamed tool calls.
+
+Native providers accept `extra_body` request options. A role's `extra_body`
+overrides matching provider keys; nested objects are replaced as a whole.
+Set `stream = true` on the provider for first-token and tool-intent events.
+`horde events TASK_ID` includes redacted tool arguments and results, limited to
+512 bytes per field by default; the top-level `tool_event_bytes` setting controls
+the limit. See the [native provider contract](docs/native-providers.md) for examples,
+reserved fields, stable request history, and loop detection.
 
 For example, an API-backed Claude provider shared by two roles:
 
@@ -124,6 +164,9 @@ Configure a stdio MCP server with command `horde` and arguments `mcp`. For a cus
 ```
 
 The personal-agent bridge exposes submit, inspect, events, questions, cancellation, resumption, metrics, revisions, artifacts, knowledge, and coordination tools. Internal harness bridges receive a worker token and expose only worker-scoped operations. Native tools and external MCP tools use the same coordination handlers.
+Worker schemas omit runtime identity, step attribution, and verification fields.
+The runtime accepts matching identity fields, rejects mismatches, and discards a
+supplied `verified` flag with a warning; workers cannot certify their own evidence.
 
 For a script or independent harness, create a worker with `register_worker`, then register its separate worktree using `register_workspace` (`path`, `branch`, `base`). Set the returned token as `HORDE_WORKER_TOKEN` in its MCP bridge environment. Acquire claims before editing. Never share the personal-agent bridge with an untrusted worker.
 
@@ -205,6 +248,9 @@ Authenticate `gh` using its credential store first. The configured repository mu
 External operation intents and returned identities are durable. PR and merge retries inspect GitHub state first. An unexpected head, a closed PR, conflicts, or failed health checks remain failures with evidence.
 
 ## Recovery and operations
+
+For upgrades from an older database layout, see [database repair](docs/installing.md#recovering-an-older-database).
+The repair path preserves a backup and holds unfinished work for inspection.
 
 ```sh
 horde cancel TASK_ID

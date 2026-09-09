@@ -20,4 +20,16 @@ version, release an uncertain worker's claims, retry an un-reconciled external
 write, or turn missing provider usage into zero-cost usage. Match docs and examples
 to the actual supported contract.
 
+When a change affects configuration, tool arguments, or workflow behavior, update
+the matching guide and the references under `skills/`. Keep the guide tables in
+[README.md](README.md#documentation) and [docs/README.md](docs/README.md) aligned.
+Regenerate the published tool catalog when schemas change:
+
+```sh
+UPDATE_WEBSITE_SPEC=1 cargo test --test website_spec
+```
+
+See [release CI](docs/installing.md#release-operator-setup) for platform checks,
+build ordering, and cache policy.
+
 Contributions are licensed under Apache-2.0.

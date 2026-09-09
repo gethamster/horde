@@ -29,7 +29,8 @@ accident. See `references/operations.md`.
 
 ## The order of operations
 
-Do these in order. Skipping step 2 or 3 makes step 4 fail.
+Read the assignment before editing and claim the paths you need. Managed workers
+already have a registered worktree; external workers must register theirs.
 
 **1. Read your context first.**
 
@@ -45,8 +46,9 @@ not replace it. A constraint like "never export email addresses" applies to you
 even when your assignment is only "write the CSV writer". Page with the returned
 `next` cursor.
 
-**2. Register your workspace.** The runtime allocates your worktree; you declare it
-before editing.
+**2. Use your assigned workspace.** Horde allocates and registers a managed
+worker's worktree before launch. Do not register it again. An external agent or
+script attaching to a task must register its own separate worktree before editing:
 
 ```
 register_workspace { "path": "/abs/path/to/worktree", "branch": "...", "base": "..." }
@@ -135,10 +137,20 @@ put_artifact  { "name": "plan", "content": "...", "inputs": { "spec": "sha256:..
 reuse_artifact { "name": "plan", "inputs": { "spec": "sha256:..." } }
 ```
 
-You may report evidence. You may not certify it: setting `verified: true` is
-rejected for workers, because verification is the runtime's decision. Check
+You may report evidence but cannot certify it. Worker schemas omit `verified`;
+if supplied anyway, Horde drops it with a `tool.argument_dropped` warning and
+stores the evidence as unverified. Step attribution comes from your identity. Check
 `reuse_artifact` before regenerating expensive output with an identical input
 fingerprint.
+
+## Using assigned skills
+
+For managed workers, selected `SKILL.md` instructions are already in the initial
+prompt. Use
+`list_skills {}` to inspect the pinned catalog and
+`read_skill { "name": "report", "path": "references/style.md" }` to read a
+resource. Follow `next_offset` when a read is paged. Bundled scripts require an
+explicit command and remain subject to the task's existing permissions.
 
 ## Delegating
 
@@ -164,7 +176,10 @@ finish until your children have current verified acceptance.
 
 A planner-role worker can also reshape its own workflow with `propose_steps`; the
 runtime validates the graph and inserts it before the planning task's pending
-successors.
+successors. Proposed work waits for the planner to finish; do not wait for its
+implementation or transfer claims to yourself as a completion signal. Return the
+assigned step's result in the format requested by the executor. Worker status and
+mail acknowledgements do not complete the step.
 
 ## Rules
 

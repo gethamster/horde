@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Omit runtime identity and verification fields from worker tool schemas. Matching
+  identity arguments remain valid; supplied verification flags are dropped with a
+  warning, while identity mismatches still fail.
+- Allow executor-role `extra_body` options to override native provider options,
+  with reserved request fields rejected at configuration load.
+- Resolve single-model catalogs with `model = "auto"`, list IDs when the catalog
+  is ambiguous, and show the resolved model in `horde doctor`. Native providers
+  can use only `base_url`, `api_key_env`, and `model = "auto"`.
+- Include redacted tool arguments and results in events, with a configurable
+  512-byte default limit per field and explicit truncation flags.
+
 ## 0.5.1
 
 - Recover local schema-2 databases from before the Horde rename, preserving a

@@ -8,8 +8,10 @@ Targets are macOS ARM64/x86-64 and Linux ARM64/x86-64 (static musl binaries).
 curl -fsSL https://horde.sh/install -o install.sh
 sh install.sh
 # For automation, choose explicitly:
-sh install.sh --version 0.3.0 --no-service
+sh install.sh --version VERSION --no-service
 ```
+
+Replace `VERSION` with a published release version.
 
 The installer downloaded from a release verifies the signed release before it
 installs anything. The canonical template is
@@ -110,13 +112,14 @@ embeds the PEM in its versioned installer and verifies that the repository publi
 variable matches that same committed key. Existing binaries verify updates with
 their embedded key; they never adopt a new key merely because a website serves it.
 
-After merging the release changes, publish the version in `Cargo.toml`:
+After merging the release changes, replace `VERSION` below with the version in
+`Cargo.toml`:
 
 ```sh
 git switch main
 git pull --ff-only
-git tag v0.3.0
-git push origin v0.3.0
+git tag vVERSION
+git push origin vVERSION
 ```
 
 Wait for the source repository’s Release workflow's four platform builds, container publication,

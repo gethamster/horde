@@ -10,7 +10,14 @@ Process tests launch real daemon, CLI, and MCP processes. They exercise client d
 
 Git tests perform actual clean merges, an actual conflict followed by worker repair, and independent edits that merge but fail a combined validation. Native tests exercise claimed writes, unified patches, symlink rejection, and out-of-scope integration holds.
 
-Provider fixtures check exact model identity, fragmented SSE tool-call assembly, a native model/tool/result loop, preserved usage, unavailable models, provider errors, and command timeout cleanup. A GitHub CLI fixture simulates losing the PR creation response; after daemon restart, delivery finds the existing PR, watches checks, merges the verified head once, and observes deployment.
+Provider fixtures check exact and single-model `auto` resolution, ambiguous catalog
+errors, doctor catalog reads, provider/role request options, fragmented SSE tool
+calls, stable request history, usage, loop detection, and command timeout cleanup.
+Worker tests cover schemas without runtime-owned arguments, matching identity
+fields, dropped verification flags, and bounded redacted argument/result events.
+A GitHub CLI fixture simulates losing the PR creation response; after daemon restart,
+delivery finds the existing PR, watches checks, merges the verified head once, and
+observes deployment.
 
 `cargo fmt --all --check` and `cargo clippy --locked --all-targets -- -D warnings` are required checks.
 
@@ -115,6 +122,16 @@ and mocked remote installation that preserves bootstrap stdin. No test installs
 Tailscale or changes a live tailnet. Live SSH pairing and boot-service setup remain
 opt-in manual acceptance checks.
 
+## Pinned skill checks
+
+Tests load selected skill instructions once per attempt, read pinned resources,
+and preserve the original bundle through restart and source-directory changes.
+Child-task tests cover catalog narrowing and inheritance. Separate runtimes exchange
+bundles over loopback mTLS after the sender's source directory is removed. Corrupt
+hashes, traversal paths, symlinks, and modified materialized files are rejected.
+These checks establish which instructions and resources were supplied; they do not
+prove that a model followed them. See [runtime skills](runtime-skills.md).
+
 ## Native tool diagnostics
 
 `horde events TASK_ID` includes `tool.completed` events for native tool and
@@ -123,12 +140,20 @@ coordination calls. Each records `attempt`, `success`, `duration_ms`, `error`
 tool name, and timestamp. A failed call is evidence for diagnosis; it does not
 by itself fail the step, and the worker still receives the tool response.
 
-Error summaries redact selected application-bundle values and the active provider
-key before truncating to at most 2,048 UTF-8 bytes. If bundle values cannot be
-loaded, the error is withheld. Successful tool output and arguments are not
-included. Redaction covers known literal secrets, not arbitrary sensitive text.
+`arguments` and successful `result` values are redacted strings with separate
+`arguments_truncated` and `result_truncated` flags. The top-level `tool_event_bytes`
+setting defaults to 512 bytes per field; zero omits the payloads. `result_summary`
+remains an alias of `result`. Failed calls have a null result and a separate error
+summary capped at 2,048 UTF-8 bytes. A command can return normally while reporting
+a nonzero exit code, so inspect its result as well as the event's `success` field.
+
+Redaction removes selected application-bundle values and the active provider key
+before encoding and truncation. If bundle values cannot be loaded, diagnostic
+content is withheld. It covers known literal secrets, not arbitrary sensitive text.
 These events cover the native executor; external CLI harness internals are not
-captured. Older events may omit the new fields.
+captured. Older events may omit the new fields. See the
+[native provider contract](native-providers.md#events-and-metrics) for usage and
+provider telemetry.
 
 ## Running the smoke harness
 
