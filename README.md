@@ -66,6 +66,7 @@ horde submit "Add CSV export with tests" --repo /path/to/repository
 horde inspect TASK_ID
 horde events TASK_ID
 horde metrics TASK_ID
+horde steer TASK_ID "Prefer the streaming parser; skip the CLI flag"
 ```
 
 </details>

@@ -343,6 +343,112 @@ fn idle_managed_worker_resumes_on_actionable_message_only() {
         std::thread::sleep(Duration::from_millis(30));
     }
 }
+const SOLO_TEMPLATE: &str = r#"
+name="solo"
+version="1"
+[[steps]]
+id="plan"
+kind="simulated"
+"#;
+fn wait_for_attempts(d: &Daemon, oid: &str, count: usize) -> Value {
+    let start = Instant::now();
+    loop {
+        let v = d.inspect(oid);
+        if v["attempts"].as_array().unwrap().len() == count && v["task"]["status"] == "succeeded" {
+            return v;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "{v}");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+#[test]
+fn solo_worker_task_broadcast_reaches_itself_over_daemon() {
+    let d = Daemon::new();
+    d.template("solo", SOLO_TEMPLATE);
+    let oid = d.submit("solo");
+    let v = d.wait(&oid, "succeeded");
+    assert_eq!(v["workers"].as_array().unwrap().len(), 1);
+    let solo = v["workers"][0]["id"].clone();
+    let mid = horde::store::id();
+    let args = json!({"task":oid,"worker":solo,"id":mid,"destination":"task","body":"note to self","actionable":false});
+    let output = Command::new(BIN)
+        .arg("--data-dir")
+        .arg(&d.root)
+        .args(["call", "send_message", &args.to_string()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sent: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(sent["recipients"], 1);
+    let mail = d.call("read_messages", json!({"task":oid,"worker":solo}));
+    assert_eq!(mail.as_array().unwrap().len(), 1);
+    assert_eq!(mail[0]["id"], mid);
+    assert_eq!(mail[0]["sender"], solo);
+}
+#[test]
+fn operator_steer_wakes_solo_worker_from_cli() {
+    let d = Daemon::new();
+    d.template("solo", SOLO_TEMPLATE);
+    let oid = d.submit("solo");
+    let v = d.wait(&oid, "succeeded");
+    assert_eq!(v["workers"].as_array().unwrap().len(), 1);
+    assert_eq!(v["attempts"].as_array().unwrap().len(), 1);
+    let solo = v["workers"][0]["id"].clone();
+    let operator = horde::store::operator_id(&oid);
+    let steer = |args: &[&str]| {
+        let output = Command::new(BIN)
+            .arg("--data-dir")
+            .arg(&d.root)
+            .args(["steer", &oid])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let quiet = steer(&["just so you know", "--presence"]);
+    assert_eq!(quiet["recipients"], 1);
+    assert_eq!(quiet["sender"], operator);
+    std::thread::sleep(Duration::from_millis(300));
+    let v = d.inspect(&oid);
+    assert_eq!(v["attempts"].as_array().unwrap().len(), 1);
+    assert!(
+        v["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["id"] != operator)
+    );
+    let mail = d.call("read_messages", json!({"task":oid,"worker":solo}));
+    assert_eq!(mail.as_array().unwrap().len(), 1);
+    assert_eq!(mail[0]["sender"], operator);
+    let sent = steer(&["re-check the plan"]);
+    assert_eq!(sent["recipients"], 1);
+    let v = wait_for_attempts(&d, &oid, 2);
+    assert_eq!(v["workers"].as_array().unwrap().len(), 1);
+    let mail = d.call("read_messages", json!({"task":oid,"worker":solo}));
+    assert_eq!(mail.as_array().unwrap().len(), 2);
+    assert!(
+        mail.as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["sender"] == operator)
+    );
+    let events = d.call("events", json!({"task":oid}));
+    assert!(events.as_array().unwrap().iter().any(|e| {
+        e["kind"] == "message.sent"
+            && serde_json::from_str::<Value>(e["data"].as_str().unwrap()).unwrap()["sender"]
+                == operator
+    }));
+}
 #[test]
 fn mock_codex_adapter_runs_in_registered_worktree_and_integrates() {
     let d = Daemon::new();
