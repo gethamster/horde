@@ -25,6 +25,19 @@ template for the tokenized prompt prefix to match. Horde cannot guarantee that
 server-side template behavior or a particular cache speedup. Different invocations
 may have different context and tools and therefore start a new prefix.
 
+## Worker tool arguments
+
+Published worker schemas omit task, worker, step attribution, and verification
+fields. The native executor and worker MCP bridge use these schemas; the operator
+MCP bridge retains explicit task selection and verification controls. Nested Step
+objects still contain their workflow fields, such as a condition's `step`.
+
+Worker credentials supply identity and artifact/knowledge step attribution. A call
+that repeats its own task or worker ID is accepted; a different ID remains an
+error. A supplied `verified` field is discarded with a `tool.argument_dropped`
+event. The resulting artifact or knowledge record remains unverified. Reserved
+underscore-prefixed arguments are still rejected.
+
 ## Completing a step
 
 The initial step prompt tells the worker to finish with a JSON object containing

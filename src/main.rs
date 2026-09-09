@@ -296,6 +296,10 @@ fn mcp(root: &std::path::Path) -> Result<()> {
                 && let Some(tools) = response["result"]["tools"].as_array_mut()
             {
                 tools.retain(|t| horde::protocol::worker_allowed(t["name"].as_str().unwrap_or("")));
+                for tool in tools {
+                    tool["inputSchema"] =
+                        horde::protocol::schema(tool["name"].as_str().unwrap_or(""));
+                }
             }
             writeln!(out, "{response}")?;
             out.flush()?;

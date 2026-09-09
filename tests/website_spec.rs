@@ -142,3 +142,40 @@ fn workflow_tools_publish_the_rust_step_fields_and_inline_nested_types() {
         }
     }
 }
+
+#[test]
+fn published_worker_schemas_omit_runtime_owned_arguments() {
+    let published: Value = if std::env::var_os("UPDATE_WEBSITE_SPEC").is_some() {
+        catalog()
+    } else {
+        serde_json::from_str(&fs::read_to_string(published()).unwrap()).unwrap()
+    };
+    for tool in published["tools"].as_array().unwrap() {
+        if tool["scope"] != "worker" {
+            continue;
+        }
+        let fields = tool["parameters"]["properties"].as_object().unwrap();
+        assert!(
+            fields.keys().all(
+                |k| !["task", "worker", "step", "verified"].contains(&k.as_str())
+                    && !k.starts_with('_')
+            ),
+            "{}",
+            tool["name"]
+        );
+    }
+    for name in ["propose_steps", "put_artifact", "add_knowledge"] {
+        let tool = published["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap();
+        assert_eq!(tool["parameters"], schema(name));
+        assert!(
+            horde::protocol::admin_schema(name)["properties"]
+                .get("task")
+                .is_some()
+        );
+    }
+}

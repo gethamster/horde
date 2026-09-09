@@ -391,17 +391,11 @@
           "child": {
             "type": "string"
           },
-          "task": {
-            "type": "string"
-          },
           "validation": {
             "items": {
               "type": "string"
             },
             "type": "array"
-          },
-          "worker": {
-            "type": "string"
           }
         },
         "required": [
@@ -417,11 +411,7 @@
       "name": "environments",
       "parameters": {
         "additionalProperties": false,
-        "properties": {
-          "task": {
-            "type": "string"
-          }
-        },
+        "properties": {},
         "required": [],
         "type": "object"
       },
@@ -469,13 +459,7 @@
             },
             "type": "array"
           },
-          "task": {
-            "type": "string"
-          },
           "template": {
-            "type": "string"
-          },
-          "worker": {
             "type": "string"
           }
         },
@@ -492,11 +476,7 @@
       "name": "list_children",
       "parameters": {
         "additionalProperties": false,
-        "properties": {
-          "task": {
-            "type": "string"
-          }
-        },
+        "properties": {},
         "required": [],
         "type": "object"
       },
@@ -507,11 +487,7 @@
       "name": "list_skills",
       "parameters": {
         "additionalProperties": false,
-        "properties": {
-          "task": {
-            "type": "string"
-          }
-        },
+        "properties": {},
         "required": [],
         "type": "object"
       },
@@ -534,12 +510,6 @@
           },
           "path": {
             "type": "string"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
-            "type": "string"
           }
         },
         "required": [
@@ -560,9 +530,6 @@
           },
           "limit": {
             "type": "integer"
-          },
-          "task": {
-            "type": "string"
           }
         },
         "required": [],
@@ -614,11 +581,7 @@
       "name": "pending_questions",
       "parameters": {
         "additionalProperties": false,
-        "properties": {
-          "task": {
-            "type": "string"
-          }
-        },
+        "properties": {},
         "required": [],
         "type": "object"
       },
@@ -634,12 +597,6 @@
             "type": "string"
           },
           "question": {
-            "type": "string"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
             "type": "string"
           }
         },
@@ -946,12 +903,6 @@
             "maxItems": 32,
             "minItems": 1,
             "type": "array"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
-            "type": "string"
           }
         },
         "required": [
@@ -980,12 +931,6 @@
             "type": "string"
           },
           "recommendation": {
-            "type": "string"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
             "type": "string"
           }
         },
@@ -1132,12 +1077,6 @@
           },
           "question": {
             "type": "string"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
-            "type": "string"
           }
         },
         "required": [
@@ -1180,12 +1119,6 @@
           },
           "path": {
             "type": "string"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
-            "type": "string"
           }
         },
         "required": [
@@ -1217,12 +1150,6 @@
           },
           "refs": {
             "type": "object"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
-            "type": "string"
           }
         },
         "required": [
@@ -1245,12 +1172,6 @@
           },
           "limit": {
             "type": "integer"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
-            "type": "string"
           }
         },
         "required": [],
@@ -1269,12 +1190,6 @@
               "type": "string"
             },
             "type": "array"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
-            "type": "string"
           }
         },
         "required": [
@@ -1289,11 +1204,7 @@
       "name": "list_workers",
       "parameters": {
         "additionalProperties": false,
-        "properties": {
-          "task": {
-            "type": "string"
-          }
-        },
+        "properties": {},
         "required": [],
         "type": "object"
       },
@@ -1306,12 +1217,6 @@
         "additionalProperties": false,
         "properties": {
           "status": {
-            "type": "string"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
             "type": "string"
           }
         },
@@ -1329,12 +1234,6 @@
         "additionalProperties": false,
         "properties": {
           "channel": {
-            "type": "string"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
             "type": "string"
           }
         },
@@ -1356,12 +1255,6 @@
               "type": "string"
             },
             "type": "array"
-          },
-          "task": {
-            "type": "string"
-          },
-          "worker": {
-            "type": "string"
           }
         },
         "required": [
@@ -1380,13 +1273,7 @@
           "path": {
             "type": "string"
           },
-          "task": {
-            "type": "string"
-          },
           "to": {
-            "type": "string"
-          },
-          "worker": {
             "type": "string"
           }
         },
@@ -1735,18 +1622,6 @@
           },
           "name": {
             "type": "string"
-          },
-          "step": {
-            "type": "string"
-          },
-          "task": {
-            "type": "string"
-          },
-          "verified": {
-            "type": "boolean"
-          },
-          "worker": {
-            "type": "string"
           }
         },
         "required": [
@@ -1764,9 +1639,6 @@
         "additionalProperties": false,
         "properties": {
           "hash": {
-            "type": "string"
-          },
-          "task": {
             "type": "string"
           }
         },
@@ -1787,9 +1659,6 @@
             "type": "object"
           },
           "name": {
-            "type": "string"
-          },
-          "task": {
             "type": "string"
           }
         },
@@ -1818,15 +1687,6 @@
           },
           "provenance": {
             "type": "object"
-          },
-          "step": {
-            "type": "string"
-          },
-          "task": {
-            "type": "string"
-          },
-          "verified": {
-            "type": "boolean"
           }
         },
         "required": [
@@ -1843,11 +1703,7 @@
       "name": "knowledge",
       "parameters": {
         "additionalProperties": false,
-        "properties": {
-          "task": {
-            "type": "string"
-          }
-        },
+        "properties": {},
         "required": [],
         "type": "object"
       },
@@ -1866,9 +1722,6 @@
             "type": "string"
           },
           "target": {
-            "type": "string"
-          },
-          "task": {
             "type": "string"
           }
         },
