@@ -1,119 +1,185 @@
 # Horde
 
-[Source](https://github.com/gethamster/horde) · [Website](https://horde.sh) · [Documentation](docs/README.md) · [Apache-2.0 license](LICENSE)
+Running several coding agents can leave you coordinating their work by hand:
+passing context between sessions and checking whether their changes fit together.
 
-A local Rust daemon for assigning software tasks to coding agents. Submit work through the CLI or connect your own agent through the stdio MCP bridge.
+Horde runs software tasks through planning, implementation, and review. Each agent
+gets its own Git worktree. Horde combines their committed changes and keeps a
+record you can inspect when a task fails or needs your input.
 
-**Early release:** SQLite coordination, templates, worktrees, native Tuara execution, Codex/Claude adapters, bounded local/remote delegation, inherited context and app secrets, disposable process/Compose environments, and configured GitHub delivery are implemented. See [verification and limitations](docs/verification.md) for what has been exercised with real services versus fixtures.
+Use it from your terminal or connect an agent through MCP. Horde is open source,
+runs on macOS and Linux, and works with Codex, Claude Code, or an OpenAI-compatible
+model server, including one you run locally.
+
+[Quick start](#quick-start) · [Documentation](docs/README.md) · [Website](https://horde.sh) · [Issues](https://github.com/gethamster/horde/issues) · [Apache-2.0](LICENSE)
+
+## When to use Horde
+
+Horde is useful when a change benefits from separate implementation and review,
+or when independent parts can be assigned to different workers. For example:
+
+| Task | How Horde helps |
+| --- | --- |
+| Add a feature across an API and its UI | Give each part a separate worktree, then check the combined result. |
+| Refactor a module with existing tests | Plan the change, implement it, and have a reviewer check behavior. |
+| Fix several unrelated bugs | Propose independent steps with separate file scopes so they can run in parallel. |
+| Use a local model for implementation and Claude for review | Assign different providers to the worker and reviewer roles. |
+
+For a small edit you can finish in your current agent session, the extra workflow
+may be unnecessary.
+
+Horde currently serves one user through the CLI and MCP; it has no web dashboard.
+It is an early release. It coordinates work, but the agents can still make
+mistakes or fail to finish. Review the resulting code before shipping it. The
+[verification record](docs/verification.md) separates automated coverage from live
+provider checks and lists the current limits.
 
 ## Quick start
 
-Requires macOS or Linux, Git, and Rust (the repository pins its tested toolchain). Native search also uses `rg`. Real workers require a configured executor and its existing login or daemon-side API key. If Cargo is not on your shell path after installing Rust, run `source "$HOME/.cargo/env"`.
+You need macOS or Linux, Git, and a coding-agent CLI or model server. Native workers
+also use [ripgrep](https://github.com/BurntSushi/ripgrep) for search. The repository
+you give Horde must have an initial commit and a configured Git author identity.
+
+### Let Claude Code set it up
+
+Open Claude Code in your repository and paste this prompt:
+
+```text
+Set up Horde for this repository using the installation guide at
+https://github.com/gethamster/horde/blob/main/docs/installing.md.
+
+Check the Git prerequisites and install the signed release if needed, without
+installing a boot service. Configure the planner, worker, and reviewer roles to
+use my installed Claude Code CLI and its existing login. Add Horde to Claude
+Code as a user-scoped stdio MCP server with the command `horde mcp`.
+
+Start Horde and run a simulated task in this repository to verify scheduling
+without a model call. Show me the result, explain any remaining setup steps,
+and give me a prompt for submitting my first real task through Horde.
+```
+
+Once the MCP connection is available, try:
+
+```text
+Use Horde to add CSV export with tests in this repository. Plan the work,
+implement it, and review the combined result. Follow the task and show me
+its result branch, the checks that ran, and anything that still needs attention.
+```
+
+Replace the CSV example with your task. See [Claude Code setup](#use-with-claude-code)
+for the MCP command and provider options.
+
+### Set it up from your terminal
+
+Install a signed release:
 
 ```sh
-cargo install --path . --locked
+curl -fsSL https://horde.sh/install -o install.sh
+sh install.sh
+```
+
+Choose which agent will do the work. For example, to use an installed, signed-in
+Codex CLI for every step:
+
+```sh
+horde config provider add codex --use-for planner,worker,reviewer
+```
+
+For Claude Code, replace `codex` with `claude`. For a local model or API provider,
+see [settings](#settings). Then start Horde and submit a task:
+
+```sh
 horde start
 horde submit "Add CSV export with tests" --repo /path/to/repository
+```
+
+Submission returns a task ID. Use it to follow the work:
+
+```sh
 horde inspect TASK_ID
 horde events TASK_ID
 horde metrics TASK_ID
 ```
 
-The source repository must have an initial commit and a Git author identity. Coding happens in separate worktrees. The integrated result is on `horde/TASK_ID`; your original checkout stays on its existing branch. Use `git worktree list` to locate results. No push or delivery happens unless enabled in settings.
+Horde leaves your original checkout on its current branch. It puts the combined
+result on `horde/TASK_ID`; `git worktree list` shows where to inspect it. Pushing a
+branch or opening a PR requires [delivery configuration](docs/delivery.md).
 
-Try the complete scheduling path without model calls:
+To try scheduling without calling a model, submit a simulated task instead:
 
 ```sh
-horde submit "Exercise the runtime" --repo . --template simulated
+horde submit "Exercise the runtime" --repo /path/to/repository --template simulated
 ```
 
-`horde stop` shuts the service down gracefully. `horde daemon` runs in the foreground; `horde start` detaches it and writes `daemon.log`. The default data directory is `~/.local/share/horde`. Set `--data-dir PATH` consistently on every command to use a different instance. Keep this path short enough for a Unix socket (under roughly 90 characters on macOS).
+Stop the local service with `horde stop`. See [installation](docs/installing.md)
+for service setup and updates, or [build from source](#build-from-source).
 
 ## Settings
 
-Defaults are autonomous execution, four concurrent workers, Tuara over an API key for planning/implementation/review, and no delivery. `codex` and `claude` roles are configured for those CLIs under subscription login. Model names for the harnesses inherit their upstream defaults unless explicitly set.
+Horde can use your existing CLI login or a provider API key. You can choose a
+provider for each role:
 
-Installing runs `horde config init`, which writes a starter `config.toml` and a private `credentials.env` into the configuration directory. It creates neither if it is already there, so it is safe to run again. `horde config` prints the complete default TOML.
+| Executor | What you need |
+| --- | --- |
+| Codex | Installed Codex CLI with login or configured API access |
+| Claude Code | Installed Claude CLI with login or configured API access |
+| Native | An OpenAI-compatible endpoint with a model catalog and tool calling |
 
-Add a provider and its key without editing either file:
+`horde config provider add` opens the provider setup prompts. The default
+configuration uses Tuara for planning, implementation, and review; choose your
+provider before starting a real task.
 
-```sh
-horde config provider add          # pick a provider, a model, paste the key
-horde config provider list         # what is configured, and whether each key reads
-horde config models default        # what that endpoint accepts as a model
-```
-
-Presets are `tuara`, `codex`, `claude`, `openai`, and `anthropic`; anything else is described with `--kind`, `--base-url`, and `--api-key-env`. For scripts, `printf '%s\n' "$KEY" | horde config provider add tuara --key-stdin --use-for planner,worker,reviewer`. The key is never taken as a command-line argument, and lands only in `credentials.env`.
-
-Settings merge in this order:
-
-1. Built-in defaults.
-2. `$XDG_CONFIG_HOME/horde/config.toml`, or `~/.config/horde/config.toml`.
-3. `.horde.toml` in the submitted repository.
-
-The merged settings are pinned to the task. Later file changes affect new tasks.
-
-Configure skill directories under `[skills]` and select their names with a step’s `skills` field. Horde loads the selected instructions into the worker prompt, pins referenced files and scripts, and distributes those bundles to child tasks. See [runtime skills](docs/runtime-skills.md) for configuration, worker tools, and remote delivery.
+For a local model, put this in your repository's `.horde.toml`:
 
 ```toml
-concurrency = 4
-autonomy = true
-timeout_seconds = 1800
-allow_commands = true
-
-# A provider is a named endpoint and credential, written once.
 [providers.default]
-kind = "tuara"
-auth_mode = "api"
-base_url = "https://tuara.com/router/v1"
-api_key_env = "TUARA_API_KEY"
-model = "qwen/qwen3.8-27b"
-max_tokens = 8192
-max_price = "1.00" # Optional ceiling in dollars per million tokens, not a total budget.
-
-# A role picks a provider and a model. Both are optional: no provider means
-# providers.default, and no model means that provider's.
-[executors.worker]
-
-[executors.reviewer]
-provider = "claude"
+base_url = "http://127.0.0.1:8122/v1"
+api_key_env = "LOCAL_MODEL_KEY"
+model = "auto"
 ```
 
-The key itself belongs in the **daemon** environment before starting it, or in a private mode-0600 `credentials.env` beside `config.toml`; only the name of the variable goes in `config.toml`. Worker command environments use an allowlist and omit provider keys. Codex and Claude use their installed CLI and existing credential store under `auth_mode = "login"`. For API-backed harnesses, set `auth_mode = "api"`, `base_url`, and `api_key_env` on the provider. A per-invocation loopback broker keeps the real key in the daemon and gives the harness a temporary credential limited to its model API. Real keys are never injected into harness child environments. Unsupported total-spend caps fail explicitly rather than being ignored. Claude's CLI budget option is passed through when configured.
+Set `LOCAL_MODEL_KEY` in the daemon environment or its private credential file.
+`auto` selects the only model listed by the server; if there are several, Horde
+asks you to choose one. `horde doctor --repo /path/to/repository` checks the
+configuration and reports the resolved model without requesting a completion.
 
-`kind`, `auth_mode`, `base_url`, and `api_key_env` belong to a provider and cannot be restated on a role, so no role can pair one provider's harness with another's key. Nothing is inherited between providers either: one that omits `base_url` or `api_key_env` while it needs one is rejected at load.
-
-The default provider asks Tuara for `qwen/qwen3.8-27b`. Every native invocation verifies its configured identifier against `/models`; `model = "auto"` resolves a catalog with exactly one model. Set `stream = true` on a provider to surface first-token and tool-intent events. `horde doctor --probe --provider local` checks the catalog and the same streaming parser used by the executor. See the [native provider contract](docs/native-providers.md) for stable history bytes, request options, loop detection, and telemetry.
-
-For example, an API-backed Claude provider shared by two roles:
-
-```toml
-[providers.anthropic]
-kind = "claude"
-auth_mode = "api"
-base_url = "https://api.anthropic.com/v1"
-api_key_env = "ANTHROPIC_API_KEY"
-
-[executors.worker]
-provider = "anthropic"
-model = "your-explicit-model-id"
-
-[executors.reviewer]
-provider = "anthropic"
-model = "a-stronger-model-id"
-```
-
-For Codex API authentication use `kind = "codex"`, `base_url = "https://api.openai.com/v1"`, and `api_key_env = "OPENAI_API_KEY"` on a provider. The shipped `codex` and `claude` providers use subscription login. The broker passes through SSE and provider errors and rejects requests outside the invocation's model endpoints.
-
-Set `autonomy = false` to hold new tasks until the initial question is answered:
-
-```sh
-horde answer TASK_ID QUESTION_ID yes
-```
+The [configuration guide](docs/configuration.md) covers credentials and per-role
+settings. The [native provider guide](docs/native-providers.md) explains streaming,
+sampling options, and tool-event diagnostics.
 
 ## Connect your agent
 
-Configure a stdio MCP server with command `horde` and arguments `mcp`. For a custom data directory, arguments are `--data-dir`, `/absolute/path`, `mcp`.
+### Use with Claude Code
+
+After installing Horde and choosing a worker provider, add Horde to Claude Code:
+
+```sh
+claude mcp add --transport stdio --scope user horde -- horde mcp
+horde start
+cd /path/to/repository
+claude
+```
+
+The user scope makes the connection available across your projects. In Claude
+Code, try a request such as:
+
+> Use Horde to add CSV export with tests in this repository. Submit the task,
+> follow its progress, and show me the result branch and any failing checks.
+
+Claude manages the conversation and calls Horde's tools. Horde runs the worker
+models selected in your configuration. To use Claude Code for the worker roles too:
+
+```sh
+horde config provider add claude --use-for planner,worker,reviewer
+```
+
+This uses the installed Claude CLI and its existing login. You can also keep
+Claude as the caller while using a local model for the workers.
+
+### Other MCP clients
+
+An agent that supports stdio MCP can submit and inspect Horde tasks. Add this
+server to its MCP configuration:
 
 ```json
 {
@@ -123,144 +189,64 @@ Configure a stdio MCP server with command `horde` and arguments `mcp`. For a cus
 }
 ```
 
-The personal-agent bridge exposes submit, inspect, events, questions, cancellation, resumption, metrics, revisions, artifacts, knowledge, and coordination tools. Internal harness bridges receive a worker token and expose only worker-scoped operations. Native tools and external MCP tools use the same coordination handlers.
+This connection controls the local runtime. Horde gives its own workers a separate,
+scoped connection. See [agent connections and coordination](docs/coordination.md)
+for custom data directories and external worker setup.
 
-For a script or independent harness, create a worker with `register_worker`, then register its separate worktree using `register_workspace` (`path`, `branch`, `base`). Set the returned token as `HORDE_WORKER_TOKEN` in its MCP bridge environment. Acquire claims before editing. Never share the personal-agent bridge with an untrusted worker.
+### Agent skills
 
-## Coordination
-
-Every operation is available as `horde call OPERATION 'JSON'`. Examples:
-
-```sh
-horde call register_worker '{"task":"TASK_ID"}'
-horde call list_workers '{"task":"TASK_ID"}'
-horde call claim_paths '{"task":"TASK_ID","worker":"WORKER_ID","paths":["src/api"]}'
-horde call send_message '{"task":"TASK_ID","worker":"WORKER_ID","id":"unique-client-message-id","destination":"OTHER_WORKER_ID","body":"The response now includes a cursor","refs":{"file":"src/api.rs"},"actionable":true}'
-horde call read_messages '{"task":"TASK_ID","worker":"WORKER_ID"}'
-horde call acknowledge_messages '{"task":"TASK_ID","worker":"WORKER_ID","ids":["unique-client-message-id"]}'
-```
-
-Destinations are a worker ID, `group:NAME`, or `task`. Join a group with `join_channel`. Broadcast recipients are snapshotted at send time. Retrying the same message ID with the same payload is idempotent; changing its payload is rejected. Acknowledgement is explicit and per recipient, with a cursor that never skips unread mail.
-
-Actionable messages notify idle managed workers and create a follow-up step, retaining worker identity. Presence messages and acknowledgements do not invoke models. Native workers receive unread messages at each model/tool round; harnesses receive a launch prompt and coordination MCP tools. Continuous push into an already-running CLI harness is not available in this release.
-
-Claims use repository-relative files or directory prefixes. `.` claims the whole repository. Overlap is rejected with ownership evidence. `transfer_claim` is atomic. Claims survive crashes; conversation alone never transfers ownership. Native file and patch tools check claims. External edits and native commands are checked before integration, with out-of-scope results held for reconciliation.
-
-## Templates
-
-Built-ins: `local-implementation`, `nextjs`, `github-actions`, and `simulated`. Project templates in `.horde/templates/*.toml` may add or override them. Validate without executing:
-
-```sh
-horde validate github-actions --repo /path/to/repo
-```
-
-Templates declare versioned steps, roles, scopes, acceptance criteria, tools, expected artifacts, dependencies, output references, and nested templates. Compilation rejects missing inputs, duplicate IDs, missing dependencies, cycles, and recursive inclusion. Template content hashes and expanded plans are saved for every active task.
-
-`${step.result}` supplies a dependency's named output. Nested templates namespace their steps and rewrite references. Steps with independent dependencies run concurrently when their write scopes permit it. A `when` condition references a dependency's terminal status. `attempts` bounds retries; each attempt retains separate evidence. Failure branches support repair followed by repeated verification. See [template examples](docs/templates.md).
-
-`add_steps` validates and appends a workflow revision without rewriting earlier attempts. The personal agent can use it to evolve a workflow after inspecting evidence. An active planner can also use `propose_steps`: the runtime validates its proposed graph and inserts the new work before pending implementation/review steps.
-
-## Delegation, context, and application testing
-
-The root owns one bounded tree: four active workers, sixteen total child tasks,
-three levels below the root, and two app environments by default. Children inherit
-these limits, original intent, source references, answers, and selected app bundles.
-A narrower child assignment does not replace the original request. Context changes
-invalidate old acceptance and require fresh verification.
-
-```sh
-horde call update_context '{"task":"ROOT_ID","content":"Never export email addresses","provenance":"Original caller message 7","kind":"constraint"}'
-horde call delegate_task '{"task":"ROOT_ID","id":"export-once","objective":"Implement CSV export","template":"local-implementation"}'
-horde call pending_questions '{"task":"ROOT_ID"}'
-horde call integrate_child '{"task":"ROOT_ID","child":"CHILD_ID","validation":["npm","test"]}'
-```
-
-The immediate caller can answer a child question or call `escalate_question` to
-forward its original envelope one level. Your personal agent, Grokbot, or Slack
-integration remains the external root caller through CLI/MCP; Horde does not
-own that chat interface. See [delegation and caller integration](docs/delegation.md).
-
-Select a named private `.env` bundle once and descendants inherit it, with optional
-narrowing. Managed app steps inject it, start a process or isolated Compose project,
-wait for readiness, run tests, retain redacted evidence, and tear down owned resources.
-See [application environments and secrets](docs/environments.md) for runnable
-configuration examples and recovery behavior.
-
-## Delivery
-
-`github-actions` composes Next.js verification with GitHub delivery. Enable delivery explicitly:
-
-```toml
-[delivery]
-enabled = true
-repository = "owner/repo"
-base = "main"
-merge = true
-deploy_workflow = "deploy.yml"
-health_url = "https://example.com/health"
-```
-
-Authenticate `gh` using its credential store first. The configured repository must match the checkout's `origin`. The runtime pushes the result branch, finds or creates its PR, watches checks, compares the verified head before merging, observes the configured **push-triggered** deployment for the merge commit, and checks health. Set `merge = false` to stop at a checked PR. It never force-pushes, bypasses branch protection, or dispatches duplicate deployment jobs.
-
-External operation intents and returned identities are durable. PR and merge retries inspect GitHub state first. An unexpected head, a closed PR, conflicts, or failed health checks remain failures with evidence.
-
-## Recovery and operations
-
-```sh
-horde cancel TASK_ID
-horde inspect TASK_ID
-horde call reconcile_worker '{"task":"TASK_ID","worker":"WORKER_ID"}'
-horde resume TASK_ID
-```
-
-A hard daemon crash marks active attempts uncertain and blocks their tasks. `reconcile_worker` refuses while a recorded worker process is alive. Inspect the worktree and external effects, stop orphan processes, then reconcile and resume. This intentionally avoids replaying uncertain shell/model operations automatically. Claims remain available for handoff or explicit release after the process is reconciled. A graceful stop or cancellation kills each active process group.
-
-Git integration is serialized per task. Merge conflicts are aborted without changing the existing integrated result; conflicting files and commits are sent back to the owner. A failed combined validation holds the combined changes for repair. Worktrees are retained for inspection.
-
-## Optional runtime networking
-
-Tailscale discovery and tonic/rustls mutual-TLS connectivity are available through
-`horde network peers`, `listen`, and `probe`. Networking is disabled by default
-and uses a separate user-owned trust configuration. Enrolled runtimes can execute child tasks, exchange committed snapshots,
-route questions through their callers, and verify returned changes.
-See [networking setup](docs/networking.md).
-
-To connect your own machines, run `horde network setup`, then
-`horde network add user@worker` for a discovered Tailscale SSH host. Horde
-handles remote installation, certificates, enrollment, and the authenticated
-handshake. See [automatic network setup](docs/networking.md#automatic-setup-and-pairing)
-for initial tailnet access and boot-service options.
-
-## Managed runtimes and installation
-
-Horde can provision E2B, Daytona, Docker, and Kubernetes runtimes from user-owned
-profiles and enroll remotes over an outbound mTLS control connection. Each runtime
-has an independent concurrency limit. Account-capacity observations can select
-configured fallback roles before dispatch. Administrative CLI/MCP tools expose
-runtime lifecycle, quota status, drain/restart, and versioned updates.
-
-See [runtime management](docs/runtime-management.md) for profiles, credentials,
-usage collectors, enrollment, and recovery. See [installation and releases](docs/installing.md)
-for the signed installer, machine-boot service opt-in, and release CI setup.
-
-## Agent skills
-
-[![skills.sh](https://skills.sh/b/gethamster/horde)](https://skills.sh/gethamster/horde)
-
-Three skills teach a coding agent what Horde is and how to drive it. They are
-maintained and distributed directly from [`skills/`](skills/) in this repository:
+Install the repository's agent skills to teach your agent how to operate Horde:
 
 ```sh
 npx skills add gethamster/horde
 ```
 
-`horde` covers installation, MCP wiring, submission, monitoring, and recovery.
-`horde-templates` covers template authoring. `horde-worker` covers the coordination
-protocol for an agent running inside a task. Update the matching reference file
-whenever a change alters the CLI, an operation's arguments, or a default. See
-[`skills/README.md`](skills/README.md).
+[![skills.sh](https://skills.sh/b/gethamster/horde)](https://skills.sh/gethamster/horde)
 
-## Development
+The three skills cover running Horde, writing templates, and working inside a task.
+These are separate from the [runtime skills](docs/runtime-skills.md) you can assign
+to workers for your own project.
+
+## Documentation
+
+| Guide | What it covers |
+| --- | --- |
+| [Installation and releases](docs/installing.md) | Install, update, and repair an older database. |
+| [Configuration](docs/configuration.md) | Choose providers, manage credentials, and configure roles. |
+| [Native providers](docs/native-providers.md) | Use local models, tune requests, and inspect tool events. |
+| [Agent connections and coordination](docs/coordination.md) | Connect agents, manage file ownership, and recover interrupted work. |
+| [Authoring templates](docs/templates.md) | Define reusable workflows and acceptance checks. |
+| [Runtime skills](docs/runtime-skills.md) | Give workers pinned instructions and supporting files. |
+| [Delegation](docs/delegation.md) | Split work into child tasks while keeping the original context. |
+| [Application secrets and environments](docs/environments.md) | Run checks in disposable app environments. |
+| [GitHub delivery](docs/delivery.md) | Configure PR creation, merging, and deployment checks. |
+| [Runtime networking](docs/networking.md) | Connect your machines through direct networking or Tailscale. |
+| [Runtime management](docs/runtime-management.md) | Manage execution hosts, capacity, and updates. |
+| [Architecture](docs/architecture.md) | Understand the daemon and its persistence model. |
+| [Verification and limitations](docs/verification.md) | Review test coverage and known boundaries. |
+
+The [documentation index](docs/README.md) also links to the [agent skills](skills/README.md)
+and [contributing guide](CONTRIBUTING.md).
+
+## Build from source
+
+Install the Rust toolchain pinned by the repository, then:
+
+```sh
+git clone https://github.com/gethamster/horde.git
+cd horde
+cargo install --path . --locked
+horde config init
+```
+
+## Contributing
+
+Bug reports with a reproducible example and documentation fixes are welcome.
+[Open an issue](https://github.com/gethamster/horde/issues) to report a problem or
+discuss a change. Include the Horde version and relevant errors, with credentials
+and private repository content removed.
+
+For code changes, run:
 
 ```sh
 cargo fmt --all --check
@@ -268,21 +254,6 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-Tests use real SQLite databases, independent daemon/CLI/MCP processes, real Git worktrees/conflicts, and local HTTP/harness fixtures. `python3 scripts/live_smoke.py codex` (or `claude`) runs an opt-in, isolated live-provider task and may consume paid or subscription capacity. Native `tuara` and `local` runs require an explicit model; see the [smoke harness instructions](docs/verification.md#running-the-smoke-harness). See [architecture](docs/architecture.md) and [verification](docs/verification.md).
-
-See the [contributing guide](CONTRIBUTING.md) for development expectations and the
-[changelog](CHANGELOG.md) for release history.
-
-The horde.sh landing page lives in `website/`. See its [development and hosting
-instructions](website/README.md) for the Next.js build and static export.
-
-The site also publishes the agent-facing description of Horde: Horde discovery
-metadata at `/.well-known/mcp.json`, the tool catalog at
-`/.well-known/tools.json`, and `/llms.txt`. The discovery file uses Horde's own
-format and describes the installed stdio MCP server; it is not an official MCP
-manifest or an HTTP MCP endpoint. The site exposes no API of its own. The tool
-catalog is generated from `src/protocol.rs`; regenerate and commit it with
-`UPDATE_WEBSITE_SPEC=1 cargo test --test website_spec` whenever the operation
-set changes, or `cargo test` will fail.
-
-Apache-2.0 licensed. Single-user and local-first; no dashboard or distributed scheduler.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development expectations and
+[CHANGELOG.md](CHANGELOG.md) for release history. Horde is licensed under
+[Apache-2.0](LICENSE).

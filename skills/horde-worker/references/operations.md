@@ -49,14 +49,16 @@ from invoking a model twice.
 
 | Operation | Arguments |
 | --- | --- |
-| `put_artifact` | `name`*, `content`*, `inputs{}`, `step` |
+| `put_artifact` | `name`*, `content`*, `inputs{}` |
 | `get_artifact` | `hash`* |
 | `reuse_artifact` | `name`*, `inputs{}`* |
-| `add_knowledge` | `kind`*, `content`*, `provenance{}`*, `inputs{}`, `step` |
+| `add_knowledge` | `kind`*, `content`*, `provenance{}`*, `inputs{}` |
 | `knowledge` | none |
 | `link_knowledge` | `source`*, `target`*, `relation`* |
 
-`verified: true` is rejected for workers. `step` may only name your own step.
+Worker schemas omit `verified` and `step`; the runtime supplies step attribution.
+A supplied verification flag is dropped with a `tool.argument_dropped` warning.
+The stored evidence remains unverified. A supplied step must match your own.
 
 Artifacts are addressed by SHA-256, synced before their database reference commits,
 and checked on retrieval. `reuse_artifact` returns a verified prior result only
@@ -66,11 +68,21 @@ when the `inputs` fingerprint matches exactly.
 
 | Operation | Arguments |
 | --- | --- |
-| `delegate_task` | `id`*, `objective`*, `template`, `peer`, `bundles[]` |
+| `delegate_task` | `id`*, `objective`*, `template`, `peer`, `bundles[]`, `skills[]` |
 | `list_children` | none |
 | `integrate_child` | `child`*, `validation[]`* |
 | `environments` | none |
 | `propose_steps` | `steps`* — planner role only; inserted before the planning step's pending successors |
+
+## Pinned skills
+
+| Operation | Arguments |
+| --- | --- |
+| `list_skills` | none |
+| `read_skill` | `name`*, `path` (defaults to `SKILL.md`), `offset`, `limit` |
+
+Reads return bounded pages with `next_offset`. The catalog is pinned to the task;
+workers cannot import a new host directory into it.
 
 ## Native tools
 
@@ -79,11 +91,16 @@ coordination operations:
 
 | Tool | Arguments | Notes |
 | --- | --- | --- |
+| `complete_step` | `result`, `accepted`, `artifacts[]`, declared named outputs | Finish the assigned step; must be the only tool call in its response |
 | `read_file` | `path` | UTF-8 file in your worktree |
 | `search` | `pattern` | ripgrep over the repository |
 | `write_file` | `path`, `content` | Complete file; requires an exclusive claim |
 | `apply_patch` | `patch` | Unified diff; every changed path is validated against claims |
 | `command` | `argv[]` | Runs in the workspace; environment excludes provider credentials; resulting changes are checked against claims |
+
+`complete_step` returns control to the runtime, which applies its existing
+acceptance checks. Invalid arguments return a tool error for correction;
+`accepted=false` fails the step. Plain JSON final replies remain supported.
 
 File tools reject path traversal and symlink traversal. `command` is removed
 entirely when `allow_commands = false`.

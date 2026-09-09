@@ -23,6 +23,8 @@ autonomy = true
 default_template = "local-implementation"
 timeout_seconds = 1800
 max_tool_rounds = 64
+max_identical_tool_calls = 3
+tool_event_bytes = 512
 allow_commands = true
 secret_bundles = []
 ```
@@ -32,7 +34,12 @@ secret_bundles = []
 - `autonomy = false` holds every new task until its initial question is answered
   with `horde answer TASK_ID QUESTION_ID yes`.
 - `timeout_seconds` — per-invocation ceiling.
-- `max_tool_rounds` — cap on native model/tool rounds per invocation.
+- `max_tool_rounds` caps native model/tool rounds per invocation.
+- `max_identical_tool_calls` defaults to 3 consecutive calls with identical
+  arguments and unchanged results. The next identical call holds the task for
+  inspection. Zero disables the guard.
+- `tool_event_bytes` limits each redacted tool argument/result field to 512 UTF-8
+  bytes by default. The range is 0 through 65,536; zero omits both payloads.
 - `allow_commands = false` removes the native `command` tool.
 
 Live concurrency, without restarting or interrupting work:
@@ -119,7 +126,36 @@ another provider's endpoint or key.
 
 Model names for the harness kinds inherit their upstream default unless set
 explicitly. For `tuara`, every invocation verifies the exact configured identifier
-against `/models` and fails rather than substituting an alias.
+against `/models` and fails rather than substituting an alias. `model = "auto"`
+selects exactly one nonempty catalog ID; zero or multiple entries fail and list
+the available IDs. With `auto`, a provider can omit `kind` and `auth_mode` when it
+supplies `base_url` and `api_key_env`:
+
+```toml
+[providers.default]
+base_url = "http://127.0.0.1:8122/v1"
+api_key_env = "LOCAL_MODEL_KEY"
+model = "auto"
+```
+
+Set `stream = true` to decode SSE and emit first-token/tool-intent progress.
+Provider and role `extra_body` tables carry options such as `temperature` and
+`chat_template_kwargs`. Role keys override provider keys; nested objects are
+replaced, not recursively merged. Reserved fields (`model`, `messages`, `tools`,
+`stream`, `max_tokens`, `max_price`, and `n`) fail at configuration load. Use the
+dedicated token and price settings. These options apply to native execution.
+
+```toml
+[providers.default.extra_body]
+temperature = 0.2
+chat_template_kwargs = { enable_thinking = false }
+
+[executors.planner.extra_body]
+temperature = 0.5
+```
+
+See the [native provider guide](https://github.com/gethamster/horde/blob/main/docs/native-providers.md) for the request
+and telemetry contract.
 
 ## Executor roles
 
@@ -141,6 +177,7 @@ the same name.
 
 Besides `provider` and `model`, a role may set `account`, `program`, `max_price`,
 `max_tokens`, and `max_api_cost_usd`; each falls back to the provider's value.
+Native roles also accept the `extra_body` overrides described above.
 
 A role cannot restate `kind`, `auth_mode`, `base_url`, or `api_key_env` — those four
 travel together on a provider, so no role can pair one provider's harness with
@@ -229,6 +266,14 @@ Names a bundle defined in `~/.config/horde/secrets.toml`. These are credentials 
 the software being built and tested, never provider API keys. See
 `environments.md`.
 
+## Runtime skills
+
+Configure `[skills]` as a mapping from names to directories containing `SKILL.md`.
+A step selects names with `skills = ["name"]`. Submission pins the configured
+bundles, so later source changes affect new tasks. Children inherit the catalog;
+`delegate_task.skills` narrows it and selects skills for child agent steps.
+See [runtime skills](https://github.com/gethamster/horde/blob/main/docs/runtime-skills.md) for resource access and limits.
+
 ## Delivery
 
 Off by default. See `delivery.md` before enabling.
@@ -249,5 +294,7 @@ health_url = "https://example.com/health"
 horde doctor --repo /path/to/repo
 ```
 
-This prints exactly what a task submitted from that repository would be pinned to.
-Read it before blaming a model for a configuration problem.
+This prints the merged settings and resolves native `auto` catalogs without a
+chat-completions request. `horde doctor --provider NAME` checks one provider;
+`horde doctor --probe --provider NAME` also requests a streamed tool call and
+consumes model capacity.

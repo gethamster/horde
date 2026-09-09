@@ -12,7 +12,10 @@ Results are JSON.
 Notation: `*` marks a required field. `task` identifies the task and is required
 for every task-scoped operation when you call it from the CLI or the
 personal-agent bridge. A worker token supplies `task` and `worker` itself and
-rejects any attempt to name a different one.
+rejects any attempt to name a different one. The tables below show operator
+arguments. Worker schemas omit runtime identity, step attribution, and verification
+fields; use the [worker reference](https://github.com/gethamster/horde/blob/main/skills/horde-worker/references/operations.md)
+for those calls.
 
 ## CLI shortcuts
 
@@ -60,7 +63,7 @@ Other commands have no operation equivalent: `start`, `stop`, `daemon`, `mcp`,
 
 | Operation | Arguments | Worker |
 | --- | --- | --- |
-| `delegate_task` | `task`*, `id`*, `objective`*, `template`, `peer`, `bundles[]`, `worker` | yes |
+| `delegate_task` | `task`*, `id`*, `objective`*, `template`, `peer`, `bundles[]`, `skills[]`, `worker` | yes |
 | `list_children` | `task`* | yes |
 | `integrate_child` | `task`*, `child`*, `validation[]`*, `worker` | yes |
 | `read_context` | `task`*, `after`, `limit` | yes |
@@ -89,12 +92,22 @@ Other commands have no operation equivalent: `start`, `stop`, `daemon`, `mcp`,
 
 | Operation | Arguments | Worker |
 | --- | --- | --- |
-| `put_artifact` | `task`*, `name`*, `content`*, `inputs{}`, `verified`, `worker`, `step` | yes, but cannot set `verified: true` |
+| `put_artifact` | `task`*, `name`*, `content`*, `inputs{}`, `verified`, `worker`, `step` | yes; supplied `verified` is dropped |
 | `get_artifact` | `task`*, `hash`* | yes |
 | `reuse_artifact` | `task`*, `name`*, `inputs{}`* | yes |
-| `add_knowledge` | `task`*, `kind`*, `content`*, `provenance{}`*, `inputs{}`, `verified`, `step` | yes, but cannot set `verified: true` |
+| `add_knowledge` | `task`*, `kind`*, `content`*, `provenance{}`*, `inputs{}`, `verified`, `step` | yes; supplied `verified` is dropped |
 | `knowledge` | `task`* | yes |
 | `link_knowledge` | `task`*, `source`*, `target`*, `relation`* | yes |
+
+## Pinned skills
+
+| Operation | Arguments | Worker |
+| --- | --- | --- |
+| `list_skills` | `task`* | yes |
+| `read_skill` | `task`*, `name`*, `path`, `offset`, `limit` | yes |
+
+`read_skill` defaults to `SKILL.md` and returns bounded resource pages. Follow
+`next_offset` when present. The task's pinned catalog also bounds child inheritance.
 
 ## Environments and secrets
 
@@ -134,14 +147,15 @@ A worker token may call exactly these, and nothing else:
 `propose_steps`, `request_question`, `send_message`, `read_messages`,
 `acknowledge_messages`, `list_workers`, `set_worker_status`, `join_channel`,
 `claim_paths`, `transfer_claim`, `register_workspace`, `put_artifact`,
-`get_artifact`, `reuse_artifact`, `add_knowledge`, `knowledge`, `link_knowledge`.
+`get_artifact`, `reuse_artifact`, `add_knowledge`, `knowledge`, `link_knowledge`,
+`list_skills`, `read_skill`.
 
 Additional worker restrictions, enforced at the RPC layer:
 
 - `task` and `worker` are forced to the token's own identity.
 - A worker cannot attribute work to another worker's step.
-- A worker cannot set `verified: true`. Workers report evidence; verification is
-  an authoritative runtime decision.
+- A worker-supplied `verified` field is dropped with a warning. Evidence remains
+  unverified; certification is an authoritative runtime decision.
 - Arguments starting with `_` are rejected as reserved.
 
 These are scope limits at the RPC layer, not process isolation. A worker token

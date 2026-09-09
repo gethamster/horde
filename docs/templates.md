@@ -80,6 +80,15 @@ The shipped Next.js template assumes npm and a committed `package-lock.json`: af
 GitHub delivery is a separate opt-in step. For non-Next.js projects, include your local template and follow it with a `kind = "delivery"` step. Recovery for a transient external failure can retry the delivery step. A failed combined check that requires code changes should enter an explicit repair branch; the service does not invent an unbounded repair loop.
 
 
+## Selecting runtime skills
+
+Configure named directories under `[skills]` in Horde settings, then select names
+with `skills = ["report"]` on an agent step. Each name must exist in the task's
+pinned catalog. The runtime loads selected instructions into the prompt and makes
+bundled resources available through `read_skill`. A nested template's `skills`
+selection is propagated to its agent steps. See [runtime skills](runtime-skills.md)
+for configuration, inheritance, and file limits.
+
 ## Proposing and appending steps through tools
 
 `propose_steps` and `add_steps` publish a self-contained JSON schema derived from
