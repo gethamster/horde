@@ -686,6 +686,8 @@ fn daemon_ends_a_streaming_planner_loop_despite_valid_different_calls() {
             );
         }
     });
+    // Budget includes Git workspace setup. Leave room for multiple model turns
+    // on slower CI hosts; the command regression separately tests a one-second cap.
     std::fs::write(
         d.repo.join(".horde.toml"),
         format!(
@@ -699,7 +701,7 @@ api_key_env = "PATH"
 model = "test-model"
 stream = true
 [executors.planner]
-step_budget_seconds = 1
+step_budget_seconds = 5
 "#
         ),
     )
@@ -715,6 +717,8 @@ step_budget_seconds = 1
     let result: Value =
         serde_json::from_str(inspect["attempts"][0]["result"].as_str().unwrap()).unwrap();
     assert_eq!(result["error"], "step budget exhausted", "{result}");
+    assert_eq!(result["budget_s"], 5);
+    assert!(result["elapsed_s"].as_f64().unwrap() >= 5.0);
     let events = d.call("events", json!({"task":task}));
     let calls: Vec<_> = events
         .as_array()
