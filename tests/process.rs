@@ -512,6 +512,7 @@ fn delivery_reconciles_pr_creation_before_retrying_and_merges_verified_head() {
         &["remote", "add", "origin", remote.to_str().unwrap()],
     )
     .unwrap();
+    horde::git::run(&d.repo, &["push", "-q", "origin", "main"]).unwrap();
     let script = d.dir.path().join("gh-mock");
     let ledger = d.dir.path().join("github-state");
     let code=r#"#!/bin/sh

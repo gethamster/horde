@@ -490,3 +490,90 @@ fn revising_an_accepted_child_requires_fresh_integration_through_ancestors() {
     );
     assert!(!delegation::child_completion(&f.db, &parent).unwrap());
 }
+
+#[test]
+fn delegated_children_start_from_their_pinned_base_not_the_remote() {
+    let f = Fixture::new();
+    let repo = f._dir.path().join("repo");
+    // The parent tracks a remote whose main is ahead of the local checkout.
+    let remote = f._dir.path().join("remote.git");
+    std::fs::create_dir(&remote).unwrap();
+    horde::git::run(&remote, &["init", "--bare", "-b", "main"]).unwrap();
+    horde::git::run(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    )
+    .unwrap();
+    horde::git::run(&repo, &["push", "-q", "origin", "main"]).unwrap();
+    let scratch = f._dir.path().join("scratch");
+    horde::git::run(
+        f._dir.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            scratch.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    for args in [
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@localhost"],
+        vec!["commit", "--allow-empty", "-m", "ahead"],
+        vec!["push", "-q", "origin", "main"],
+    ] {
+        horde::git::run(&scratch, &args).unwrap();
+    }
+    let remote_tip = horde::git::run(&scratch, &["rev-parse", "HEAD"]).unwrap();
+    let settings = Settings {
+        delivery: horde::config::Delivery {
+            base: "main".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    f.db.conn
+        .execute(
+            "UPDATE tasks SET settings=? WHERE id=?",
+            rusqlite::params![serde_json::to_string(&settings).unwrap(), f.root],
+        )
+        .unwrap();
+    // The parent's integrated worktree lands on the fetched remote tip, then
+    // advances with parent work the child must inherit.
+    let parent = horde::git::task_workspace(&f.db, &f.root).unwrap();
+    assert_eq!(
+        horde::git::run(&parent, &["rev-parse", "HEAD"]).unwrap(),
+        remote_tip
+    );
+    std::fs::write(parent.join("parent.txt"), "parent work").unwrap();
+    horde::git::run(&parent, &["add", "."]).unwrap();
+    horde::git::run(&parent, &["commit", "-m", "parent work"]).unwrap();
+    let parent_head = horde::git::run(&parent, &["rev-parse", "HEAD"]).unwrap();
+    assert_ne!(parent_head, remote_tip);
+    let child = f.child(&f.root, "pinned");
+    let pinned =
+        f.db.rows("SELECT base FROM local_child_bases WHERE task=?", &[&child])
+            .unwrap()[0]["base"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    assert_eq!(pinned, parent_head);
+    let child_repo = horde::git::task_workspace(&f.db, &child).unwrap();
+    assert_eq!(
+        horde::git::run(&child_repo, &["rev-parse", "HEAD"]).unwrap(),
+        pinned
+    );
+    assert!(child_repo.join("parent.txt").exists());
+    let event: serde_json::Value = serde_json::from_str(
+        f.db.rows(
+            "SELECT data FROM events WHERE task=? AND kind='workspace.integrated'",
+            &[&child],
+        )
+        .unwrap()[0]["data"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(event["source"], "pinned");
+    assert_eq!(event["start"], pinned);
+}
