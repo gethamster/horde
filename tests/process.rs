@@ -1267,16 +1267,19 @@ instructions="Implement hello"
     assert!(argv.contains("Implement hello"), "{argv}");
     assert!(words.contains(&"--output-format") && words.contains(&"json"));
     assert!(words.contains(&"--always-approve"));
+    // the config lives in the WORKER's workspace (its own worktree), not the integrated one
+    let workspace = v["workers"][0]["workspace"].as_str().unwrap().to_owned();
     let cfg = std::fs::read_to_string(
-        d.root
-            .join("workspaces")
-            .join(&oid)
-            .join("integrated")
+        std::path::Path::new(&workspace)
             .join(".grok")
             .join("config.toml"),
     )
     .unwrap_or_default();
-    assert!(cfg.contains("[mcp_servers.coordination]"), "{cfg}");
+    assert!(
+        cfg.contains("[mcp_servers.coordination]"),
+        "{workspace}: {cfg}"
+    );
+    assert!(cfg.contains("HORDE_WORKER_TOKEN"));
 }
 
 #[test]

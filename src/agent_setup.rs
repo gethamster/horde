@@ -327,7 +327,7 @@ fn configure_provider(request: &Request) -> Result<Value> {
         ));
     };
     ensure!(
-        ["tuara", "codex", "claude", "simulated"].contains(&kind),
+        ["tuara", "codex", "claude", "grok", "simulated"].contains(&kind),
         "unsupported provider kind"
     );
     let auth_mode =
