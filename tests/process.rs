@@ -743,3 +743,38 @@ step_budget_seconds = 5
         "{metrics}"
     );
 }
+
+#[test]
+fn missing_checkout_scripts_explain_the_command_worktree() {
+    let d = Daemon::new();
+    std::fs::create_dir_all(d.repo.join("tools")).unwrap();
+    std::fs::write(d.repo.join("tools/untracked.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    for (name, command) in [
+        ("direct", r#"["./tools/untracked.sh"]"#),
+        ("interpreter", r#"["sh", "tools/untracked.sh"]"#),
+        ("shell", r#"["sh", "-c", "tools/untracked.sh"]"#),
+        ("unrelated", r#"["sh", "-c", "exit 7"]"#),
+    ] {
+        d.template(name,&format!("name={name:?}\nversion=\"1\"\n[[steps]]\nid=\"gate\"\nkind=\"command\"\ncommand={command}\n"));
+        let task = d.submit(name);
+        let inspect = d.wait(&task, "failed");
+        let result: Value =
+            serde_json::from_str(inspect["attempts"][0]["result"].as_str().unwrap()).unwrap();
+        let error = result["error"].as_str().unwrap();
+        if name == "unrelated" {
+            assert!(!error.contains("repository checkout"), "{error}");
+            assert!(error.contains("exit_code"), "{error}");
+        } else {
+            for expected in [
+                "gate",
+                "tools/untracked.sh",
+                "missing from task workspace",
+                "exists in repository checkout",
+                "untracked files",
+                "Commit the required file",
+            ] {
+                assert!(error.contains(expected), "{error}");
+            }
+        }
+    }
+}

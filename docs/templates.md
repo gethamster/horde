@@ -151,3 +151,32 @@ instructions = "Implement and verify the change."
 
 An override on a nested template inclusion supplies the default for its expanded
 steps; a child's explicit value takes precedence. Each retry starts a fresh window.
+
+## Shell expressions and command files
+
+Horde treats every `${...}` in `instructions` and `command` arguments as a step
+output reference. The form must be `${step.field}`, and `step` must be listed in
+`needs`. Shell quotes do not escape this template syntax. Validation errors name
+the expanded step ID, the field or command argument index, and its value.
+
+For a simple shell variable, use `$NAME` without braces. For braced expansions
+such as `${NAME:-default}`, put the shell code in a committed script and invoke
+that script from the command step. Horde does not interpolate script contents:
+
+```toml
+[[steps]]
+id = "gate"
+kind = "command"
+command = ["bash", "tools/horde/fleet_gate_step.sh"]
+```
+
+Command steps run in the task's integrated worktree, initially based on the submit
+commit and updated by preceding integrations. They do not copy untracked files or
+uncommitted edits from your checkout. Commit required scripts before submitting,
+or have an earlier step create them in that worktree.
+
+On a failed command, Horde checks literal relative paths in its arguments,
+including simple shell command strings. If a referenced file is absent from the
+task workspace but exists in the repository checkout, the error identifies both
+locations and explains how to make the file available. Dynamically constructed
+shell paths may not receive this hint; the original command failure is retained.

@@ -339,38 +339,47 @@ pub fn validate(steps: &[Step]) -> Result<()> {
         if s.kind == "environment" && s.environment.is_none() {
             bail!("{path}.environment: environment step requires environment configuration");
         }
-        for text in std::iter::once(&s.instructions).chain(s.command.iter()) {
-            let mut rest = text.as_str();
-            while let Some(start) = rest.find("${") {
-                rest = &rest[start + 2..];
-                let end = rest.find('}').context("unterminated output reference")?;
-                let (step, field) = rest[..end]
-                    .rsplit_once('.')
-                    .context("output reference must be step.field")?;
-                if field.is_empty() || !s.needs.iter().any(|n| n == step) {
-                    bail!(
-                        "output reference must name a direct dependency: {}",
-                        &rest[..end]
-                    );
+        for (field, text) in std::iter::once(("instructions".to_owned(), &s.instructions)).chain(
+            s.command
+                .iter()
+                .enumerate()
+                .map(|(i, text)| (format!("command[{i}]"), text)),
+        ) {
+            (|| -> Result<()> {
+                let mut rest = text.as_str();
+                while let Some(start) = rest.find("${") {
+                    rest = &rest[start + 2..];
+                    let end = rest.find('}').context("unterminated output reference")?;
+                    let (step, field) = rest[..end]
+                        .rsplit_once('.')
+                        .context("output reference must be step.field")?;
+                    if field.is_empty() || !s.needs.iter().any(|n| n == step) {
+                        bail!(
+                            "output reference must name a direct dependency: {}",
+                            &rest[..end]
+                        );
+                    }
+                    let producer = steps.iter().find(|s| s.id == step).context("output step")?;
+                    if ![
+                        "result",
+                        "accepted",
+                        "artifacts",
+                        "usage",
+                        "integration",
+                        "events_artifact",
+                        "latency_ms",
+                        "process",
+                    ]
+                    .contains(&field)
+                        && !producer.output_types.contains_key(field)
+                    {
+                        bail!("undeclared output {step}.{field}");
+                    }
+                    rest = &rest[end + 1..];
                 }
-                let producer = steps.iter().find(|s| s.id == step).context("output step")?;
-                if ![
-                    "result",
-                    "accepted",
-                    "artifacts",
-                    "usage",
-                    "integration",
-                    "events_artifact",
-                    "latency_ms",
-                    "process",
-                ]
-                .contains(&field)
-                    && !producer.output_types.contains_key(field)
-                {
-                    bail!("undeclared output {step}.{field}");
-                }
-                rest = &rest[end + 1..];
-            }
+                Ok(())
+            })()
+            .map_err(|e| anyhow::anyhow!("{path}.{field}: {e:#}; value={text:?}"))?;
         }
         for ty in s.output_types.values() {
             if ![

@@ -1231,3 +1231,28 @@ fn knowledge_kind_choices_match_dispatch_and_rejections_are_clear() {
         3
     );
 }
+
+#[test]
+fn output_reference_errors_identify_step_argument_and_value() {
+    for (value, message) in [
+        ("echo ${HOME}", "output reference must be step.field"),
+        ("echo ${HOME", "unterminated output reference"),
+        ("echo ${unknown.result}", "direct dependency"),
+    ] {
+        let step = serde_json::from_value(
+            json!({"id":"gate","kind":"command","command":["sh","-c",value]}),
+        )
+        .unwrap();
+        let error = template::validate(&[step]).unwrap_err().to_string();
+        assert!(
+            error.contains("workflow.steps[0] (id=\"gate\").command[2]"),
+            "{error}"
+        );
+        assert!(error.contains(value), "{error}");
+        assert!(error.contains(message), "{error}");
+    }
+    let step = serde_json::from_value(json!({"id":"plan","instructions":"Read ${HOME}"})).unwrap();
+    let error = template::validate(&[step]).unwrap_err().to_string();
+    assert!(error.contains("(id=\"plan\").instructions"), "{error}");
+    assert!(error.contains("Read ${HOME}"), "{error}");
+}
