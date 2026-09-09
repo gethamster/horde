@@ -89,7 +89,8 @@ def run(args):
     Path(env["XDG_CONFIG_HOME"]).mkdir()
     for command in [["init", "-b", "main"], ["config", "user.email", "smoke@example.invalid"], ["config", "user.name", "Horde smoke"], ["commit", "--allow-empty", "-m", "initial"]]:
         subprocess.run(["git", *command], cwd=repo, env=env, check=True, capture_output=True, timeout=30)
-    (repo / ".horde.toml").write_text(configuration(args))
+    (repo / ".horde").mkdir(exist_ok=True)
+    (repo / ".horde/horde.toml").write_text(configuration(args))
     templates = repo / ".horde/templates"
     templates.mkdir(parents=True)
     (templates / "smoke.toml").write_text(TEMPLATE)

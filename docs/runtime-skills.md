@@ -8,7 +8,7 @@ read it through the worker tools.
 
 ## Configure and select
 
-Add directories to the `[skills]` table in the repository's `.horde.toml` or your
+Add directories to the `[skills]` table in the repository's `.horde/horde.toml` or your
 Horde user configuration. Relative paths resolve against the submitted repository.
 Use an absolute path for a skill stored outside that repository.
 

@@ -18,7 +18,12 @@ Settings merge in this order:
 
 1. Built-in defaults.
 2. `$XDG_CONFIG_HOME/horde/config.toml`, or `~/.config/horde/config.toml`.
-3. `.horde.toml` in the submitted repository.
+3. `.horde.toml` in the submitted repository (legacy path).
+4. `.horde/horde.toml` in the submitted repository (preferred path).
+
+Later files override matching settings and retain settings they do not restate.
+Both repository paths remain supported; if both exist, `.horde/horde.toml` wins.
+To migrate, move `.horde.toml` to `.horde/horde.toml` after updating Horde.
 
 The merged settings are pinned to the task. Later file changes affect new tasks.
 

@@ -6,7 +6,7 @@ public webhook, or extra chat store to configure inside Horde.
 
 ## One bounded tree
 
-Configure defaults in user settings or `.horde.toml`:
+Configure defaults in user settings or `.horde/horde.toml`:
 
 ```toml
 [limits]
