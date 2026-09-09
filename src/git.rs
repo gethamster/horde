@@ -22,11 +22,134 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<String> {
     }
     Ok(String::from_utf8(out.stdout)?.trim().to_owned())
 }
+/// Where a task's integrated worktree branches from.
+struct StartPoint {
+    sha: String,
+    source: String,
+    fetched: bool,
+    warning: Option<String>,
+}
+fn head(repo: &Path) -> Result<String> {
+    run(repo, &["rev-parse", "--verify", "HEAD^{commit}"])
+}
+fn remote_ref(repo: &Path, name: &str) -> Option<String> {
+    run(
+        repo,
+        &["rev-parse", "--verify", &format!("{name}^{{commit}}")],
+    )
+    .ok()
+}
+/// Name of the branch `origin` advertises as its default, via a locally
+/// recorded `origin/HEAD` or, failing that, a live `ls-remote --symref`.
+fn remote_default(repo: &Path) -> Option<String> {
+    if let Ok(name) = run(repo, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]) {
+        return Some(name);
+    }
+    let listing = run(repo, &["ls-remote", "--symref", "origin", "HEAD"]).ok()?;
+    listing
+        .lines()
+        .find_map(|line| line.strip_prefix("ref: ")?.split('\t').next())
+        .and_then(|name| name.strip_prefix("refs/heads/"))
+        .map(|branch| format!("refs/remotes/origin/{branch}"))
+}
+fn upstream(repo: &Path) -> Option<String> {
+    run(repo, &["rev-parse", "--symbolic-full-name", "@{upstream}"])
+        .ok()
+        .filter(|name| name.starts_with("refs/remotes/"))
+}
+/// Resolves the commit a new integrated worktree starts from. Only fetches and
+/// read-only ref lookups run in the operator repository; its checkout is never
+/// modified. Delegated and remote-accepted tasks start from their pinned base.
+fn resolve_start(db: &Store, oid: &str, repo: &Path) -> Result<StartPoint> {
+    let pinned = !db
+        .rows("SELECT task FROM local_child_bases WHERE task=?", &[&oid])?
+        .is_empty()
+        || !db
+            .rows("SELECT task FROM remote_origins WHERE task=?", &[&oid])?
+            .is_empty();
+    if pinned {
+        return Ok(StartPoint {
+            sha: head(repo)?,
+            source: "pinned".into(),
+            fetched: false,
+            warning: None,
+        });
+    }
+    let task = db.task(oid)?;
+    let settings: crate::config::Settings =
+        serde_json::from_str(task["settings"].as_str().context("settings")?)?;
+    let base = settings.delivery.base.trim();
+    let has_origin = run(repo, &["config", "--get", "remote.origin.url"]).is_ok();
+    if !base.is_empty() {
+        if !has_origin {
+            bail!(
+                "delivery.base is \"{base}\" but the repository has no origin remote; \
+                 refusing to branch from local HEAD"
+            );
+        }
+        let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
+        run(repo, &["fetch", "--no-tags", "origin", &refspec]).with_context(|| {
+            format!("cannot fetch origin/{base}; refusing to branch from local HEAD")
+        })?;
+        let sha = remote_ref(repo, &format!("refs/remotes/origin/{base}"))
+            .with_context(|| format!("origin/{base} did not resolve after fetch"))?;
+        return Ok(StartPoint {
+            sha,
+            source: format!("origin/{base}"),
+            fetched: true,
+            warning: None,
+        });
+    }
+    if !has_origin {
+        return Ok(StartPoint {
+            sha: head(repo)?,
+            source: "local HEAD".into(),
+            fetched: false,
+            warning: Some(
+                "no origin remote configured; integrated workspace started from local HEAD".into(),
+            ),
+        });
+    }
+    let fetch = run(repo, &["fetch", "--no-tags", "origin"]).map(|_| ());
+    let fetched = fetch.is_ok();
+    let fetch_note = match &fetch {
+        Ok(()) => "ok".to_owned(),
+        Err(e) => format!("failed: {e}"),
+    };
+    let stale = fetch
+        .err()
+        .map(|e| format!("fetch of origin failed ({e}); used the last known remote tip"));
+    let candidates = remote_default(repo)
+        .map(|name| (format!("origin/HEAD ({name})"), name))
+        .into_iter()
+        .chain(upstream(repo).map(|name| (format!("upstream ({name})"), name)));
+    for (source, name) in candidates {
+        if let Some(sha) = remote_ref(repo, &name) {
+            return Ok(StartPoint {
+                sha,
+                source,
+                fetched,
+                warning: stale,
+            });
+        }
+    }
+    let sha = head(repo)?;
+    Ok(StartPoint {
+        warning: Some(format!(
+            "no remote tip resolvable (fetch {fetch_note}); integrated workspace started from local HEAD {sha}"
+        )),
+        sha,
+        source: "local HEAD".into(),
+        fetched,
+    })
+}
 pub fn task_workspace(db: &Store, oid: &str) -> Result<PathBuf> {
     let o = db.task(oid)?;
     let repo = Path::new(o["repo"].as_str().context("repo")?);
     let path = db.root.join("workspaces").join(oid).join("integrated");
     if !path.exists() {
+        let start = resolve_start(db, oid, repo)?;
+        let branch = format!("horde/{oid}");
         std::fs::create_dir_all(path.parent().context("parent")?)?;
         run(
             repo,
@@ -34,11 +157,32 @@ pub fn task_workspace(db: &Store, oid: &str) -> Result<PathBuf> {
                 "worktree",
                 "add",
                 "-b",
-                &format!("horde/{oid}"),
+                &branch,
                 path.to_str().context("path")?,
-                "HEAD",
+                &start.sha,
             ],
         )?;
+        db.conn.execute(
+            "INSERT OR REPLACE INTO workspace_bases(task,start,source,fetched,created) VALUES(?,?,?,?,?)",
+            rusqlite::params![oid, start.sha, start.source, start.fetched, now()],
+        )?;
+        db.event(
+            oid,
+            "workspace.integrated",
+            json!({"path":path,"branch":branch,"start":start.sha,"source":start.source,"fetched":start.fetched}),
+        )?;
+        if let Some(reason) = start.warning {
+            let kind = if start.source == "local HEAD" {
+                "workspace.local_head_fallback"
+            } else {
+                "workspace.fetch_failed"
+            };
+            db.event(
+                oid,
+                kind,
+                json!({"start":start.sha,"source":start.source,"reason":reason}),
+            )?;
+        }
     }
     if run(&path, &["branch", "--show-current"])? != format!("horde/{oid}") {
         bail!("integrated workspace is on an unexpected branch");
@@ -150,10 +294,18 @@ pub fn register(
         "UPDATE workers SET workspace=?,branch=?,base=?,updated=? WHERE id=?",
         rusqlite::params![canonical.to_str(), branch, base, now(), wid],
     )?;
+    let start = db
+        .rows(
+            "SELECT start,source FROM workspace_bases WHERE task=?",
+            &[&oid],
+        )?
+        .into_iter()
+        .next()
+        .unwrap_or(json!({"start":null,"source":null}));
     db.event(
         oid,
         "workspace.registered",
-        json!({"worker":wid,"path":canonical,"branch":branch,"base":base}),
+        json!({"worker":wid,"path":canonical,"branch":branch,"base":base,"start":start["start"],"start_source":start["source"]}),
     )?;
     Ok(())
 }

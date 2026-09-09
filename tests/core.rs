@@ -15,6 +15,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with(Settings::default(), |_| {})
+    }
+    fn with(settings: Settings, setup: impl FnOnce(&Path)) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
@@ -26,6 +29,7 @@ impl Fixture {
         ] {
             git::run(&repo, &args).unwrap();
         }
+        setup(&repo);
         let db = Store::open(&dir.path().join("data")).unwrap();
         let plan = template::compile(
             "simulated",
@@ -33,10 +37,22 @@ impl Fixture {
             BTreeMap::from([("task".into(), "test".into())]),
         )
         .unwrap();
-        let oid = db
-            .submit("test", &repo, &Settings::default(), &plan)
-            .unwrap();
+        let oid = db.submit("test", &repo, &settings, &plan).unwrap();
         Self { dir, db, oid }
+    }
+    fn repo(&self) -> std::path::PathBuf {
+        self.dir.path().join("repo")
+    }
+    fn events(&self, kind: &str) -> Vec<Value> {
+        self.db
+            .rows(
+                "SELECT data FROM events WHERE task=? AND kind=? ORDER BY seq",
+                &[&self.oid, &kind],
+            )
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_str(r["data"].as_str().unwrap()).unwrap())
+            .collect()
     }
     fn worker(&self) -> Value {
         self.db.register(&self.oid, None).unwrap()
@@ -1513,4 +1529,192 @@ fn output_reference_errors_identify_step_argument_and_value() {
     let error = template::validate(&[step]).unwrap_err().to_string();
     assert!(error.contains("(id=\"plan\").instructions"), "{error}");
     assert!(error.contains("Read ${HOME}"), "{error}");
+}
+
+/// Publishes the fixture's `main` to a bare `origin`, then advances that
+/// remote by one commit from a scratch clone. Local `main` and the stale
+/// `refs/remotes/origin/main` stay behind until Horde fetches.
+fn bare_origin(dir: &Path, repo: &Path) -> String {
+    let remote = dir.join("remote.git");
+    std::fs::create_dir(&remote).unwrap();
+    git::run(&remote, &["init", "--bare", "-b", "main"]).unwrap();
+    git::run(repo, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+    git::run(repo, &["push", "-q", "origin", "main"]).unwrap();
+    let scratch = dir.join("scratch");
+    git::run(
+        dir,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            scratch.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    for args in [
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Test"],
+        vec!["commit", "--allow-empty", "-m", "ahead"],
+        vec!["push", "-q", "origin", "main"],
+    ] {
+        git::run(&scratch, &args).unwrap();
+    }
+    git::run(&scratch, &["rev-parse", "HEAD"]).unwrap()
+}
+
+fn delivery_base(base: &str) -> Settings {
+    Settings {
+        delivery: horde::config::Delivery {
+            base: base.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn integrated_workspace_starts_from_fetched_delivery_base() {
+    let f = Fixture::with(delivery_base("main"), |_| {});
+    let tip = bare_origin(f.dir.path(), &f.repo());
+    let repo = f.repo();
+    let local = git::run(&repo, &["rev-parse", "HEAD"]).unwrap();
+    assert_ne!(local, tip);
+    let stale = git::run(&repo, &["rev-parse", "refs/remotes/origin/main"]).unwrap();
+    assert_eq!(stale, local, "remote-tracking ref must start stale");
+
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    assert_eq!(git::run(&integrated, &["rev-parse", "HEAD"]).unwrap(), tip);
+    assert_eq!(
+        git::run(&integrated, &["branch", "--show-current"]).unwrap(),
+        format!("horde/{}", f.oid)
+    );
+    // The operator's checkout is untouched.
+    assert_eq!(git::run(&repo, &["rev-parse", "HEAD"]).unwrap(), local);
+    assert_eq!(
+        git::run(&repo, &["branch", "--show-current"]).unwrap(),
+        "main"
+    );
+    assert!(
+        git::run(&repo, &["status", "--porcelain"])
+            .unwrap()
+            .is_empty()
+    );
+
+    let events = f.events("workspace.integrated");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["start"], tip);
+    assert_eq!(events[0]["source"], "origin/main");
+    assert_eq!(events[0]["fetched"], true);
+    assert!(f.events("workspace.local_head_fallback").is_empty());
+
+    let wid = f.coding_worker();
+    let registered = f.events("workspace.registered");
+    assert_eq!(registered.len(), 1);
+    assert_eq!(registered[0]["worker"], wid);
+    assert_eq!(registered[0]["base"], tip);
+    assert_eq!(registered[0]["start"], tip);
+    assert_eq!(registered[0]["start_source"], "origin/main");
+    // A second call reuses the worktree without fetching or re-emitting.
+    assert_eq!(git::task_workspace(&f.db, &f.oid).unwrap(), integrated);
+    assert_eq!(f.events("workspace.integrated").len(), 1);
+}
+
+#[test]
+fn integrated_workspace_prefers_remote_default_branch_when_base_is_empty() {
+    let f = Fixture::new();
+    let tip = bare_origin(f.dir.path(), &f.repo());
+    git::run(&f.repo(), &["remote", "set-head", "origin", "main"]).unwrap();
+    let local = git::run(&f.repo(), &["rev-parse", "HEAD"]).unwrap();
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    assert_eq!(git::run(&integrated, &["rev-parse", "HEAD"]).unwrap(), tip);
+    assert_eq!(git::run(&f.repo(), &["rev-parse", "HEAD"]).unwrap(), local);
+    let events = f.events("workspace.integrated");
+    assert_eq!(events[0]["start"], tip);
+    assert_eq!(
+        events[0]["source"],
+        "origin/HEAD (refs/remotes/origin/main)"
+    );
+    assert!(f.events("workspace.local_head_fallback").is_empty());
+}
+
+#[test]
+fn integrated_workspace_resolves_remote_default_branch_without_origin_head() {
+    let f = Fixture::new();
+    let tip = bare_origin(f.dir.path(), &f.repo());
+    assert!(
+        git::run(
+            &f.repo(),
+            &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]
+        )
+        .is_err()
+    );
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    assert_eq!(git::run(&integrated, &["rev-parse", "HEAD"]).unwrap(), tip);
+    assert!(f.events("workspace.local_head_fallback").is_empty());
+}
+
+#[test]
+fn integrated_workspace_fails_closed_when_delivery_base_cannot_be_fetched() {
+    let f = Fixture::with(delivery_base("nonexistent"), |_| {});
+    bare_origin(f.dir.path(), &f.repo());
+    let error = git::task_workspace(&f.db, &f.oid).unwrap_err().to_string();
+    assert!(error.contains("origin/nonexistent"), "{error}");
+    assert!(
+        !f.db
+            .root
+            .join("workspaces")
+            .join(&f.oid)
+            .join("integrated")
+            .exists()
+    );
+    assert!(
+        git::run(
+            &f.repo(),
+            &[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/horde/{}", f.oid)
+            ]
+        )
+        .is_err()
+    );
+    assert!(f.events("workspace.integrated").is_empty());
+    // A repository without any remote also refuses when a base is configured.
+    let g = Fixture::with(delivery_base("main"), |_| {});
+    let error = git::task_workspace(&g.db, &g.oid).unwrap_err().to_string();
+    assert!(error.contains("origin"), "{error}");
+    // Once the base exists on the remote, the same task allocates normally.
+    let tip = git::run(&f.repo(), &["rev-parse", "HEAD"]).unwrap();
+    git::run(&f.repo(), &["push", "-q", "origin", "main:nonexistent"]).unwrap();
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    assert_eq!(git::run(&integrated, &["rev-parse", "HEAD"]).unwrap(), tip);
+    assert_eq!(
+        f.events("workspace.integrated")[0]["source"],
+        "origin/nonexistent"
+    );
+}
+
+#[test]
+fn integrated_workspace_without_remote_warns_and_uses_local_head() {
+    let f = Fixture::new();
+    let local = git::run(&f.repo(), &["rev-parse", "HEAD"]).unwrap();
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    assert_eq!(
+        git::run(&integrated, &["rev-parse", "HEAD"]).unwrap(),
+        local
+    );
+    let events = f.events("workspace.integrated");
+    assert_eq!(events[0]["start"], local);
+    assert_eq!(events[0]["source"], "local HEAD");
+    assert_eq!(events[0]["fetched"], false);
+    let warnings = f.events("workspace.local_head_fallback");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0]["start"], local);
+    assert!(
+        warnings[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no origin remote"),
+        "{warnings:?}"
+    );
 }

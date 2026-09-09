@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS integrations(id TEXT PRIMARY KEY, task TEXT NOT NULL 
 CREATE UNIQUE INDEX IF NOT EXISTS integration_once ON integrations(task,worker,commit_id);
 CREATE TABLE IF NOT EXISTS workflow_outputs(task TEXT PRIMARY KEY REFERENCES tasks(id), outputs TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS external_ops(task TEXT NOT NULL REFERENCES tasks(id), name TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(task,name));
+CREATE TABLE IF NOT EXISTS workspace_bases(task TEXT PRIMARY KEY REFERENCES tasks(id), start TEXT NOT NULL, source TEXT NOT NULL, fetched INTEGER NOT NULL, created INTEGER NOT NULL);
 INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
 ")?;
         crate::delegation::migrate(&conn)?;
