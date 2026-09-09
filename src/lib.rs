@@ -12,6 +12,7 @@ pub mod protocol;
 pub mod provisioning;
 pub mod runtime;
 pub mod store;
+pub mod summary;
 pub mod template;
 
 pub mod delegation;
