@@ -50,37 +50,56 @@ pub fn load_from(path: &Path) -> Result<Packet> {
     skills::capture_catalog(path, &configured)
 }
 
-pub(crate) fn load_defaults() -> Result<Packet> {
+fn default_locations() -> Result<Vec<PathBuf>> {
     let executable = std::env::current_exe()?;
     let adjacent = executable
         .parent()
         .context("executable directory")?
         .join("skills");
-    if adjacent.try_exists()? {
-        return load_from(&adjacent);
-    }
+    let mut locations = vec![adjacent];
     // Development binaries use the checked-out files on every submission.
     if cfg!(debug_assertions)
         && executable.starts_with(Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
     {
-        return load_from(&Path::new(env!("CARGO_MANIFEST_DIR")).join("skills"));
+        locations.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills"));
+    }
+    Ok(locations)
+}
+
+fn default_catalog() -> Result<(Packet, PathBuf)> {
+    for path in default_locations()? {
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let packet = load_from(&path)
+                    .with_context(|| format!("reading skill pack {}", path.display()))?;
+                return Ok((packet, path));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
     }
     anyhow::bail!(
-        "no skill pack installed; install the Horde skill pack alongside the executable or update this runtime's skills"
+        "no skill pack installed; source builds need the repository's skills directory copied next to the executable"
     )
 }
 
-pub fn load_for(root: &Path) -> Result<Packet> {
+pub(crate) fn load_defaults() -> Result<Packet> {
+    default_catalog().map(|(packet, _)| packet)
+}
+
+fn resolve(root: &Path) -> Result<(Packet, PathBuf)> {
     let pack_root = root.join("skill-packs");
     let current = pack_root.join("CURRENT");
     if fs::symlink_metadata(&current)
         .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
     {
-        return load_defaults();
+        return default_catalog();
     }
     for directory in [&pack_root, &pack_root.join("versions")] {
         ensure!(
-            fs::symlink_metadata(directory)?.is_dir(),
+            fs::symlink_metadata(directory)
+                .with_context(|| format!("reading {}", directory.display()))?
+                .is_dir(),
             "skill pack path must be a regular directory"
         );
     }
@@ -94,12 +113,45 @@ pub fn load_for(root: &Path) -> Result<Packet> {
         digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()),
         "invalid current skill pack hash"
     );
-    let packet = load_from(&pack_root.join("versions").join(&digest))?;
+    let path = pack_root.join("versions").join(&digest);
+    let packet =
+        load_from(&path).with_context(|| format!("reading skill pack {}", path.display()))?;
     ensure!(
         report(&packet)?["hash"] == digest,
         "installed skill pack hash mismatch"
     );
-    Ok(packet)
+    Ok((packet, path))
+}
+
+fn locations(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = vec![root.join("skill-packs/CURRENT")];
+    paths.extend(default_locations()?);
+    Ok(paths)
+}
+
+fn checked(root: &Path) -> Result<(Packet, PathBuf)> {
+    resolve(root).map_err(|error| {
+        let paths = locations(root)
+            .unwrap_or_default()
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::anyhow!("default skill pack check failed: {error:#}; lookup locations (in priority order): {paths}")
+    })
+}
+
+pub fn load_for(root: &Path) -> Result<Packet> {
+    checked(root).map(|(packet, _)| packet)
+}
+
+/// Use the submission resolver without fetching, installing, or changing a pack.
+pub fn check(root: &Path) -> Result<Value> {
+    let (packet, path) = checked(root)?;
+    let mut result = report(&packet)?;
+    result["path"] = json!(path);
+    result["lookup_locations"] = json!(locations(root)?);
+    Ok(result)
 }
 
 fn directory(path: &Path) -> Result<()> {
