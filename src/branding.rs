@@ -22,7 +22,7 @@ pub fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share/horde")
 }
 pub fn project_config(project: &Path) -> PathBuf {
-    project.join(".horde.toml")
+    project.join(".horde/horde.toml")
 }
 pub fn templates(project: &Path) -> PathBuf {
     project.join(".horde/templates")

@@ -1233,6 +1233,40 @@ fn knowledge_kind_choices_match_dispatch_and_rejections_are_clear() {
 }
 
 #[test]
+fn nested_project_settings_override_legacy_and_support_moving_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join(".horde.toml");
+    let nested = dir.path().join(".horde/horde.toml");
+    std::fs::create_dir(nested.parent().unwrap()).unwrap();
+    std::fs::write(
+        &legacy,
+        "concurrency=2\n[executors.worker]\nstep_budget_seconds=91\n",
+    )
+    .unwrap();
+    let before = Settings::load(dir.path()).unwrap();
+    std::fs::rename(&legacy, &nested).unwrap();
+    let after = Settings::load(dir.path()).unwrap();
+    assert_eq!(
+        toml::to_string(&before).unwrap(),
+        toml::to_string(&after).unwrap()
+    );
+    std::fs::write(
+        &legacy,
+        "concurrency=3\ntimeout_seconds=123\n[executors.worker]\nstep_budget_seconds=82\n",
+    )
+    .unwrap();
+    let both = Settings::load(dir.path()).unwrap();
+    assert_eq!(both.concurrency, 2);
+    assert_eq!(both.timeout_seconds, 123);
+    assert_eq!(both.executors["worker"].step_budget_seconds, Some(91));
+    std::fs::write(&nested, "concurrency = [").unwrap();
+    let error = Settings::load(dir.path()).unwrap_err().to_string();
+    assert!(error.contains(".horde/horde.toml"), "{error}");
+    std::fs::write(&nested, "concurency = 2").unwrap();
+    assert!(Settings::load(dir.path()).is_err());
+}
+
+#[test]
 fn output_reference_errors_identify_step_argument_and_value() {
     for (value, message) in [
         ("echo ${HOME}", "output reference must be step.field"),

@@ -20,7 +20,7 @@ There is no shell interpolation, multiline syntax, or escape evaluation.
 Duplicate names, NUL bytes, and reserved `HORDE_` or `TASK_` names are rejected. Keep
 provider authentication keys out of app bundles.
 
-Select it in user settings or the project's `.horde.toml`:
+Select it in user settings or the project's `.horde/horde.toml`:
 
 ```toml
 secret_bundles = ["app"]

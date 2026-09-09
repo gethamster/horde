@@ -39,9 +39,12 @@ try:
         # Fixture author identity is local to the benchmark clone.
         for key, value in [("user.name", "Horde benchmark"), ("user.email", "benchmark@example.invalid")]:
             subprocess.run(["git", "config", key, value], cwd=repo, check=True)
-        config = a.repo / ".horde.toml"
-        if config.exists():
-            (repo / ".horde.toml").write_bytes(config.read_bytes())
+        for relative in (".horde.toml", ".horde/horde.toml"):
+            config = a.repo / relative
+            if config.exists():
+                destination = repo / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(config.read_bytes())
         templates = repo / ".horde/templates"
         templates.mkdir(parents=True, exist_ok=True)
         (templates / "frontier-only.toml").write_text('''name="frontier-only"
