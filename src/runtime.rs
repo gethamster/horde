@@ -759,6 +759,14 @@ pub async fn daemon(root: &Path) -> Result<()> {
             if let Err(error) = cleanup {
                 eprintln!("Environment maintenance: {error:#}");
             }
+            let notify = async {
+                let db = Store::open(&maintenance_root)?;
+                crate::notify::tick(&db).await
+            }
+            .await;
+            if let Err(error) = notify {
+                eprintln!("Notify maintenance: {error:#}");
+            }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });

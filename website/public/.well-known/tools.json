@@ -1,5 +1,5 @@
 {
-  "count": 62,
+  "count": 63,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -1004,6 +1004,21 @@
     {
       "description": "Inspect a task including steps, attempts, workers, questions, and integration",
       "name": "inspect",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Terminal summary: status, step outcomes, integrated head, delivery outcome",
+      "name": "summary",
       "parameters": {
         "additionalProperties": false,
         "properties": {
