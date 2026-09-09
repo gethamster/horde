@@ -2,9 +2,16 @@ name: Release
 on:
   push:
     tags: ['v*']
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
+  checks:
+    uses: ./.github/workflows/rust-checks.yml
+    with:
+      platforms: '["ubuntu-22.04", "ubuntu-24.04-arm", "macos-15", "macos-15-intel"]'
   build:
     strategy:
       fail-fast: false
@@ -21,6 +28,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       HORDE_RELEASE_PUBLIC_KEY: ${{ vars.HORDE_RELEASE_PUBLIC_KEY }}
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: -C target-feature=+crt-static -C link-self-contained=yes
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: -C target-feature=+crt-static -C link-self-contained=yes
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,7 +43,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
-          components: rustfmt, clippy
           targets: ${{ matrix.target }}
       - name: Validate release identity
         shell: bash
@@ -43,26 +53,11 @@ jobs:
           assert re.fullmatch('[0-9a-f]{64}',os.environ['HORDE_RELEASE_PUBLIC_KEY'])
           assert open('website/public/release-key.hex').read().strip() == os.environ['HORDE_RELEASE_PUBLIC_KEY']
           PY
-      - name: Select OpenSSL 3 for release verification
-        if: runner.os == 'macOS'
-        run: echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
-      - run: cargo fmt --all --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
-      - run: python3 scripts/test_release.py
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --locked --release --target ${{ matrix.target }}
-        env:
-          # musl-gcc compiles the C dependencies, but it must not drive the
-          # link. Ubuntu 22.04's musl-gcc defaults to a dynamic PIE and its spec
-          # file injects an ELF interpreter, which silently defeated
-          # +crt-static and produced an x86-64 binary that needed a musl loader.
-          # Ubuntu 24.04's did not, so the two Linux targets disagreed. Link
-          # self-contained instead, against the musl that ships with Rust, so
-          # the result does not depend on a distro's musl-gcc defaults.
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: -C target-feature=+crt-static -C link-self-contained=yes
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: -C target-feature=+crt-static -C link-self-contained=yes
       # `file` reports a crt-static musl build as "static-pie linked", not
       # "statically linked", so test the property we actually need: no ELF
       # interpreter, meaning the binary runs without a loader installed.
@@ -91,7 +86,7 @@ jobs:
           name: horde-${{ matrix.target }}
           path: horde-${{ matrix.target }}.tar
   publish:
-    needs: build
+    needs: [build, checks]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -121,6 +116,8 @@ jobs:
           context: .
           file: packaging/Dockerfile
           platforms: linux/amd64,linux/arm64
+          cache-from: type=gha,scope=horde-image
+          cache-to: type=gha,scope=horde-image,mode=max
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
