@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 /// Status of the per-task synthetic worker row that carries operator steering messages.
 /// Operator rows never receive mail, never wake, and are hidden from worker listings.
 pub const OPERATOR_STATUS: &str = "operator";
@@ -116,6 +116,9 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         crate::delegation::migrate(&conn)?;
         crate::management::migrate(&conn)?;
         crate::skills::migrate(&conn)?;
+        crate::execution_selection::migrate(&conn)?;
+        crate::submission::migrate(&conn)?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self {
             conn,
             root: root.to_owned(),
@@ -168,7 +171,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         settings: &Settings,
         plan: &Plan,
     ) -> Result<String> {
-        let skills = crate::skills::capture(repo, &settings.skills)?;
+        let skills = crate::skills::capture_effective(self, repo, &settings.skills)?;
         self.submit_pinned(objective, repo, settings, plan, &skills)
     }
     pub(crate) fn submit_pinned(

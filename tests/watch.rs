@@ -205,7 +205,26 @@ fn watch_streams_every_event_and_ends_with_summary() {
     assert_eq!(stream.code, 0, "{}", stream.stderr);
     assert_event_lines_are_well_formed(&stream);
     let kinds = stream.kinds();
-    assert_eq!(kinds[0], "task.submitted", "{kinds:?}");
+    assert_eq!(stream.count("task.submitted"), 1, "{kinds:?}");
+    // Pinning skills can emit events before submission. Watch must preserve the
+    // complete durable sequence, including those earlier events.
+    let durable = d.call("events", json!({"task":oid}));
+    let expected: Vec<Value> = durable
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            let data: Value = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
+            json!({"seq":event["seq"],"kind":event["kind"],"created":event["created"],"data":data})
+        })
+        .collect();
+    let streamed: Vec<Value> = stream
+        .lines
+        .iter()
+        .filter(|event| event.get("seq").is_some())
+        .cloned()
+        .collect();
+    assert_eq!(streamed, expected);
     let steps = d.call("inspect", json!({"task":oid}))["steps"]
         .as_array()
         .unwrap()

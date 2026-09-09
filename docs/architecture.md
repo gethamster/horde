@@ -94,10 +94,11 @@ nothing. Unreachable remote runtimes keep root reservations until reconciled.
 
 ## Pinned worker skills
 
-Schema version 3 adds task-owned skill bindings and attempt load records. Submission
+Schema version 3 adds task-owned skill bindings and per-attempt skill records. Submission
 captures explicitly configured skill directories into the existing artifact store.
 Workflow steps select names from that pinned catalog. The shared invocation prompt
-loads selected instructions once; `read_skill` serves bounded resource pages.
+exposes selected names, hashes, and resource locations; `read_skill` serves pinned
+instructions and resources progressively in bounded pages.
 Materialized bundles live outside Git worktrees and preserve executable flags.
 No script runs as a consequence of loading a skill.
 
@@ -131,7 +132,7 @@ The native loop offers file reads, search, full-file writes, unified patches, co
 - `store.rs`: persistence, mailboxes, claims, artifacts, step completion.
 - `protocol.rs`: shared operation handlers, worker scope checks, MCP schemas.
 - `runtime.rs`: scheduler, context assembly, questions, retries, wakeups, daemon.
-- `skills.rs`: pinned instruction bundles, resource reads, prompt loading and transfer.
+- `skills.rs`: pinned instruction bundles, selection metadata, progressive resource reads and transfer.
 - `executor.rs` / `native.rs`: harness adapters, Tuara loop and probe, process lifecycle, tools.
 - `git.rs`: worktrees, scope inspection, integration evidence.
 - `template.rs`: composition, pinning, output references and contracts.
@@ -143,6 +144,34 @@ The native loop offers file reads, search, full-file writes, unified patches, co
 - `network.rs` / `federation.rs`: discovery, mTLS identity, snapshot exchange and caller forwarding.
 
 ## Runtime management and distribution
+
+Authenticated heartbeats advertise bounded capability records without credentials.
+The controller combines those reports with local inventory for parent planning.
+Reports retain freshness and separate credential presence from verified access.
+Conversational role pools resolve to explicit runtime/capability pairs; the parent
+chooses each task's executor. Immutable execution policies bind those pairs to
+provider/model identities and can only narrow through delegation. Receiving
+workers validate their local bindings and apply a task-specific settings copy.
+
+Orchestration skill files are discovered from the installed pack alongside
+configured instructions. Optional per-skill metadata controls default selection;
+no skill names or instruction bodies are compiled into the runtime. Immutable
+runtime-local packs activate through an atomic pointer for future submissions.
+Authenticated skill update requests capture and retain a complete pack for safe
+retry, independently of signed binary updates. Both update paths support generic
+fleet members as well as provider-managed runtimes.
+
+Shipped orchestration skills are captured alongside configured instructions.
+Accepted project overrides are stored independently from the shipped baseline;
+proposals use revision/hash checks before activation. Task snapshots and remote
+packets retain the exact skill content they started with. A skill cannot expand
+runtime execution grants, provider access, or delivery authorization.
+
+Schema version 4 records execution policies, submission receipts, and project
+skill revisions. The version advances only after all additive migrations finish;
+reopening never lowers it. Older runtimes reject this database instead of running
+tasks without their saved execution constraints. Release manifests accept upgrades
+from schema 2 and advertise schema 4 support.
 
 Administrative runtime settings, capacity snapshots, enrollment fingerprints,
 management receipts, provider resources, and operation intents are stored separately
@@ -170,6 +199,19 @@ the selected non-root host over Tailscale SSH, and confirms readiness through th
 existing mTLS enrollment and heartbeat path. Exact private bootstrap packets and
 receiver intents are retained for retry recovery; SQLite retains only enrollment
 hashes and authoritative state. Discovery never creates execution grants.
+
+Named remote submissions retain a root task on the controller and attach the
+existing durable remote-link state to that task. Its plan is pinned for remote
+execution; the controller scheduler excludes every task with a remote link, even
+after a status change or restart. Root authorization is resolved before dispatch.
+Remote completion records execution status and an unverified result snapshot.
+Explicit result retrieval creates a separate checkout with recorded snapshot
+identity; it does not integrate changes into the caller's repository.
+
+Runtime names are presentation metadata. Controller-assigned aliases take
+precedence over names reported on authenticated control connections. Name
+resolution returns a stable runtime ID and rejects ambiguity. Forgetting a stale
+runtime retains revocation and audit records, and never invokes provider deletion.
 
 Universal fleet enrollment uses a separate server-authenticated TLS listener.
 Fleet credentials carry controller trust and authorize admission only. The

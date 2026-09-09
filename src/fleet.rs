@@ -162,14 +162,25 @@ fn identifier(s: &str) -> Result<()> {
 }
 pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
     if name == "runtime_list" {
-        return Ok(Some(json!(db.rows("SELECT r.id,r.profile,r.resource,r.state,r.version,r.created,r.error,p.observed AS last_seen,p.status AS runtime_status FROM managed_runtimes r LEFT JOIN runtime_presence p ON p.runtime=r.id
+        let rows = db.rows("SELECT r.id,r.profile,r.resource,r.state,r.version,r.created,r.error,p.observed AS last_seen,p.status AS runtime_status FROM managed_runtimes r LEFT JOIN runtime_presence p ON p.runtime=r.id WHERE r.state!='removed'
 UNION ALL SELECT m.runtime,'fleet:' || k.name,NULL,CASE WHEN m.state='revoked' THEN 'revoked' WHEN c.expires<=? THEN 'expired' WHEN p.observed>? THEN 'ready' ELSE 'offline' END,json_extract(p.status,'$.version'),m.created,NULL,p.observed,p.status
-FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint LEFT JOIN runtime_presence p ON p.runtime=m.runtime ORDER BY created",&[&now(),&(now()-30)])?)));
+FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint LEFT JOIN runtime_presence p ON p.runtime=m.runtime WHERE NOT EXISTS(SELECT 1 FROM runtime_settings s WHERE s.key='runtime_removed:' || m.runtime AND s.value='true') ORDER BY created",&[&now(),&(now()-30)])?;
+        let rows = rows
+            .into_iter()
+            .map(|row| {
+                let id = row["id"].as_str().context("runtime id")?;
+                let name = crate::runtime_directory::display_name(db, id)?;
+                let mut fields = row.as_object().context("runtime row")?.clone();
+                fields.insert("name".into(), json!(name));
+                Ok(Value::Object(fields))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(Some(json!(rows)));
     }
     if name == "runtime_inspect" {
         let id = args["id"].as_str().context("id required")?;
         return Ok(Some(
-            json!({"runtime":db.rows("SELECT * FROM managed_runtimes WHERE id=?",&[&id])?,"fleet_membership":db.rows("SELECT m.runtime,m.key_id,k.name AS fleet,m.state,m.created,c.expires,c.renew_after FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint WHERE m.runtime=?",&[&id])?,"operations":db.rows("SELECT * FROM runtime_operations WHERE runtime=? ORDER BY created",&[&id])?}),
+            json!({"name":crate::runtime_directory::display_name(db,id)?,"runtime":db.rows("SELECT * FROM managed_runtimes WHERE id=?",&[&id])?,"fleet_membership":db.rows("SELECT m.runtime,m.key_id,k.name AS fleet,m.state,m.created,c.expires,c.renew_after FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint WHERE m.runtime=?",&[&id])?,"operations":db.rows("SELECT * FROM runtime_operations WHERE runtime=? ORDER BY created",&[&id])?.iter().map(management::operation_receipt).collect::<Result<Vec<_>>>()?}),
         ));
     }
     if ![
@@ -177,6 +188,7 @@ FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LE
         "runtime_destroy",
         "runtime_restart",
         "runtime_update",
+        "runtime_skills_update",
         "runtime_stop",
         "runtime_start",
         "runtime_reconcile",
@@ -185,31 +197,117 @@ FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LE
     {
         return Ok(None);
     }
-    let id = args["id"].as_str().context("id required")?;
-    identifier(id)?;
+    db.atomic(|| enqueue_operation(db, name, args))
+}
+
+fn enqueue_operation(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
+    let selector = args["id"].as_str().context("id required")?;
     let operation = args["request_id"]
         .as_str()
         .context("request_id required for retry-safe management")?;
-    let body = args.to_string();
+    ensure!(
+        !operation.is_empty() && operation.len() <= 256,
+        "invalid request_id"
+    );
+    ensure!(
+        args.get("packet").is_none(),
+        "skill packets are captured from the controller catalog"
+    );
     let old = db.rows("SELECT * FROM runtime_operations WHERE id=?", &[&operation])?;
     if let Some(old) = old.first() {
+        let stored: Value = serde_json::from_str(old["args"].as_str().context("operation args")?)?;
+        let intent = if old["action"] == "runtime_skills_update" {
+            let mut intent = stored.as_object().context("operation args")?.clone();
+            intent.remove("packet");
+            Value::Object(intent)
+        } else {
+            stored
+        };
         ensure!(
-            old["runtime"] == id && old["action"] == name && old["args"] == body,
+            old["action"] == name && intent == *args,
             "request ID reused with different operation"
         );
-        return Ok(Some(old.clone()));
+        return Ok(Some(management::operation_receipt(old)?));
     }
-    db.atomic(||{
-        if name=="runtime_create" {
-            let profile=args["profile"].as_str().context("profile required")?;let config=load()?;
-            let spec=config.profiles.get(profile).context("unknown runtime profile")?;spec.validate()?;ensure!(spec.provider!="tailscale","use horde network add to enroll Tailscale hosts");
+    let id = if name == "runtime_create" {
+        identifier(selector)?;
+        selector.to_owned()
+    } else if remote_management(name) {
+        crate::runtime_directory::resolve(db, selector)?
+    } else {
+        crate::runtime_directory::resolve_known(db, selector)?
+    };
+    let body = if name == "runtime_skills_update" {
+        let mut payload = args.as_object().context("operation args")?.clone();
+        payload.insert(
+            "packet".into(),
+            serde_json::to_value(crate::skill_catalog::load_for(&db.root)?)?,
+        );
+        Value::Object(payload).to_string()
+    } else {
+        args.to_string()
+    };
+    if name == "runtime_update" {
+        crate::update::validate_version(args["version"].as_str().context("version required")?)?;
+    }
+    db.atomic(|| {
+        if name == "runtime_create" {
+            let profile = args["profile"].as_str().context("profile required")?;
+            let config = load()?;
+            let spec = config.profiles.get(profile).context("unknown runtime profile")?;
+            spec.validate()?;
+            ensure!(spec.provider != "tailscale", "use horde network add to enroll Tailscale hosts");
             db.conn.execute("INSERT INTO managed_runtimes(id,profile,spec,state,created) VALUES(?,?,?,'requested',?)",params![id,profile,serde_json::to_string(spec)?,now()])?;
-        }else{ensure!(!db.rows("SELECT id FROM managed_runtimes WHERE id=?",&[&id])?.is_empty(),"unknown managed runtime");}
+        } else if db.rows("SELECT id FROM managed_runtimes WHERE id=?", &[&id])?.is_empty() {
+            ensure!(remote_management(name), "provider lifecycle is unavailable for independently enrolled workers");
+            ensure!(crate::fleet_enrollment::authority::is_active(db, &id)?, "runtime must have an active enrollment for remote management");
+        }
         db.conn.execute("INSERT INTO runtime_operations(id,runtime,action,args,state,created) VALUES(?,?,?,?,'pending',?)",params![operation,id,name,body,now()])?;
-        management::event(db,"runtime.operation",json!({"id":operation,"runtime":id,"action":name}))?;Ok(())
+        management::event(db,"runtime.operation",json!({"id":operation,"runtime":id,"action":name}))?;
+        Ok(())
     })?;
     Ok(Some(json!({"request_id":operation,"state":"pending"})))
 }
+fn remote_management(action: &str) -> bool {
+    ["runtime_update", "runtime_restart", "runtime_skills_update"].contains(&action)
+}
+
+async fn send_management(db: &Store, op: &Value, peer: &str) -> Result<Value> {
+    let request = op["id"].as_str().context("operation")?;
+    let action = op["action"].as_str().context("action")?;
+    let args: Value = serde_json::from_str(op["args"].as_str().context("args")?)?;
+    let payload = if action == "runtime_skills_update" {
+        let inventory = crate::capabilities::inventory(db)?;
+        let supported = inventory["runtimes"].as_array().is_some_and(|runtimes| {
+            runtimes.iter().any(|runtime| {
+                runtime["runtime"] == peer
+                    && runtime["protocol"]["features"]
+                        .as_array()
+                        .is_some_and(|features| {
+                            features
+                                .iter()
+                                .any(|feature| feature == "runtime_skills_update")
+                        })
+            })
+        });
+        if !supported {
+            return Ok(
+                json!({"state":"blocked","reason":"worker has not advertised skill updates; update its Horde binary first and wait for a capability heartbeat","request_id":request}),
+            );
+        }
+        json!({"request_id":request,"action":action,"packet":args["packet"]})
+    } else {
+        json!({"request_id":request,"action":action,"version":args["version"]})
+    };
+    let config = crate::federation::config(db)?;
+    match crate::federation::call(&config, peer, "manage", payload).await {
+        Ok(result) => Ok(result),
+        Err(error) => Ok(
+            json!({"state":if now()>op["created"].as_i64().unwrap_or(0)+1800{"blocked"}else{"waiting"},"reason":error.to_string(),"request_id":request}),
+        ),
+    }
+}
+
 async fn command(argv: &[String], input: Option<&Value>) -> Result<Value> {
     use tokio::io::AsyncWriteExt;
     let mut cmd = tokio::process::Command::new(&argv[0]);
@@ -542,6 +640,7 @@ pub fn recover_operations(db: &Store) -> Result<()> {
         if interrupted_update {
             management::set(db, "fleet_updates_paused", "true")?;
         }
+        db.conn.execute("UPDATE runtime_operations SET state='waiting' WHERE state='running' AND runtime!='local' AND action='runtime_skills_update'", [])?;
         db.conn.execute("UPDATE runtime_operations SET state='uncertain' WHERE state='running' AND runtime!='local'", [])?;
         Ok(())
     })
@@ -551,7 +650,7 @@ pub async fn tick(db: &Store) -> Result<()> {
     let paused =
         i64::from(management::value(db, "fleet_updates_paused")?.as_deref() == Some("true"));
     let operations = db.rows(
-        "SELECT * FROM runtime_operations WHERE state IN ('pending','waiting') AND runtime!='local' AND (?=0 OR action!='runtime_update') ORDER BY created LIMIT 1",
+        "SELECT * FROM runtime_operations WHERE state IN ('pending','waiting') AND runtime!='local' AND (?=0 OR action!='runtime_update') ORDER BY created,rowid LIMIT 1",
         &[&paused],
     )?;
     let Some(op) = operations.first() else {
@@ -568,25 +667,31 @@ pub async fn tick(db: &Store) -> Result<()> {
     }
     let action = op["action"].as_str().context("action")?;
     let operation=async{
-        let row=db.rows("SELECT * FROM managed_runtimes WHERE id=?",&[&id])?.remove(0);
+        let managed = db.rows("SELECT * FROM managed_runtimes WHERE id=?", &[&id])?;
+        let Some(row) = managed.first() else {
+            ensure!(remote_management(action), "provider lifecycle requires a managed runtime");
+            ensure!(crate::fleet_enrollment::authority::is_active(db, id)?, "runtime must have an active enrollment for remote management");
+            return send_management(db, op, id).await;
+        };
+        ensure!(row["state"] != "removed", "runtime has been removed");
         let p:Profile=serde_json::from_str(row["spec"].as_str().context("spec")?)?;p.validate()?;
         if action=="runtime_create"{
             let bootstrap=crate::enrollment::issue(db,id,&p)?;
             let resource=provision(db,&p,id,bootstrap.as_ref()).await?;
             db.conn.execute("UPDATE managed_runtimes SET resource=?,state=CASE WHEN state='ready' THEN state ELSE 'provisioned' END WHERE id=?",params![resource,id])?;
             Ok(json!({"resource":resource,"state":"provisioned","enrollment_required":p.peer.is_none()}))
-        }else if ["runtime_update","runtime_restart"].contains(&action){
-            let peer=p.peer.clone().or_else(||db.rows("SELECT runtime FROM runtime_enrollments WHERE runtime=? AND state='active'",&[&id]).ok().and_then(|rows|rows.first().map(|_|id.to_owned()))).context("runtime must be enrolled and have a peer mapping before remote management")?;
-            let config=crate::federation::config(db)?;
-            let args:Value=serde_json::from_str(op["args"].as_str().context("args")?)?;
-            if action=="runtime_update"&&["docker","kubernetes"].contains(&p.provider.as_str()) {
-                container_update(db,&p,id,&row,op,&config,&peer,&args).await
-            }else{
-                match crate::federation::call(&config,&peer,"manage",json!({"request_id":request,"action":action,"version":args["version"]})).await {
-                    Ok(result)=>Ok(result),
-                    Err(error)=>Ok(json!({"state":if now()>op["created"].as_i64().unwrap_or(0)+1800{"blocked"}else{"waiting"},"reason":error.to_string(),"request_id":request})),
-                }
+        }else if remote_management(action){
+            let enrollments = db.rows("SELECT state FROM runtime_enrollments WHERE runtime=?", &[&id])?;
+            if !enrollments.is_empty() {
+                ensure!(crate::fleet_enrollment::authority::is_active(db,id)?, "runtime must have an active enrollment for remote management");
             }
+            let peer = p.peer.clone().or_else(|| (!enrollments.is_empty()).then(|| id.to_owned())).context("runtime must be enrolled and have a peer mapping before remote management")?;
+            if action=="runtime_update"&&["docker","kubernetes"].contains(&p.provider.as_str()) {
+                let config=crate::federation::config(db)?;
+                let args:Value=serde_json::from_str(op["args"].as_str().context("args")?)?;
+                container_update(db,&p,id,row,op,&config,&peer,&args).await
+            } else { send_management(db,op,&peer).await }
+
         }else{
             let input:Value=serde_json::from_str(op["args"].as_str().context("operation args")?)?;
             let resource=if action=="runtime_reconcile"{input["resource"].as_str().context("resource required for reconciliation")?}else{row["resource"].as_str().context("resource ID unavailable; reconcile provisioning first")?};
@@ -601,7 +706,7 @@ pub async fn tick(db: &Store) -> Result<()> {
     }.await;
     match operation {
         Ok(result) => {
-            let state = if ["runtime_update", "runtime_restart"].contains(&action) {
+            let state = if remote_management(action) {
                 match result["state"].as_str() {
                     Some("succeeded") => "succeeded",
                     Some("failed" | "blocked" | "uncertain") => "failed",

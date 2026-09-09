@@ -137,9 +137,93 @@ pub fn status(db: &Store) -> Result<Value> {
         [],
         |r| r.get(0),
     )?;
+    let catalog = crate::skill_catalog::load_for(&db.root)
+        .and_then(|packet| crate::skill_catalog::summary(&packet));
+    let (skill_pack, skill_pack_error) = match catalog {
+        Ok(report) => (report, None),
+        Err(error) => (Value::Null, Some(error.to_string())),
+    };
     Ok(
-        json!({"version":env!("CARGO_PKG_VERSION"),"concurrency":limit(db)?,"active":active,"draining":draining(db)?,"drained":draining(db)?&&active==0,"update_state":value(db,"update_state")?,"fleet_updates_paused":value(db,"fleet_updates_paused")?.as_deref()==Some("true")}),
+        json!({"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"concurrency":limit(db)?,"active":active,"draining":draining(db)?,"drained":draining(db)?&&active==0,"update_state":value(db,"update_state")?,"fleet_updates_paused":value(db,"fleet_updates_paused")?.as_deref()==Some("true"),"skill_pack":skill_pack,"skill_pack_error":skill_pack_error}),
     )
+}
+
+/// Return management progress without retransmitting a captured skill packet.
+pub fn operation_receipt(row: &Value) -> Result<Value> {
+    if row["action"] != "runtime_skills_update" {
+        return Ok(row.clone());
+    }
+    let mut receipt = row.as_object().context("operation receipt")?.clone();
+    if let Some(args) = row["args"].as_str() {
+        let args: Value = serde_json::from_str(args)?;
+        let mut visible = args.as_object().context("operation arguments")?.clone();
+        if let Some(packet) = visible.remove("packet") {
+            let packet: crate::skills::Packet = serde_json::from_value(packet)?;
+            receipt.insert(
+                "requested_catalog".into(),
+                crate::skill_catalog::summary(&packet)?,
+            );
+        }
+        receipt.insert("args".into(), json!(Value::Object(visible).to_string()));
+    }
+    if let Some(result) = row["result"].as_str() {
+        let result: Value = serde_json::from_str(result)?;
+        receipt.insert(
+            "result".into(),
+            json!(operation_receipt(&result)?.to_string()),
+        );
+    }
+    Ok(Value::Object(receipt))
+}
+
+/// Seed missing defaults without racing a user or parent catalog change.
+pub fn bootstrap_catalog(db: &Store, packet: &crate::skills::Packet) -> Result<Value> {
+    db.atomic(|| {
+        let current = db.root.join("skill-packs/CURRENT");
+        let executable = std::env::current_exe()?;
+        let adjacent = executable.parent().context("executable directory")?.join("skills");
+        for path in [&current, &adjacent] {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => return Ok(json!({"skipped":true})),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let pending: bool = db.conn.query_row("SELECT EXISTS(SELECT 1 FROM runtime_operations WHERE runtime='local' AND action='runtime_skills_update' AND state='local_pending')", [], |row| row.get(0))?;
+        if pending || crate::skill_catalog::load_defaults().is_ok() {
+            return Ok(json!({"skipped":true}));
+        }
+        crate::skill_catalog::install(&db.root, packet)
+    })
+}
+
+/// Local and parent-requested catalog installs share durable arrival ordering.
+pub fn install_catalog(db: &Store, packet: &crate::skills::Packet) -> Result<Value> {
+    let request = crate::store::id();
+    remote_command(
+        db,
+        "local-admin",
+        &json!({"action":"runtime_skills_update","request_id":request,"packet":packet}),
+    )?;
+    let id = format!("local-admin:{request}");
+    for op in db.rows("SELECT * FROM runtime_operations WHERE runtime='local' AND action='runtime_skills_update' AND state='local_pending' ORDER BY rowid", &[])? {
+        install_skills(db, &op)?;
+        if op["id"] == id { break; }
+    }
+    let receipt = db
+        .rows(
+            "SELECT state,result FROM runtime_operations WHERE id=?",
+            &[&id],
+        )?
+        .remove(0);
+    let result: Value =
+        serde_json::from_str(receipt["result"].as_str().context("skill update result")?)?;
+    ensure!(
+        receipt["state"] == "succeeded",
+        "{}",
+        result["error"].as_str().unwrap_or("skill update failed")
+    );
+    Ok(result)
 }
 
 pub fn remote_command(db: &Store, peer: &str, args: &Value) -> Result<Value> {
@@ -152,28 +236,73 @@ pub fn remote_command(db: &Store, peer: &str, args: &Value) -> Result<Value> {
     let id = format!("{peer}:{request}");
     let action = args["action"].as_str().context("action required")?;
     ensure!(
-        ["runtime_update", "runtime_restart"].contains(&action),
+        ["runtime_update", "runtime_restart", "runtime_skills_update"].contains(&action),
         "unsupported management command"
     );
     if action == "runtime_update" {
         crate::update::validate_version(args["version"].as_str().context("version required")?)?;
     }
-    let old = db.rows("SELECT * FROM runtime_operations WHERE id=?", &[&id])?;
-    if let Some(old) = old.first() {
-        ensure!(
-            old["args"].as_str() == Some(args.to_string().as_str()) && old["action"] == action,
-            "changed management command for request ID"
-        );
-        return Ok(old.clone());
+    if action == "runtime_skills_update" {
+        let packet: crate::skills::Packet = serde_json::from_value(args["packet"].clone())?;
+        crate::skills::validate(&packet)?;
     }
-    db.conn.execute("INSERT INTO runtime_operations(id,runtime,action,args,state,created) VALUES(?,'local',?,?,'local_pending',?)",params![id,action,args.to_string(),now()])?;
-    Ok(json!({"request_id":request,"state":"accepted"}))
+    ensure!(
+        !request.is_empty() && request.len() <= 256,
+        "invalid request_id"
+    );
+    db.atomic(|| {
+        let old = db.rows("SELECT * FROM runtime_operations WHERE id=?", &[&id])?;
+        if let Some(old) = old.first() {
+            ensure!(old["args"].as_str() == Some(args.to_string().as_str()) && old["action"] == action,
+                "changed management command for request ID");
+            let mut reply = old.as_object().context("operation receipt")?.clone();
+            if action == "runtime_skills_update" && old["state"] == "succeeded" {
+                let result: Value = serde_json::from_str(old["result"].as_str().context("skill update result")?)?;
+                reply.insert("catalog".into(), result);
+            }
+            return operation_receipt(&Value::Object(reply));
+        }
+        db.conn.execute("INSERT INTO runtime_operations(id,runtime,action,args,state,created) VALUES(?,'local',?,?,'local_pending',?)",params![id,action,args.to_string(),now()])?;
+        Ok(json!({"request_id":request,"state":"accepted"}))
+    })
 }
+
+fn install_skills(db: &Store, op: &Value) -> Result<()> {
+    let id = op["id"].as_str().context("operation id")?;
+    db.atomic(|| {
+        let pending: bool = db.conn.query_row(
+            "SELECT state='local_pending' FROM runtime_operations WHERE id=?",
+            [id],
+            |row| row.get(0),
+        )?;
+        if !pending {
+            return Ok(());
+        }
+        let args: Value = serde_json::from_str(op["args"].as_str().context("args")?)?;
+        let packet: crate::skills::Packet = serde_json::from_value(args["packet"].clone())?;
+        let (state, result) = match crate::skill_catalog::install(&db.root, &packet) {
+            Ok(catalog) => ("succeeded", catalog),
+            Err(error) => ("failed", json!({"error":error.to_string()})),
+        };
+        db.conn.execute(
+            "UPDATE runtime_operations SET state=?,result=? WHERE id=? AND state='local_pending'",
+            params![state, result.to_string(), id],
+        )?;
+        event(
+            db,
+            "runtime.skills_updated",
+            json!({"request_id":id,"state":state,"result":result}),
+        )
+    })
+}
+
 pub fn local_commands(db: &Store) -> Result<()> {
-    for op in db.rows("SELECT * FROM runtime_operations WHERE runtime='local' AND state IN ('local_pending','draining') ORDER BY created LIMIT 1",&[])? {
+    for op in db.rows("SELECT * FROM runtime_operations WHERE runtime='local' AND state IN ('local_pending','draining') ORDER BY rowid LIMIT 1",&[])? {
         let id=op["id"].as_str().context("operation id")?;
         let action=op["action"].as_str().context("action")?;
-        if action=="runtime_update" {
+        if action == "runtime_skills_update" {
+            install_skills(db, &op)?;
+        } else if action=="runtime_update" {
             let args:Value=serde_json::from_str(op["args"].as_str().context("args")?)?;
             let log=std::fs::OpenOptions::new().create(true).append(true).open(db.root.join("update.log"))?;
             db.conn.execute("UPDATE runtime_operations SET state='running' WHERE id=?",[id])?;

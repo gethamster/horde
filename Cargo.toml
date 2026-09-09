@@ -38,10 +38,10 @@ prost = "0.14"
 tonic-prost = "0.14"
 tar = "0.4"
 toml_edit = "0.25.13"
+tempfile = "3"
 
 [dev-dependencies]
 rcgen = "0.14"
-tempfile = "3"
 
 [build-dependencies]
 protoc-bin-vendored = "3"

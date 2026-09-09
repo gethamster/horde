@@ -48,6 +48,12 @@ pub fn recover(db: &Store) -> Result<usize> {
     Ok(interrupted.len())
 }
 pub fn ready(db: &Store, oid: &str) -> Result<Vec<Value>> {
+    if !db
+        .rows("SELECT task FROM remote_links WHERE task=?", &[&oid])?
+        .is_empty()
+    {
+        return Ok(vec![]);
+    }
     let steps = db.steps(oid)?;
     let states: BTreeMap<_, _> = steps
         .iter()
@@ -187,6 +193,11 @@ async fn execute_step(
     let o = db.task(oid)?;
     let settings: Settings = serde_json::from_str(o["settings"].as_str().context("settings")?)?;
     let mut step = Store::step(row)?;
+    let settings = if step.kind == "agent" {
+        crate::execution_selection::apply(db, oid, &settings)?
+    } else {
+        settings
+    };
     let failures: i64 = db.conn.query_row(
         "SELECT COUNT(*) FROM attempts WHERE step=? AND state='failed'",
         [tid],
@@ -588,7 +599,7 @@ impl Scheduler {
         notify_completed_children(db)?;
         wake_notified(db)?;
         for o in db.rows(
-            "SELECT id,settings FROM tasks WHERE status='running' ORDER BY created",
+            "SELECT id,settings FROM tasks WHERE status='running' AND NOT EXISTS(SELECT 1 FROM remote_links WHERE task=tasks.id) ORDER BY created",
             &[],
         )? {
             let oid = o["id"].as_str().context("task")?;
@@ -601,6 +612,16 @@ impl Scheduler {
             }
             let settings: Settings =
                 serde_json::from_str(o["settings"].as_str().context("settings")?)?;
+            let settings = if db.steps(oid)?.iter().any(|step| Store::step(step).is_ok_and(|step| step.kind == "agent")) {
+                match crate::execution_selection::apply(db, oid, &settings) {
+                    Ok(settings) => settings,
+                    Err(error) => {
+                        db.conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", [oid])?;
+                        db.event(oid, "execution.selection_blocked", json!({"reason":error.to_string()}))?;
+                        continue;
+                    }
+                }
+            } else { settings };
             settle(db, oid)?;
             let mut active = self
                 .running
@@ -857,6 +878,18 @@ pub async fn daemon(root: &Path) -> Result<()> {
     let mut interval = tokio::time::interval(Duration::from_millis(200));
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     crate::update::complete_handoff(&db)?;
+    // Older updaters replace only the executable. Fetch its signed default pack
+    // independently while keeping management and already-pinned work available.
+    let skills_root = root.to_owned();
+    let skills_bootstrap = tokio::task::spawn_local(async move {
+        loop {
+            match crate::update::ensure_default_skills(&skills_root).await {
+                Ok(()) => break,
+                Err(error) => eprintln!("Default skill installation: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
     loop {
         tokio::select! {
             connection=listener.accept()=>{
@@ -868,6 +901,8 @@ pub async fn daemon(root: &Path) -> Result<()> {
             _=terminate.recv()=>{break;},
         }
     }
+    skills_bootstrap.abort();
+    let _ = skills_bootstrap.await;
     if let Some(reverse) = reverse {
         reverse.abort();
         let _ = reverse.await;

@@ -160,6 +160,37 @@ fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     );
     Ok(out.stdout)
 }
+
+// Imported source must never install Git metadata or run local hooks/filters.
+pub(crate) fn import_git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = crate::executor::clean_command("git")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+        ])
+        .args(args)
+        .current_dir(repo)
+        .output()?;
+    ensure!(output.status.success(), "repository import command failed");
+    ensure!(
+        output.stdout.len() <= 24 * 1024 * 1024,
+        "repository import output exceeds 24 MiB limit"
+    );
+    Ok(output.stdout)
+}
+
+fn git_metadata_component(component: &std::ffi::OsStr) -> bool {
+    // HFS+ ignores these format characters when comparing filenames. APFS and
+    // case-sensitive hosts must reject the same archive before it is portable.
+    let normalized: String = component.to_string_lossy().chars().filter(|c| {
+        !matches!(c, '\u{200c}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{206a}'..='\u{206f}' | '\u{feff}')
+    }).collect();
+    normalized.eq_ignore_ascii_case(".git")
+}
 pub fn snapshot(repo: &Path) -> Result<Value> {
     let commit = String::from_utf8(git(repo, &["rev-parse", "HEAD"])?)?
         .trim()
@@ -199,18 +230,19 @@ pub fn unpack(snapshot: &Value, path: &Path) -> Result<()> {
         );
         let p = e.path()?.into_owned();
         let s = p.to_str().context("UTF-8 repository paths required")?;
-        crate::store::scope(s)?;
         ensure!(
-            !p.components().any(|p| p.as_os_str() == ".git"),
+            !p.components()
+                .any(|p| git_metadata_component(p.as_os_str())),
             "snapshot cannot contain Git metadata"
         );
+        crate::store::scope(s)?;
         ensure!(e.unpack_in(path)?, "snapshot path escapes repository");
     }
-    git(path, &["init", "-b", "main"])?;
-    git(path, &["config", "user.name", "Horde"])?;
-    git(path, &["config", "user.email", "task@localhost"])?;
-    git(path, &["add", "."])?;
-    git(
+    import_git(path, &["init", "--template=", "-b", "main"])?;
+    import_git(path, &["config", "user.name", "Horde"])?;
+    import_git(path, &["config", "user.email", "task@localhost"])?;
+    import_git(path, &["add", "."])?;
+    import_git(
         path,
         &["commit", "--allow-empty", "-m", "Delegated source snapshot"],
     )?;
@@ -350,6 +382,13 @@ impl Service {
                     );
                     return Ok(json!({"id":old["task"],"duplicate":true}));
                 }
+                if let Some(execution) = args.get("execution") {
+                    crate::execution_selection::validate_received(
+                        db,
+                        execution,
+                        &self.config.runtime_id,
+                    )?;
+                }
                 let repo = db
                     .root
                     .join("remote-repositories")
@@ -381,6 +420,9 @@ impl Service {
                         &plan,
                         &skills,
                     )?;
+                    if let Some(execution) = args.get("execution") {
+                        crate::execution_selection::pin(db, &oid, execution)?;
+                    }
                     db.conn.execute(
                         "INSERT INTO remote_origins VALUES(?,?,?)",
                         params![oid, peer, owner],
@@ -454,7 +496,7 @@ impl Service {
                     None
                 };
                 Ok(
-                    json!({"task":o,"questions":questions,"snapshot":snapshot,"steps":db.steps(oid)?,"metrics":crate::metrics::report(db,oid)?,"context_version":crate::delegation::tree(db,oid)?["version"],"cleanup_complete":db.rows("SELECT id FROM app_environments WHERE task=? AND state!='removed'",&[&oid])?.is_empty()}),
+                    json!({"task":o,"questions":questions,"snapshot":snapshot,"steps":db.steps(oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?.first().and_then(|r|r["outputs"].as_str()).map(serde_json::from_str::<Value>).transpose()?.unwrap_or_else(||json!({})),"metrics":crate::metrics::report(db,oid)?,"context_version":crate::delegation::tree(db,oid)?["version"],"cleanup_complete":db.rows("SELECT id FROM app_environments WHERE task=? AND state!='removed'",&[&oid])?.is_empty()}),
                 )
             }
             "caller_operation" | "sync" | "environment_lease" | "child_result"
@@ -529,6 +571,8 @@ impl Service {
                 ensure!(
                     [
                         "delegate_task",
+                        "runtime_capabilities",
+                        "plan_execution",
                         "add_knowledge",
                         "knowledge",
                         "link_knowledge",
@@ -658,6 +702,7 @@ pub async fn tick(db: &Store) -> Result<()> {
     db.conn.execute("UPDATE remote_links SET state='done' WHERE task=?",[oid])?;return Ok(());
    }
    if link["state"]=="pending"||link["state"]=="sending"{
+    if link["state"]=="pending" && link["status"]=="waiting" {return Ok(());}
     if link["state"]=="pending"&&!crate::delegation::capacity(db,oid)?{return Ok(());}
     let mut packet=prepared_packet(db,oid)?;
     db.conn.execute("UPDATE remote_links SET state='sending',base=? WHERE task=?",params![packet["snapshot"]["commit"].as_str(),oid])?;
@@ -669,11 +714,19 @@ pub async fn tick(db: &Store) -> Result<()> {
    if link["status"]=="cancelled"{call(&config,peer,"cancel",json!({"task":remote})).await?;}
    let reply=call(&config,peer,"status",json!({"task":remote})).await?;
    let status=reply["task"]["status"].as_str().context("remote status")?;
-   if status=="succeeded" && !crate::delegation::child_completion(db,oid)? {return Ok(());}
-   if status=="succeeded" && reply["context_version"]!=crate::delegation::tree(db,oid)?["version"]{
+   let cancelled=db.task(oid)?["status"]=="cancelled";
+   // A cancellation committed while status was in flight must reach the worker
+   // before its reservation is released. The next tick sends that cancellation.
+   if cancelled && link["status"]!="cancelled" {return Ok(());}
+   if !cancelled && status=="succeeded" && !crate::delegation::child_completion(db,oid)? {return Ok(());}
+   if !cancelled && status=="succeeded" && reply["context_version"]!=crate::delegation::tree(db,oid)?["version"]{
     db.conn.execute("UPDATE tasks SET status='blocked' WHERE id=?",[oid])?;return Ok(());
    }
    if ["succeeded","failed","cancelled"].contains(&status) && reply["cleanup_complete"]==true{
+    if crate::delegation::tree(db,oid)?["parent"].is_null() {
+     crate::remote_submit::complete(db,oid,&reply,&link["base"])?;return Ok(());
+    }
+    let status=if cancelled {"cancelled"} else {status};
     db.atomic(||{
     db.conn.execute("UPDATE tasks SET status=? WHERE id=?",params![status,oid])?;
     db.conn.execute("UPDATE remote_links SET state='done' WHERE task=?",[oid])?;
@@ -947,8 +1000,7 @@ fn prepared_packet(db: &Store, oid: &str) -> Result<Value> {
     }
     let o = db.task(oid)?;
     let tree = crate::delegation::tree(db, oid)?;
-    let parent = tree["parent"].as_str().context("parent")?;
-    let source = crate::git::task_workspace(db, parent)?;
+    let parent = tree["parent"].as_str();
     let caller=db.rows("SELECT hash FROM artifact_links WHERE task=? AND name='caller-snapshot' ORDER BY rowid LIMIT 1",&[&oid])?;
     let snapshot = if let Some(row) = caller.first() {
         let hash = row["hash"].as_str().context("snapshot hash")?;
@@ -959,9 +1011,17 @@ fn prepared_packet(db: &Store, oid: &str) -> Result<Value> {
         );
         serde_json::from_slice::<Value>(&bytes)?
     } else {
-        snapshot(&source)?
+        snapshot(&crate::git::task_workspace(db, parent.unwrap_or(oid))?)?
     };
-    let packet = json!({"task":oid,"objective":o["objective"],"snapshot":snapshot,"context":crate::delegation::mandatory(db,oid)?,"settings":serde_json::from_str::<Value>(o["settings"].as_str().context("settings")?)?,"plan":serde_json::from_str::<Value>(o["plan"].as_str().context("plan")?)?,"skills":crate::skills::packet(db,oid)?});
+    let mut settings: Value = serde_json::from_str(o["settings"].as_str().context("settings")?)?;
+    if parent.is_none() {
+        // A root's original authorization is resolved by its owning controller.
+        settings["autonomy"] = json!(true);
+    }
+    let mut packet = json!({"task":oid,"objective":o["objective"],"snapshot":snapshot,"context":crate::delegation::mandatory(db,oid)?,"settings":settings,"plan":serde_json::from_str::<Value>(o["plan"].as_str().context("plan")?)?,"skills":crate::skills::packet(db,oid)?});
+    if let Some(execution) = crate::execution_selection::policy(db, oid)? {
+        packet["execution"] = execution;
+    }
     db.artifact(
         oid,
         None,

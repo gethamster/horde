@@ -1,7 +1,8 @@
 # Installation and releases
 
 Official releases provide `install.sh`, signed `manifest.json`/`manifest.sig`,
-`SHA256SUMS`, uncompressed binary tar archives, and a multi-architecture OCI image.
+`SHA256SUMS`, uncompressed binary tar archives, a separate `skills.tar`, and a
+multi-architecture OCI image.
 Targets are macOS ARM64/x86-64 and Linux ARM64/x86-64 (static musl binaries).
 
 ```sh
@@ -20,7 +21,8 @@ checkouts. The unrendered template cannot install unsigned builds. Existing
 managed installations use `horde update`.
 
 Interactive installation asks whether Horde should start at machine boot.
-Without a terminal it installs only the binary unless `--service` is supplied.
+Without a terminal it installs the binary and skills without a boot service unless
+`--service` is supplied.
 Linux installs a systemd system service; macOS installs a LaunchDaemon. Both run
 as the installing user, including their HOME and a configured tool PATH. Only
 service setup/removal invokes sudo. Provider credentials are not embedded in
@@ -38,6 +40,23 @@ startup file for your current shell and tells you to open a new terminal.
 Versioned executables and the `current` link live under
 `~/.local/share/horde-install`. Runtime databases and workspaces remain in the
 configured data directory. Service uninstall retains those files and credentials.
+
+## Skill files and older updaters
+
+The signed manifest lists `skills.tar` as an additional artifact. Binary archives
+retain their single `horde` entry so older updaters can install the new executable.
+Current installers and updaters verify the skill artifact and place its files
+beside that executable; container images include the same directories.
+
+When an older updater installs only the new executable, the daemon retrieves the
+missing default pack from that exact version's signed release. This runs in the
+background and retries download failures while management and existing pinned work
+remain available. It preserves any explicitly installed pack, including a pack
+installed while the download is in progress. An invalid existing pack reports an
+error for inspection instead of being silently replaced.
+
+Later skill edits use `horde skills install DIRECTORY` and worker synchronization;
+they do not require another executable release. See [runtime skills](runtime-skills.md).
 
 ## Recovering an older database
 
@@ -80,10 +99,15 @@ Configure GitHub Actions with:
 Keep private signing material out of the repository. The workflow verifies that
 the signing key matches the key embedded in binaries, and that the pushed `v*`
 tag matches the package version. Formatting, platform lint and test jobs, and the
-four binary builds run concurrently. Publication waits for every check and build
-to pass, then publishes digest-addressed images, the signed manifest, and the
-installer. Tags containing a prerelease suffix are marked prerelease; automatic
-updates use the latest stable release.
+four binary builds run concurrently. Each Linux runner then builds its container
+image on its native architecture while other platform checks continue. These
+intermediate images have immutable digest references, with separate layer caches
+for AMD64 and ARM64; they receive no release tag yet. Publication waits for every
+check and build to pass, verifies both image platforms, combines their digests
+under the version tag, and signs the manifest with that combined image digest.
+The signed manifest and installer then pass through public download verification.
+Tags containing a prerelease suffix are marked prerelease; automatic updates use
+the latest stable release.
 
 CI runs on pull requests and pushes to `main`, avoiding duplicate push runs for
 PR branches. New commits cancel superseded CI runs; release runs are not cancelled.

@@ -205,6 +205,8 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
         );
         return Ok(json!({"id":old["task"],"duplicate":true}));
     }
+    let normalized = delegation_target(db, args)?;
+    let args = &normalized;
     let parent = db.task(oid)?;
     let source = if let Some(worker) = args["worker"].as_str() {
         db.worker(worker)?["workspace"]
@@ -249,6 +251,8 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
   settings.secret_bundles.clear();
   settings.skills.clear();
   let child=db.submit_pinned(objective,repo,&settings,&plan,&skills)?;
+  crate::execution_selection::inherit(db,oid,&child,args)?;
+  crate::execution_selection::validate_target(db,&child,args["peer"].as_str())?;
   if args["peer"].is_null(){
    let target=db.root.join("delegated-repositories").join(&child);std::fs::create_dir_all(target.parent().context("repository directory")?)?;
    let base=if let Some(snapshot)=args.get("_snapshot"){
@@ -276,6 +280,51 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
   db.event(oid,"child.submitted",json!({"child":child,"id":request,"assignment":objective}))?;
   Ok(json!({"id":child,"root":r,"parent":oid}))
  })
+}
+
+fn delegation_target(db: &Store, args: &Value) -> Result<Value> {
+    let mut normalized = args.clone();
+    let inventory = if args["execution"].is_object() {
+        Some(crate::capabilities::inventory(db)?)
+    } else {
+        None
+    };
+    if let Some(inventory) = inventory {
+        let selected = args["execution"]["selected"]["runtime"]
+            .as_str()
+            .context("execution requires a selected runtime")?;
+        let runtimes = inventory["runtimes"]
+            .as_array()
+            .context("runtime inventory")?;
+        let local = runtimes
+            .iter()
+            .find(|runtime| runtime["local"] == true)
+            .context("local runtime")?;
+        let target =
+            if selected == "local" || local["runtime"] == selected || local["name"] == selected {
+                None
+            } else {
+                Some(crate::runtime_directory::resolve(db, selected)?)
+            };
+        if args["peer"].is_null() {
+            normalized["peer"] = serde_json::to_value(target)?;
+        }
+    }
+    if let Some(peer) = normalized["peer"].as_str() {
+        if peer == "local" {
+            normalized
+                .as_object_mut()
+                .context("arguments")?
+                .remove("peer");
+        } else if !crate::federation::config(db)?
+            .delegate_peers
+            .iter()
+            .any(|id| id == peer)
+        {
+            normalized["peer"] = json!(crate::runtime_directory::resolve(db, peer)?);
+        }
+    }
+    Ok(normalized)
 }
 pub fn ask(db: &Store, oid: &str, args: &Value) -> Result<Value> {
     let q = args["question"].as_str().context("question")?;

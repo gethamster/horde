@@ -4,6 +4,9 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+mod archive;
+mod skills;
+pub use skills::{ensure_default_skills, install_release_skills};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
@@ -299,31 +302,15 @@ pub async fn run(
         .iter()
         .find(|a| a.target == target().unwrap_or_default())
         .context("release has no artifact for this platform")?;
-    let archive = download(&client, &artifact.url, 256 * 1024 * 1024).await?;
+    let archive = download(&client, &artifact.url, 272 * 1024 * 1024).await?;
     ensure!(
         crate::store::hash(&archive) == artifact.sha256,
         "release artifact checksum mismatch"
     );
     let stage = install.join(format!("staging-{}", crate::store::id()));
     std::fs::create_dir(&stage)?;
-    let mut tar = tar::Archive::new(archive.as_slice());
-    let mut found = false;
-    for e in tar.entries()? {
-        let mut e = e?;
-        ensure!(
-            e.path()?.as_ref() == Path::new("horde")
-                && e.header().entry_type().is_file()
-                && e.size() <= 256 * 1024 * 1024,
-            "unexpected release archive entry"
-        );
-        ensure!(!found, "duplicate release binary");
-        e.unpack(stage.join("horde"))?;
-        found = true;
-    }
-    ensure!(found, "release binary missing");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(stage.join("horde"), std::fs::Permissions::from_mode(0o755))?;
-    std::fs::File::open(stage.join("horde"))?.sync_all()?;
+    archive::extract(&archive, &stage)?;
+    skills::stage(&client, &manifest, &stage).await?;
     let output = std::process::Command::new(stage.join("horde"))
         .arg("--version")
         .output()?;

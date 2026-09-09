@@ -80,17 +80,58 @@ if not a['url'].startswith('https://horde.sh/releases/v'): raise SystemExit('Unt
 if not re.fullmatch(r'[0-9a-f]{64}', a['sha256']): raise SystemExit('Invalid artifact checksum')
 for name, value in [('version',m['version']),('url',a['url']),('hash',a['sha256'])]:
     (scratch/name).write_text(value)
+skills = [a for a in m['artifacts'] if a['target'] == 'skills']
+if len(skills) > 1: raise SystemExit('Duplicate skills artifact')
+if skills:
+    a = skills[0]
+    if not a['url'].startswith('https://horde.sh/releases/v'): raise SystemExit('Untrusted skills URL')
+    if not re.fullmatch(r'[0-9a-f]{64}', a['sha256']): raise SystemExit('Invalid skills checksum')
+    (scratch/'skills-url').write_text(a['url'])
+    (scratch/'skills-hash').write_text(a['sha256'])
 PY
 curl --fail --silent --show-error --location --proto '=https' "$(cat "$scratch/url")" -o "$scratch/horde.tar"
+if [ -f "$scratch/skills-url" ]; then
+  curl --fail --silent --show-error --location --proto '=https' "$(cat "$scratch/skills-url")" -o "$scratch/skills.tar"
+fi
 python3 -I - "$scratch" <<'PY'
 import hashlib, pathlib, sys, tarfile
-p = pathlib.Path(sys.argv[1]); archive=p/'horde.tar'
-if hashlib.sha256(archive.read_bytes()).hexdigest() != (p/'hash').read_text(): raise SystemExit('Artifact checksum mismatch')
-with tarfile.open(archive) as tar:
-    entries=tar.getmembers()
-    if not (len(entries)==1 and entries[0].name == 'horde' and entries[0].isfile()): raise SystemExit('Invalid binary archive')
-    if entries[0].size > 256*1024*1024: raise SystemExit('Binary too large')
-    (p/'horde').write_bytes(tar.extractfile(entries[0]).read())
+p = pathlib.Path(sys.argv[1])
+def extract(archive, hash_name, skills_only):
+    if archive.stat().st_size > (16 if skills_only else 272)*1024*1024: raise SystemExit('Release archive too large')
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != (p/hash_name).read_text(): raise SystemExit('Artifact checksum mismatch')
+    seen = set(); skill_bytes = 0; found = False
+    with tarfile.open(archive, mode='r:') as tar:
+        for entry in tar:
+            name = entry.name.rstrip('/')
+            parts = name.split('/')
+            if (len(name) > 1024 or any(part in ('', '.', '..') for part in parts)
+                or any(ord(c) < 32 or ord(c) == 127 for c in name) or '\\' in name or ':' in name
+                or not ((entry.isfile() and name == 'horde') or (entry.isdir() and name == 'skills') or name.startswith('skills/'))):
+                raise SystemExit('Invalid release archive path')
+            if not (entry.isfile() or entry.isdir()): raise SystemExit('Invalid release archive entry type')
+            if len(seen) >= 4096 or name.lower() in seen: raise SystemExit('Duplicate or excessive release entries')
+            seen.add(name.lower())
+            target = p/name
+            if entry.isdir():
+                if entry.size: raise SystemExit('Release directory has content')
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if skills_only and name == 'horde': raise SystemExit('Binary in skills artifact')
+            if name == 'horde':
+                if entry.size > 256*1024*1024: raise SystemExit('Binary too large')
+                found = True
+            else:
+                skill_bytes += entry.size
+                if entry.size > 1024*1024 or skill_bytes > 8*1024*1024: raise SystemExit('Release skills too large')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            data = tar.extractfile(entry).read()
+            if len(data) != entry.size: raise SystemExit('Truncated release file')
+            with target.open('xb') as output: output.write(data)
+            target.chmod(0o755 if name == 'horde' or entry.mode & 0o111 else 0o644)
+    if not skills_only and not found: raise SystemExit('Release binary missing')
+    if skills_only and not (p/'skills').is_dir(): raise SystemExit('Release skills missing')
+extract(p/'horde.tar', 'hash', False)
+if (p/'skills.tar').exists(): extract(p/'skills.tar', 'skills-hash', True)
 PY
 chmod 755 "$scratch/horde"
 version=$(cat "$scratch/version")
@@ -114,6 +155,7 @@ with (root/'update.lock').open('a') as lock:
         raise SystemExit('Horde is already installed; use horde update to drain and update safely.')
     release=root/(version+'-'+str(uuid.uuid4())); release.mkdir()
     shutil.copy2(binary,release/'horde')
+    if (binary.parent/'skills').is_dir(): shutil.copytree(binary.parent/'skills', release/'skills')
     temporary=root/('next-'+str(uuid.uuid4())); temporary.symlink_to(release)
     os.replace(temporary,root/'current')
 PY

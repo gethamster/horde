@@ -7,188 +7,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
 
-pub const OPERATIONS: &[(&str, &str)] = &[
-    (
-        "runtime_updates_resume",
-        "Resume queued fleet updates after inspecting a failed rollout",
-    ),
-    (
-        "runtime_reconcile",
-        "Inspect and adopt a provider resource after uncertain provisioning",
-    ),
-    ("runtime_list", "List managed runtime"),
-    ("runtime_inspect", "Inspect managed runtime"),
-    ("runtime_create", "Create managed runtime"),
-    ("runtime_destroy", "Destroy managed runtime"),
-    ("runtime_restart", "Restart managed runtime"),
-    ("runtime_update", "Update managed runtime"),
-    ("runtime_stop", "Stop managed runtime"),
-    ("runtime_start", "Start managed runtime"),
-    ("runtime_config_get", "Read runtime concurrency"),
-    (
-        "runtime_config_set",
-        "Change runtime concurrency without interrupting work",
-    ),
-    ("runtime_drain", "Stop new dispatches"),
-    ("runtime_resume", "Resume runtime dispatch"),
-    ("runtime_status", "Inspect version and drain status"),
-    ("account_status", "Inspect account capacity and freshness"),
-    (
-        "account_observe",
-        "Record an explicit account quota observation",
-    ),
-    ("management_events", "Read runtime management events"),
-    ("management_ack", "Acknowledge management events"),
-    (
-        "integrate_child",
-        "Import a completed child and verify the combined result",
-    ),
-    (
-        "environments",
-        "Inspect owned application environments and cleanup state",
-    ),
-    (
-        "refresh_bundles",
-        "Explicitly refresh selected application bundle versions",
-    ),
-    (
-        "delegate_task",
-        "Create a bounded child task; id is required for retry deduplication",
-    ),
-    ("list_children", "Inspect immediate child tasks"),
-    (
-        "list_skills",
-        "List the task’s pinned skill names and hashes",
-    ),
-    (
-        "read_skill",
-        "Read a pinned skill or relative resource; default path SKILL.md, paged by byte offset",
-    ),
-    (
-        "read_context",
-        "Read original source context using bounded pages",
-    ),
-    (
-        "update_context",
-        "Root caller: append authoritative context with provenance and invalidate stale acceptance",
-    ),
-    (
-        "pending_questions",
-        "Read questions addressed to this caller",
-    ),
-    (
-        "escalate_question",
-        "Forward the original question one level to your parent",
-    ),
-    (
-        "ack_events",
-        "Acknowledge durable events through a consumer cursor",
-    ),
-    (
-        "propose_steps",
-        "Planner-only: propose parallel or dependent steps. Runtime validates and inserts them before the planning step’s pending successors",
-    ),
-    (
-        "request_question",
-        "Ask for required information; hold this worker while its caller answers or escalates",
-    ),
-    (
-        "metrics",
-        "Reported usage, cost, latency, retries, and coordination overhead",
-    ),
-    (
-        "submit_task",
-        "Submit objective, repo, and optional template; returns durable task id",
-    ),
-    (
-        "inspect",
-        "Inspect a task including steps, attempts, workers, questions, and integration",
-    ),
-    (
-        "summary",
-        "Terminal summary: status, step outcomes, integrated head, delivery outcome",
-    ),
-    ("list_tasks", "List submitted tasks and their status"),
-    ("events", "Read ordered activity events"),
-    ("cancel", "Cancel a task"),
-    (
-        "resume",
-        "Resume paused or failed work; interrupted processes require reconciliation",
-    ),
-    ("answer_question", "Answer a pending question"),
-    (
-        "register_worker",
-        "Create task-scoped worker identity and token",
-    ),
-    (
-        "register_workspace",
-        "Register path, branch and base before editing",
-    ),
-    (
-        "send_message",
-        "Persist a message to worker id, group:name, or task. Supply id for deduplication",
-    ),
-    (
-        "steer",
-        "Operator: post a message to workers on a task; omit worker to fan out, or set worker to target one",
-    ),
-    (
-        "read_messages",
-        "Read unacknowledged messages; after is an optional sequence cursor",
-    ),
-    (
-        "acknowledge_messages",
-        "Acknowledge an explicit list of message ids",
-    ),
-    ("list_workers", "List worker identities and status"),
-    (
-        "set_worker_status",
-        "Set idle, working, blocked, or stopped status",
-    ),
-    ("join_channel", "Join a named group channel"),
-    (
-        "claim_paths",
-        "Acquire exclusive paths in a registered workspace",
-    ),
-    (
-        "transfer_claim",
-        "Atomically hand off a claim to another worker",
-    ),
-    (
-        "release_claims",
-        "Release claims after worker is stopped or idle",
-    ),
-    (
-        "reconcile_worker",
-        "Confirm an interrupted process exited, then make step resumable",
-    ),
-    (
-        "add_steps",
-        "Append validated steps as a durable workflow revision",
-    ),
-    (
-        "put_artifact",
-        "Store content with input fingerprint and verification status",
-    ),
-    ("get_artifact", "Read a task artifact by hash"),
-    (
-        "reuse_artifact",
-        "Find a verified artifact with identical input fingerprint",
-    ),
-    (
-        "add_knowledge",
-        "Store fact, decision or evidence with provenance",
-    ),
-    ("knowledge", "Read knowledge for this task"),
-    (
-        "link_knowledge",
-        "Link two knowledge records with a relationship",
-    ),
-    (
-        "integrate",
-        "Integrate a committed worker worktree; optional validation argv",
-    ),
-];
+mod operations;
+pub use operations::OPERATIONS;
 pub const KNOWLEDGE_KINDS: &[&str] = &["fact", "decision", "evidence"];
 
 fn string<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
@@ -197,286 +17,13 @@ fn string<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
 fn strings(v: &Value, k: &str) -> Result<Vec<String>> {
     serde_json::from_value(v[k].clone()).with_context(|| format!("{k} must be a string array"))
 }
-/// Published worker tools omit fields supplied or controlled by the runtime.
-pub fn schema(name: &str) -> Value {
-    let mut schema = admin_schema(name);
-    if worker_allowed(name) {
-        let owned = |key: &str| {
-            ["task", "worker", "step", "verified"].contains(&key) || key.starts_with('_')
-        };
-        schema["properties"]
-            .as_object_mut()
-            .expect("object schema")
-            .retain(|key, _| !owned(key));
-        schema["required"]
-            .as_array_mut()
-            .expect("required fields")
-            .retain(|key| !owned(key.as_str().expect("field name")));
-    }
-    schema
-}
-/// Operator tools keep explicit task selection and verification controls.
-pub fn admin_schema(name: &str) -> Value {
-    let fields: &[(&str, &str)] = match name {
-        "runtime_updates_resume" => &[],
-        "runtime_reconcile" => &[
-            ("id", "string"),
-            ("request_id", "string"),
-            ("resource", "string"),
-        ],
-        "runtime_list" => &[],
-        "runtime_inspect" => &[("id", "string")],
-        "runtime_create" | "runtime_destroy" | "runtime_restart" | "runtime_update"
-        | "runtime_stop" | "runtime_start" => &[
-            ("id", "string"),
-            ("request_id", "string"),
-            ("profile", "string"),
-            ("version", "string"),
-        ],
-        "runtime_config_get" | "runtime_drain" | "runtime_resume" | "runtime_status"
-        | "account_status" => &[],
-        "runtime_config_set" => &[("concurrency", "integer")],
-        "account_observe" => &[
-            ("account", "string"),
-            ("provider", "string"),
-            ("window", "string"),
-            ("used_percent", "number"),
-            ("reset_at", "integer"),
-            ("observed_at", "integer"),
-            ("source", "string"),
-        ],
-        "management_events" => &[("after", "integer")],
-        "management_ack" => &[("consumer", "string"), ("seq", "integer")],
-        "submit_task" => &[
-            ("context", "array"),
-            ("objective", "string"),
-            ("repo", "string"),
-            ("template", "string"),
-        ],
-        "send_message" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("id", "string"),
-            ("destination", "string"),
-            ("body", "string"),
-            ("refs", "object"),
-            ("actionable", "boolean"),
-        ],
-        "steer" => &[
-            ("task", "string"),
-            ("id", "string"),
-            ("body", "string"),
-            ("refs", "object"),
-            ("actionable", "boolean"),
-            ("worker", "string"),
-        ],
-        "read_messages" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("after", "integer"),
-            ("limit", "integer"),
-        ],
-        "acknowledge_messages" => &[("task", "string"), ("worker", "string"), ("ids", "array")],
-        "register_workspace" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("path", "string"),
-            ("branch", "string"),
-            ("base", "string"),
-        ],
-        "claim_paths" => &[("task", "string"), ("worker", "string"), ("paths", "array")],
-        "transfer_claim" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("to", "string"),
-            ("path", "string"),
-        ],
-        "set_worker_status" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("status", "string"),
-        ],
-        "join_channel" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("channel", "string"),
-        ],
-        "put_artifact" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("step", "string"),
-            ("name", "string"),
-            ("content", "string"),
-            ("inputs", "object"),
-            ("verified", "boolean"),
-        ],
-        "get_artifact" => &[("task", "string"), ("hash", "string")],
-        "reuse_artifact" => &[("task", "string"), ("name", "string"), ("inputs", "object")],
-        "add_knowledge" => &[
-            ("task", "string"),
-            ("step", "string"),
-            ("kind", "string"),
-            ("content", "string"),
-            ("provenance", "object"),
-            ("inputs", "object"),
-            ("verified", "boolean"),
-        ],
-        "link_knowledge" => &[
-            ("task", "string"),
-            ("source", "string"),
-            ("target", "string"),
-            ("relation", "string"),
-        ],
-        "integrate_child" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("child", "string"),
-            ("validation", "array"),
-        ],
-        "delegate_task" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("id", "string"),
-            ("objective", "string"),
-            ("template", "string"),
-            ("peer", "string"),
-            ("bundles", "array"),
-            ("skills", "array"),
-        ],
-        "read_skill" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("name", "string"),
-            ("path", "string"),
-            ("offset", "integer"),
-            ("limit", "integer"),
-        ],
-        "read_context" => &[
-            ("task", "string"),
-            ("after", "integer"),
-            ("limit", "integer"),
-        ],
-        "update_context" => &[
-            ("task", "string"),
-            ("id", "string"),
-            ("kind", "string"),
-            ("content", "string"),
-            ("provenance", "string"),
-            ("mandatory", "boolean"),
-            ("supersedes", "array"),
-        ],
-        "escalate_question" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("question", "string"),
-            ("commentary", "string"),
-        ],
-        "ack_events" => &[
-            ("task", "string"),
-            ("consumer", "string"),
-            ("seq", "integer"),
-        ],
-        "request_question" => &[
-            ("id", "string"),
-            ("evidence", "string"),
-            ("recommendation", "string"),
-            ("human_only", "boolean"),
-            ("task", "string"),
-            ("worker", "string"),
-            ("question", "string"),
-        ],
-        "answer_question" => &[
-            ("worker", "string"),
-            ("human", "boolean"),
-            ("task", "string"),
-            ("question", "string"),
-            ("answer", "string"),
-        ],
-        "propose_steps" => &[("task", "string"), ("worker", "string"), ("steps", "array")],
-        "add_steps" => &[("task", "string"), ("steps", "array")],
-        "integrate" => &[
-            ("task", "string"),
-            ("worker", "string"),
-            ("validation", "array"),
-        ],
-        "register_worker" => &[("task", "string"), ("step", "string")],
-        "release_claims" | "reconcile_worker" => &[("task", "string"), ("worker", "string")],
-        "events" => &[
-            ("task", "string"),
-            ("after", "integer"),
-            ("consumer", "string"),
-        ],
-        "list_tasks" => &[],
-        _ => &[("task", "string")],
-    };
-    let properties: serde_json::Map<String, Value> = fields
-        .iter()
-        .map(|(k, t)| {
-            let mut s = json!({"type":t});
-            if *t == "array" {
-                s["items"] = if *k == "steps" {
-                    template::step_schema()
-                } else if *k == "context" {
-                    json!({"type":"object"})
-                } else {
-                    json!({"type":"string"})
-                };
-            }
-            if name == "add_knowledge" && *k == "kind" {
-                s["enum"] = json!(KNOWLEDGE_KINDS);
-            }
-            if *k == "steps" {
-                s["description"] = json!("Workflow Step objects. Call this tool with a steps array; step IDs are data, never tool names. Use expanded steps, not nested template invocations.");
-                if name == "propose_steps" {
-                    s["minItems"] = json!(1);
-                    s["maxItems"] = json!(32);
-                    s["items"]["properties"]["kind"]["enum"] = json!(["agent", "command", "simulated", "environment"]);
-                    s["items"]["properties"]["template"] = json!({"type":"null","description":"Planner proposals must be expanded; omit template."});
-                }
-            }
-            (k.to_string(), s)
-        })
-        .collect();
-    let required: &[&str] = match name {
-        "runtime_config_set" => &["concurrency"],
-        "runtime_create" => &["id", "profile", "request_id"],
-        "runtime_inspect" => &["id"],
-        "runtime_update" => &["id", "request_id", "version"],
-        "runtime_destroy" | "runtime_restart" | "runtime_start" | "runtime_stop" => {
-            &["id", "request_id"]
-        }
-        "runtime_reconcile" => &["id", "request_id", "resource"],
-        "account_observe" => &["account", "provider", "window", "observed_at", "source"],
-        "management_ack" => &["consumer", "seq"],
-        "submit_task" => &["objective", "repo"],
-        "delegate_task" => &["id", "objective"],
-        "read_skill" => &["name"],
-        "integrate_child" => &["child", "validation"],
-        "update_context" => &["content", "provenance"],
-        "ack_events" => &["consumer", "seq"],
-        "escalate_question" => &["question"],
-        "send_message" => &["id", "destination", "body"],
-        "steer" => &["body"],
-        "request_question" => &["question"],
-        "propose_steps" | "add_steps" => &["steps"],
-        "register_workspace" => &["path", "branch", "base"],
-        "claim_paths" => &["paths"],
-        "transfer_claim" => &["to", "path"],
-        "acknowledge_messages" => &["ids"],
-        "set_worker_status" => &["status"],
-        "join_channel" => &["channel"],
-        "put_artifact" => &["name", "content"],
-        "get_artifact" => &["hash"],
-        "reuse_artifact" => &["name", "inputs"],
-        "add_knowledge" => &["kind", "content", "provenance"],
-        "link_knowledge" => &["source", "target", "relation"],
-        "answer_question" => &["question", "answer"],
-        _ => &[],
-    };
-    json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
-}
+mod schemas;
+pub use schemas::{admin_schema, schema};
+
 pub fn worker_allowed(name: &str) -> bool {
     [
+        "runtime_capabilities",
+        "plan_execution",
         "list_skills",
         "read_skill",
         "integrate_child",
@@ -547,12 +94,80 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             args["step"] = w["step"].clone();
         }
     }
+    if matches!(name, "runtime_capabilities" | "plan_execution") {
+        if let Some(task) = args["task"].as_str() {
+            db.task(task)?;
+            if let Some(value) = crate::federation::forward(db, task, name, &args)? {
+                return Ok(value);
+            }
+        }
+        return if name == "runtime_capabilities" {
+            crate::capabilities::inventory(db)
+        } else {
+            crate::orchestration::plan(db, &args)
+        };
+    }
+    if name == "agent_setup" {
+        return crate::agent_setup::dispatch(db, &args);
+    }
+    match name {
+        "skill_pack_list" => {
+            return crate::skill_catalog::report(&crate::skill_catalog::load_for(&db.root)?);
+        }
+        "skill_pack_install" => {
+            let packet =
+                crate::skill_catalog::load_from(std::path::Path::new(string(&args, "path")?))?;
+            return crate::management::install_catalog(db, &packet);
+        }
+        "skill_inspect" => return crate::skill_policy::inspect(db, &args),
+        "skill_propose" => return crate::skill_policy::propose(db, &args),
+        "skill_apply" => return crate::skill_policy::apply(db, &args),
+        "skill_history" => return crate::skill_policy::history(db, &args),
+        "skill_rollback" => return crate::skill_policy::rollback(db, &args),
+        _ => {}
+    }
+    if name == "runtime_rename" {
+        return crate::runtime_directory::rename(db, string(&args, "id")?, string(&args, "name")?);
+    }
+    if name == "runtime_forget" {
+        return crate::runtime_directory::forget(db, string(&args, "id")?);
+    }
+    if matches!(
+        name,
+        "runtime_inspect" | "runtime_destroy" | "runtime_stop" | "runtime_start"
+    ) {
+        args["id"] = json!(crate::runtime_directory::resolve_known(
+            db,
+            string(&args, "id")?
+        )?);
+    }
     if let Some(result) = crate::management::dispatch(db, name, &args)? {
         return Ok(result);
     }
     if name == "shutdown" {
         std::fs::write(db.root.join("shutdown.request"), b"shutdown")?;
         return Ok(json!({"stopping":true}));
+    }
+    if name == "submit_task" && args.get("request_id").is_some() {
+        return crate::submission::submit(db, &args);
+    }
+    if name == "submit_task" && args["execution"].is_object() {
+        let selection = crate::execution_selection::prepare(db, &args["execution"], None)?;
+        let selected = selection["selected"]["runtime"]
+            .as_str()
+            .context("selected runtime")?;
+        let inventory = crate::capabilities::inventory(db)?;
+        let local = inventory["runtimes"]
+            .as_array()
+            .context("runtimes")?
+            .iter()
+            .any(|runtime| runtime["local"] == true && runtime["runtime"] == selected);
+        if !local && args["on"].is_null() {
+            args["on"] = json!(selected);
+        }
+    }
+    if name == "submit_task" && !args["on"].is_null() && args["on"] != "local" {
+        return crate::remote_submit::submit(db, &args);
     }
     if name == "submit_task" {
         let repo = Path::new(string(&args, "repo")?).canonicalize()?;
@@ -566,13 +181,22 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             &templates,
             BTreeMap::from([("task".into(), objective.into())]),
         )?;
+        let selection = args
+            .get("execution")
+            .map(|input| crate::execution_selection::prepare(db, input, None))
+            .transpose()?;
         for s in &plan.steps {
-            if s.kind == "agent" && !settings.executors.contains_key(&s.role) {
+            if selection.is_none() && s.kind == "agent" && !settings.executors.contains_key(&s.role)
+            {
                 bail!("unconfigured executor role {}", s.role);
             }
         }
         return db.atomic(|| {
             let oid = db.submit(objective, &repo, &settings, &plan)?;
+            if let Some(selection) = &selection {
+                crate::execution_selection::pin(db, &oid, selection)?;
+                crate::execution_selection::validate_target(db, &oid, None)?;
+            }
             if let Some(records) = args["context"].as_array() {
                 for record in records {
                     crate::delegation::update_context(db, &oid, record)?;
@@ -642,12 +266,13 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         return Ok(result);
     }
     match name {
+        "remote_result" => crate::remote_submit::result(db,oid),
         "integrate_child" => crate::federation::integrate_child(db,oid,&args),
         "environments" => Ok(json!(db.rows("SELECT id,task,attempt,kind,state,pid,created,expires,evidence FROM app_environments WHERE task=?",&[&oid])?)),
         "refresh_bundles" => db.atomic(|| {let names:Vec<String>=db.rows("SELECT name FROM task_bundles WHERE task=?",&[&oid])?.iter().filter_map(|r|r["name"].as_str().map(str::to_owned)).collect();db.conn.execute("DELETE FROM task_bundles WHERE task=?",[oid])?;crate::secrets::select(db,oid,&names)?;Ok(json!({"refreshed":true}))}),
         "metrics" => crate::metrics::report(db, oid),
         "inspect" => Ok(
-            json!({"task":db.task(oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?}),
+            json!({"task":db.task(oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
         ),
         "summary" => crate::summary::build(db, oid),
         "events" => {
@@ -763,6 +388,9 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             Ok(json!({"cancelled":true}))
         }
         "resume" => {
+            if !db.rows("SELECT task FROM remote_links WHERE task=?", &[&oid])?.is_empty() {
+                bail!("this task runs on a remote runtime and cannot resume locally; submit a new task with --on targeting that runtime");
+            }
             if db.task(oid)?["status"]=="blocked" && db.steps(oid)?.iter().all(|t|t["state"]=="succeeded"||t["state"]=="skipped") {
                 bail!("completed result needs revalidation; add a verification step before resuming");
             }

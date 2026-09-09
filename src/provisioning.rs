@@ -77,6 +77,7 @@ pub struct Spec {
     pub base_url: Option<String>,
     pub api_key_env: Option<String>,
     pub model: Option<String>,
+    pub program: Option<String>,
     pub roles: Vec<String>,
 }
 impl Spec {
@@ -148,6 +149,7 @@ fn write_provider(config: &Path, spec: &Spec) -> Result<()> {
         ("base_url", &spec.base_url),
         ("api_key_env", &spec.api_key_env),
         ("model", &spec.model),
+        ("program", &spec.program),
     ] {
         if let Some(value) = value {
             entry[key] = toml_edit::value(value.clone());
@@ -396,6 +398,16 @@ fn existing_equivalent(settings: &crate::config::Settings, spec: &Spec) -> Optio
 /// Write the provider and, when one was supplied, its key. Returns a summary line.
 pub fn apply(directory: &Path, spec: &Spec, key: Option<String>) -> Result<String> {
     identifier(&spec.name)?;
+    if let Some(program) = &spec.program {
+        ensure!(
+            !program.is_empty() && !program.chars().any(char::is_control),
+            "invalid provider program"
+        );
+        ensure!(
+            !program.contains('/') || Path::new(program).is_absolute(),
+            "provider program paths must be absolute; executable names use PATH"
+        );
+    }
     let config = directory.join("config.toml");
     if !config.exists() {
         crate::config::initialize(directory)?;
