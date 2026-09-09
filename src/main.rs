@@ -61,6 +61,17 @@ enum Commands {
         question: String,
         answer: String,
     },
+    /// Send an operator message to every worker on a task; works with a single worker.
+    Steer {
+        task: String,
+        body: String,
+        /// Client message id for retry deduplication; generated when omitted.
+        #[arg(long)]
+        id: Option<String>,
+        /// Deliver without waking idle workers.
+        #[arg(long)]
+        presence: bool,
+    },
     /// Invoke any coordination/runtime operation using a JSON object (same API as MCP).
     Call {
         method: String,
@@ -499,6 +510,16 @@ async fn main() -> Result<()> {
             &root,
             "answer_question",
             json!({"task":task,"question":question,"answer":answer}),
+        )?,
+        Commands::Steer {
+            task,
+            body,
+            id,
+            presence,
+        } => request(
+            &root,
+            "steer",
+            json!({"task":task,"body":body,"id":id,"actionable":!presence}),
         )?,
         Commands::Call { method, args } => request(&root, &method, serde_json::from_str(&args)?)?,
         Commands::Validate {

@@ -1,5 +1,5 @@
 {
-  "count": 61,
+  "count": 62,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -1170,6 +1170,35 @@
         "type": "object"
       },
       "scope": "worker"
+    },
+    {
+      "description": "Operator: post a message to every worker on a task; delivers even to a single worker",
+      "name": "steer",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "actionable": {
+            "type": "boolean"
+          },
+          "body": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "refs": {
+            "type": "object"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
     },
     {
       "description": "Read unacknowledged messages; after is an optional sequence cursor",
