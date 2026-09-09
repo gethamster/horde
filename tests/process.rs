@@ -778,3 +778,116 @@ fn missing_checkout_scripts_explain_the_command_worktree() {
         }
     }
 }
+
+#[test]
+fn silent_command_can_opt_out_of_progress_budget_and_still_report_time() {
+    let d = Daemon::new();
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        "step_budget_seconds=1\ntimeout_seconds=10\n",
+    )
+    .unwrap();
+    d.template(
+        "exempt",
+        r#"name="exempt"
+version="1"
+[[steps]]
+id="bench"
+kind="command"
+step_budget_exempt=true
+command=["sleep","2"]
+"#,
+    );
+    let task = d.submit("exempt");
+    let started = Instant::now();
+    loop {
+        let inspect = d.inspect(&task);
+        if let Some(a) = inspect["attempts"].as_array().unwrap().first()
+            && a["timing"]["budget_exempt"] == true
+        {
+            assert!(a["timing"]["budget_s"].is_null());
+            assert!(a["timing"]["remaining_s"].is_null());
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let inspect = d.wait(&task, "succeeded");
+    let timing = &inspect["attempts"][0]["timing"];
+    assert_eq!(timing["budget_exempt"], true);
+    assert!(timing["elapsed_s"].as_f64().unwrap() >= 2.0);
+    let metrics = d.call("metrics", json!({"task":task}));
+    assert_eq!(metrics["steps"][0]["attempts"][0]["timing"], *timing);
+    let events = d.call("events", json!({"task":task}));
+    assert!(
+        !events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "step.budget_exhausted")
+    );
+}
+
+#[test]
+fn progress_exempt_commands_still_obey_command_timeout_and_cancellation() {
+    for cancel in [false, true] {
+        let d = Daemon::new();
+        std::fs::write(
+            d.repo.join(".horde.toml"),
+            format!(
+                "step_budget_seconds=1\ntimeout_seconds={}\n",
+                if cancel { 30 } else { 1 }
+            ),
+        )
+        .unwrap();
+        d.template(
+            "exempt",
+            r#"name="exempt"
+version="1"
+[[steps]]
+id="bench"
+kind="command"
+step_budget_exempt=true
+command=["sleep","30"]
+"#,
+        );
+        let task = d.submit("exempt");
+        let started = Instant::now();
+        let pid = loop {
+            let inspect = d.inspect(&task);
+            if let Some(pid) = inspect["attempts"]
+                .as_array()
+                .unwrap()
+                .first()
+                .and_then(|a| a["pid"].as_i64())
+            {
+                break pid as i32;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        if cancel {
+            d.call("cancel", json!({"task":task}));
+        }
+        let inspect = d.wait(&task, if cancel { "cancelled" } else { "failed" });
+        if !cancel {
+            let result: Value =
+                serde_json::from_str(inspect["attempts"][0]["result"].as_str().unwrap()).unwrap();
+            assert!(
+                result["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("executor timed out after 1s"),
+                "{result}"
+            );
+        }
+        let stopped = Instant::now();
+        while horde::executor::process_alive(pid) {
+            assert!(
+                stopped.elapsed() < Duration::from_secs(5),
+                "exempt command survived termination"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}

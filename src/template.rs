@@ -29,6 +29,9 @@ pub struct Step {
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub step_budget_seconds: Option<u64>,
+    /// Disable the progress budget for this command step; command timeout still applies.
+    #[serde(default)]
+    pub step_budget_exempt: bool,
     /// Configured executor role (defaults to worker). Must exist for planner proposals.
     #[serde(default = "worker")]
     pub role: String,
@@ -238,6 +241,12 @@ fn expand(
             .map(|x| render(x, inputs).replace("${", &format!("${{{prefix}")))
             .collect();
         if let Some(nested) = &s.template {
+            if s.step_budget_exempt {
+                bail!(
+                    "step {:?}: set step_budget_exempt on command steps, not template inclusions",
+                    s.id
+                );
+            }
             if s.when.is_some() {
                 bail!("put conditional execution on child steps, not template inclusion");
             }
@@ -256,7 +265,9 @@ fn expand(
                 plan,
             )?;
             for child in &mut plan.steps[child_start..] {
-                child.step_budget_seconds = child.step_budget_seconds.or(s.step_budget_seconds);
+                if !child.step_budget_exempt {
+                    child.step_budget_seconds = child.step_budget_seconds.or(s.step_budget_seconds);
+                }
                 if child.kind == "agent" {
                     child.skills.extend(s.skills.clone());
                     child.skills.sort();
@@ -332,6 +343,14 @@ pub fn validate(steps: &[Step]) -> Result<()> {
         if let Some(e) = &s.environment {
             e.validate()
                 .map_err(|e| anyhow::anyhow!("{path}.environment: {e:#}"))?;
+        }
+        if s.step_budget_exempt && s.kind != "command" {
+            bail!(
+                "{path}.step_budget_exempt: only command steps can opt out of the progress budget"
+            );
+        }
+        if s.step_budget_exempt && s.step_budget_seconds.is_some() {
+            bail!("{path}: choose step_budget_exempt or step_budget_seconds, not both");
         }
         if s.step_budget_seconds == Some(0) {
             bail!("{path}.step_budget_seconds: must be positive");
