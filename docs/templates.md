@@ -216,3 +216,19 @@ Delegated and remote tasks use their own receiving repository, which may differ
 from the caller's checkout. This setting applies only to plain command steps;
 set it on the command inside a nested template. Each attempt records its selected
 mode and absolute directory in a `step.workspace` event.
+
+### Unknown step fields
+
+Horde warns about unknown fields on a step and ignores their values. This lets a
+template load when it contains a field from a newer version or an unsupported
+field guessed during editing. `horde validate TEMPLATE --repo PATH` includes a
+`warnings` array with the template, step, and ignored field names. Loading a local
+template also prints the warning to stderr. Workflow revision tools return their
+warnings alongside the revision number.
+
+An ignored option has no effect. Correct misspellings or use a Horde version that
+supports the intended option before relying on it. Unknown values are discarded
+before the step is saved, so a later upgrade cannot silently enable them. Known
+fields still require the right types and supported values; for example,
+`kind = "commmand"` and `when.status = "success"` remain errors. Unknown fields in
+the outer template or a structured condition/environment remain errors as well.

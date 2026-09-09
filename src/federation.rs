@@ -1123,7 +1123,7 @@ fn import_foreign_child(db: &Store, parent: &str, args: &Value, origin: &Value) 
     } else {
         db.atomic(||{
   let o=db.task(parent)?;let mut settings:crate::config::Settings=serde_json::from_str(o["settings"].as_str().context("settings")?)?;settings.secret_bundles.clear();
-  let empty=crate::template::Plan{steps:vec![],pins:Default::default(),outputs:Default::default()};
+  let empty=crate::template::Plan{warnings:vec![],steps:vec![],pins:Default::default(),outputs:Default::default()};
   let child=db.submit("Verified child snapshot",Path::new(o["repo"].as_str().context("repo")?),&settings,&empty)?;
   let t=crate::delegation::tree(db,parent)?;
   db.conn.execute("UPDATE task_tree SET root=?,parent=?,version=? WHERE task=?",params![t["root"].as_str(),parent,reply["version"].as_i64(),child])?;

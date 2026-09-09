@@ -1046,7 +1046,6 @@
           "steps": {
             "description": "Workflow Step objects. Call this tool with a steps array; step IDs are data, never tool names. Use expanded steps, not nested template invocations.",
             "items": {
-              "additionalProperties": false,
               "properties": {
                 "acceptance": {
                   "default": [],
@@ -1884,7 +1883,6 @@
           "steps": {
             "description": "Workflow Step objects. Call this tool with a steps array; step IDs are data, never tool names. Use expanded steps, not nested template invocations.",
             "items": {
-              "additionalProperties": false,
               "properties": {
                 "acceptance": {
                   "default": [],

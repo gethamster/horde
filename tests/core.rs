@@ -1259,7 +1259,7 @@ fn workflow_input_errors_name_the_field_without_mutating_the_plan() {
             json!([{"id":"bad","environment":{"timeout_seconds":"slow"}}]),
             "steps[0].environment.timeout_seconds",
         ),
-        (json!([{"name":"bad"}]), "unknown field `name`"),
+        (json!([{"name":"bad"}]), "missing field `id`"),
         (json!([{"instructions":"missing id"}]), "missing field `id`"),
         (json!([{"id":"bad","attempts":0}]), ".attempts"),
         (json!([{"id":"bad","needs":["missing"]}]), ".needs"),
@@ -1513,4 +1513,41 @@ fn output_reference_errors_identify_step_argument_and_value() {
     let error = template::validate(&[step]).unwrap_err().to_string();
     assert!(error.contains("(id=\"plan\").instructions"), "{error}");
     assert!(error.contains("Read ${HOME}"), "{error}");
+}
+
+#[test]
+fn workflow_revisions_return_ignored_fields_without_persisting_them_as_instructions() {
+    for operation in ["add_steps", "propose_steps"] {
+        let f = Fixture::new();
+        let row = f.db.steps(&f.oid).unwrap()[0].clone();
+        let mut step = Store::step(&row).unwrap();
+        step.role = "planner".into();
+        let tid = row["id"].as_str().unwrap();
+        f.db.conn
+            .execute(
+                "UPDATE steps SET state='running',spec=? WHERE id=?",
+                rusqlite::params![serde_json::to_string(&step).unwrap(), tid],
+            )
+            .unwrap();
+        let worker = f.db.register(&f.oid, Some(tid)).unwrap();
+        let result = protocol::dispatch(&f.db, operation, json!({"task":f.oid,"worker":worker["id"],"steps":[{"id":"future-compatible","kind":"simulated","guessed_option":{"value":"discard-this-value"}}]}), None).unwrap();
+        assert!(
+            result["warnings"].to_string().contains("guessed_option"),
+            "{result}"
+        );
+        let rows = f.db.steps(&f.oid).unwrap();
+        let saved = rows
+            .iter()
+            .find(|s| s["name"] == "future-compatible")
+            .unwrap()["spec"]
+            .as_str()
+            .unwrap();
+        assert!(!saved.contains("guessed_option"));
+        assert!(
+            !f.db.task(&f.oid).unwrap()["plan"]
+                .as_str()
+                .unwrap()
+                .contains("discard-this-value")
+        );
+    }
 }

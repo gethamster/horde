@@ -20,8 +20,11 @@ pub struct Template {
     pub steps: Vec<Step>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct Step {
+    /// Unknown input names retained only for diagnostics; their values are discarded.
+    #[serde(flatten, skip_serializing)]
+    #[schemars(skip)]
+    pub ignored_fields: BTreeMap<String, serde::de::IgnoredAny>,
     /// Unique workflow-local name for this step, not a tool/function name.
     #[schemars(length(min = 1))]
     pub id: String,
@@ -131,11 +134,33 @@ pub fn step_schema() -> Value {
 
 /// Report the nested input path without changing the accepted Step representation.
 pub fn parse_steps(value: &Value) -> Result<Vec<Step>> {
-    serde_path_to_error::deserialize(value.clone()).map_err(|error| {
+    let steps: Vec<Step> = serde_path_to_error::deserialize(value.clone()).map_err(|error| {
         let path = error.path().to_string();
         let suffix = if path == "." { String::new() } else { path };
         anyhow::anyhow!("steps{suffix}: {}", error.inner())
-    })
+    })?;
+    for warning in step_warnings(&steps) {
+        eprintln!("warning: {warning}");
+    }
+    Ok(steps)
+}
+
+pub fn step_warnings(steps: &[Step]) -> Vec<String> {
+    steps
+        .iter()
+        .filter(|s| !s.ignored_fields.is_empty())
+        .map(|s| {
+            format!(
+                "step {}: ignored unknown fields: {}",
+                s.id,
+                s.ignored_fields
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect()
 }
 
 fn worker() -> String {
@@ -149,6 +174,8 @@ fn one() -> u32 {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Plan {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     pub steps: Vec<Step>,
     pub pins: BTreeMap<String, String>,
     pub outputs: BTreeMap<String, String>,
@@ -169,6 +196,9 @@ pub fn load_templates(dir: &Path) -> Result<BTreeMap<String, Template>> {
             let p = entry?.path();
             if p.extension().is_some_and(|x| x == "toml") {
                 let t: Template = toml::from_str(&std::fs::read_to_string(&p)?)?;
+                for warning in step_warnings(&t.steps) {
+                    eprintln!("warning: {}: {warning}", p.display());
+                }
                 result.insert(t.name.clone(), t);
             }
         }
@@ -188,6 +218,7 @@ pub fn compile(
     inputs: BTreeMap<String, String>,
 ) -> Result<Plan> {
     let mut plan = Plan {
+        warnings: vec![],
         steps: vec![],
         pins: BTreeMap::new(),
         outputs: BTreeMap::new(),
@@ -236,6 +267,9 @@ fn expand(
     let mut aliases: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // References may point forward; resolve nested aliases after all expansion.
     let start = plan.steps.len();
+    for warning in step_warnings(&t.steps) {
+        plan.warnings.push(format!("template {name}: {warning}"));
+    }
     for original in &t.steps {
         let mut s = original.clone();
         s.id = format!("{prefix}{}", s.id);
