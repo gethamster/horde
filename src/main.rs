@@ -61,7 +61,7 @@ enum Commands {
         question: String,
         answer: String,
     },
-    /// Send an operator message to every worker on a task; works with a single worker.
+    /// Send an operator message to workers on a task; omit --worker to fan out.
     Steer {
         task: String,
         body: String,
@@ -71,6 +71,9 @@ enum Commands {
         /// Deliver without waking idle workers.
         #[arg(long)]
         presence: bool,
+        /// Target one worker from `list_workers`; omit to reach every worker.
+        #[arg(long, visible_alias = "to")]
+        worker: Option<String>,
     },
     /// Invoke any coordination/runtime operation using a JSON object (same API as MCP).
     Call {
@@ -516,11 +519,14 @@ async fn main() -> Result<()> {
             body,
             id,
             presence,
-        } => request(
-            &root,
-            "steer",
-            json!({"task":task,"body":body,"id":id,"actionable":!presence}),
-        )?,
+            worker,
+        } => {
+            let mut args = json!({"task":task,"body":body,"id":id,"actionable":!presence});
+            if let Some(worker) = worker {
+                args["worker"] = json!(worker);
+            }
+            request(&root, "steer", args)?
+        }
         Commands::Call { method, args } => request(&root, &method, serde_json::from_str(&args)?)?,
         Commands::Validate {
             template,

@@ -1172,7 +1172,7 @@
       "scope": "worker"
     },
     {
-      "description": "Operator: post a message to every worker on a task; delivers even to a single worker",
+      "description": "Operator: post a message to workers on a task; omit worker to fan out, or set worker to target one",
       "name": "steer",
       "parameters": {
         "additionalProperties": false,
@@ -1190,6 +1190,9 @@
             "type": "object"
           },
           "task": {
+            "type": "string"
+          },
+          "worker": {
             "type": "string"
           }
         },

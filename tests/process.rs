@@ -430,12 +430,19 @@ fn operator_steer_wakes_solo_worker_from_cli() {
     let mail = d.call("read_messages", json!({"task":oid,"worker":solo}));
     assert_eq!(mail.as_array().unwrap().len(), 1);
     assert_eq!(mail[0]["sender"], operator);
+    let solo_id = solo.as_str().unwrap();
+    let targeted = steer(&["only you", "--worker", solo_id, "--presence"]);
+    assert_eq!(targeted["recipients"], 1);
+    let aliased = steer(&["via alias", "--to", solo_id, "--presence"]);
+    assert_eq!(aliased["recipients"], 1);
+    let mail = d.call("read_messages", json!({"task":oid,"worker":solo}));
+    assert_eq!(mail.as_array().unwrap().len(), 3);
     let sent = steer(&["re-check the plan"]);
     assert_eq!(sent["recipients"], 1);
     let v = wait_for_attempts(&d, &oid, 2);
     assert_eq!(v["workers"].as_array().unwrap().len(), 1);
     let mail = d.call("read_messages", json!({"task":oid,"worker":solo}));
-    assert_eq!(mail.as_array().unwrap().len(), 2);
+    assert_eq!(mail.as_array().unwrap().len(), 4);
     assert!(
         mail.as_array()
             .unwrap()

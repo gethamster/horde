@@ -444,8 +444,11 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         }
         Ok(vec![target])
     }
-    /// Post an operator message to every worker on a task as the synthetic
-    /// `operator:TASK` sender; delivers even when the task has a single worker.
+    /// Post an operator message as the synthetic `operator:TASK` sender.
+    ///
+    /// `destination` defaults to `task` (fan-out to every non-operator worker).
+    /// Pass a worker id to target only that worker; it must belong to the task
+    /// and must not be the operator identity.
     pub fn steer(
         &self,
         oid: &str,
@@ -453,10 +456,12 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         body: &str,
         refs: &Value,
         actionable: bool,
+        destination: Option<&str>,
     ) -> Result<Value> {
         if self.task(oid)?["status"] == "cancelled" {
             bail!("task is cancelled");
         }
+        let destination = destination.unwrap_or("task");
         let sender = operator_id(oid);
         self.atomic(|| {
             // The token hash is derived from an id that is never returned, so nothing can
@@ -474,7 +479,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             if created == 1 {
                 self.event(oid, "operator.registered", json!({"worker":sender}))?;
             }
-            let mut result = self.send(oid, &sender, mid, "task", body, refs, actionable)?;
+            let mut result = self.send(oid, &sender, mid, destination, body, refs, actionable)?;
             result["sender"] = json!(sender);
             Ok(result)
         })

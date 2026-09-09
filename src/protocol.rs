@@ -126,7 +126,7 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     ),
     (
         "steer",
-        "Operator: post a message to every worker on a task; delivers even to a single worker",
+        "Operator: post a message to workers on a task; omit worker to fan out, or set worker to target one",
     ),
     (
         "read_messages",
@@ -264,6 +264,7 @@ pub fn admin_schema(name: &str) -> Value {
             ("body", "string"),
             ("refs", "object"),
             ("actionable", "boolean"),
+            ("worker", "string"),
         ],
         "read_messages" => &[
             ("task", "string"),
@@ -653,13 +654,19 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             "SELECT id,step,status,workspace,branch,base,updated FROM workers WHERE task=? AND status<>?",
             &[&oid, &OPERATOR_STATUS]
         )?)),
-        "steer" => db.steer(
-            oid,
-            &args["id"].as_str().map_or_else(id, str::to_owned),
-            string(&args, "body")?,
-            args.get("refs").unwrap_or(&json!({})),
-            args["actionable"].as_bool().unwrap_or(true),
-        ),
+        "steer" => {
+            let destination = args["worker"]
+                .as_str()
+                .or_else(|| args["destination"].as_str());
+            db.steer(
+                oid,
+                &args["id"].as_str().map_or_else(id, str::to_owned),
+                string(&args, "body")?,
+                args.get("refs").unwrap_or(&json!({})),
+                args["actionable"].as_bool().unwrap_or(true),
+                destination,
+            )
+        }
         "register_workspace" => {
             crate::git::register(
                 db,

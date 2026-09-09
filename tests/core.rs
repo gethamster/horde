@@ -258,6 +258,88 @@ fn operator_steer_needs_workers_and_admin_credentials() {
     assert!(f.call("steer", json!({"body":"too late"})).is_err());
 }
 #[test]
+fn operator_steer_can_target_one_worker() {
+    let f = Fixture::new();
+    let a = f.worker();
+    let b = f.worker();
+    let a = a["id"].as_str().unwrap();
+    let b = b["id"].as_str().unwrap();
+    let operator = horde::store::operator_id(&f.oid);
+    let plan = template::compile(
+        "simulated",
+        &template::load_templates(Path::new("absent")).unwrap(),
+        BTreeMap::from([("task".into(), "other".into())]),
+    )
+    .unwrap();
+    let other_oid =
+        f.db.submit(
+            "other",
+            Path::new(f.db.task(&f.oid).unwrap()["repo"].as_str().unwrap()),
+            &Settings::default(),
+            &plan,
+        )
+        .unwrap();
+    let outsider = f.db.register(&other_oid, None).unwrap();
+    let outsider = outsider["id"].as_str().unwrap();
+
+    let sent = f
+        .call("steer", json!({"body":"only you","worker":a}))
+        .unwrap();
+    assert_eq!(sent["recipients"], 1);
+    assert_eq!(sent["sender"], operator);
+    assert_eq!(
+        f.db.messages(a, 0, 100).unwrap().as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(f.db.messages(b, 0, 100).unwrap(), json!([]));
+    assert_eq!(f.db.worker(a).unwrap()["status"], "notified");
+    assert_eq!(f.db.worker(b).unwrap()["status"], "idle");
+
+    // Fan-out still reaches every worker when worker is omitted.
+    assert_eq!(
+        f.call("steer", json!({"body":"everyone"})).unwrap()["recipients"],
+        2
+    );
+    assert_eq!(
+        f.db.messages(a, 0, 100).unwrap().as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        f.db.messages(b, 0, 100).unwrap().as_array().unwrap().len(),
+        1
+    );
+
+    // destination is accepted as an alias for worker.
+    assert_eq!(
+        f.call("steer", json!({"body":"via destination","destination":b}))
+            .unwrap()["recipients"],
+        1
+    );
+    assert_eq!(
+        f.db.messages(b, 0, 100).unwrap().as_array().unwrap().len(),
+        2
+    );
+
+    assert!(
+        f.call("steer", json!({"body":"ghost","worker":"missing-worker"}))
+            .unwrap_err()
+            .to_string()
+            .contains("unknown worker")
+    );
+    assert!(
+        f.call("steer", json!({"body":"wrong task","worker":outsider}))
+            .unwrap_err()
+            .to_string()
+            .contains("another task")
+    );
+    assert!(
+        f.call("steer", json!({"body":"self","worker":operator}))
+            .unwrap_err()
+            .to_string()
+            .contains("operator")
+    );
+}
+#[test]
 fn direct_and_group_messages_do_not_leak() {
     let f = Fixture::new();
     let a = f.worker();
