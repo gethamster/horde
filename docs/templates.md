@@ -180,3 +180,11 @@ including simple shell command strings. If a referenced file is absent from the
 task workspace but exists in the repository checkout, the error identifies both
 locations and explains how to make the file available. Dynamically constructed
 shell paths may not receive this hint; the original command failure is retained.
+
+For a command that can run silently beyond the progress window, set
+`step_budget_exempt = true` instead of `step_budget_seconds`. The field is allowed
+only on command steps, and defaults to false. It overrides global/role progress
+budgets; an exempt child also ignores a template inclusion's inherited budget.
+The separate `timeout_seconds` command limit still applies. See the
+[configuration example](configuration.md#step-progress-budgets) before running a
+long bench. Elapsed time remains visible in inspect, events, and metrics.

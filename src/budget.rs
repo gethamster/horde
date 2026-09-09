@@ -58,7 +58,7 @@ pub fn progress(db: &Store, worker: &str, reason: &str, fingerprint: &str) -> Re
                 timing["budget_s"].as_u64().context("budget")?,
             ))
             .context("step budget is too large")?;
-        *control.deadline.lock().unwrap() = deadline;
+        *control.deadline.lock().unwrap() = Some(deadline);
     }
     Ok(())
 }
@@ -90,6 +90,9 @@ pub fn status(db: &Store, attempt: &str) -> Result<Value> {
         .map(|s| s.saturating_mul(1000))
         .unwrap_or_else(millis);
     let elapsed = end.saturating_sub(started["at_ms"].as_u64().unwrap_or(end)) as f64 / 1000.0;
+    if started["budget_exempt"] == true {
+        return Ok(exempt_timing(elapsed));
+    }
     let idle = end.saturating_sub(last) as f64 / 1000.0;
     let budget = started["budget_s"].as_u64().unwrap_or(0);
     Ok(
@@ -110,14 +113,24 @@ pub async fn supervise<F>(
     step: &str,
     attempt: &str,
     worker: &str,
-    budget_s: u64,
+    budget_s: Option<u64>,
     work: F,
 ) -> Result<Value>
 where
     F: std::future::Future<Output = Result<Value>>,
 {
-    anyhow::ensure!(budget_s > 0, "step_budget_seconds must be positive");
     let start = Instant::now();
+    let Some(budget_s) = budget_s else {
+        db.event(task, "step.budget_started", json!({"step":step,"attempt":attempt,"worker":worker,"budget_exempt":true,"budget_s":null,"elapsed_s":0,"remaining_s":null,"at_ms":millis()}))?;
+        let control = CommandControl {
+            deadline: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let result = COMMAND_CONTROL.scope(control, work).await;
+        db.event(task, "step.budget_finished", json!({"step":step,"attempt":attempt,"worker":worker,"timing":exempt_timing(start.elapsed().as_secs_f64())}))?;
+        return result;
+    };
+    anyhow::ensure!(budget_s > 0, "step_budget_seconds must be positive");
     let initial_deadline = start
         .checked_add(Duration::from_secs(budget_s))
         .context("step budget is too large")?;
@@ -141,7 +154,7 @@ where
         }
     }));
     let control = CommandControl {
-        deadline: std::sync::Arc::new(std::sync::Mutex::new(initial_deadline.into_std())),
+        deadline: std::sync::Arc::new(std::sync::Mutex::new(Some(initial_deadline.into_std()))),
         cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let deadline_control = control.deadline.clone();
@@ -154,7 +167,7 @@ where
         let deadline = last_progress
             .checked_add(Duration::from_secs(budget_s))
             .context("step budget is too large")?;
-        *deadline_control.lock().unwrap() = deadline.into_std();
+        *deadline_control.lock().unwrap() = Some(deadline.into_std());
         tokio::select! {
             biased;
             _ = tokio::time::sleep_until(deadline) => {
@@ -181,6 +194,9 @@ where
     // Dropping the work future stops owned async command process groups.
     db.event(task,"step.budget_finished",json!({"step":step,"attempt":attempt,"worker":worker,"timing":timing(start,last_progress,budget_s)}))?;
     result
+}
+fn exempt_timing(elapsed: f64) -> Value {
+    json!({"elapsed_s":elapsed,"idle_s":null,"budget_s":null,"remaining_s":null,"budget_exempt":true})
 }
 fn timing(start: Instant, progress: Instant, budget: u64) -> Value {
     let idle = progress.elapsed().as_secs_f64();
@@ -279,7 +295,7 @@ pub fn annotate(db: &Store, mut attempts: Vec<Value>) -> Result<Vec<Value>> {
 
 #[derive(Clone)]
 struct CommandControl {
-    deadline: std::sync::Arc<std::sync::Mutex<std::time::Instant>>,
+    deadline: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 tokio::task_local! { static COMMAND_CONTROL: CommandControl; }
@@ -323,7 +339,11 @@ pub fn command_output(command: &mut std::process::Command) -> Result<std::proces
     };
     let expired = || {
         control.cancelled.load(Ordering::SeqCst)
-            || std::time::Instant::now() >= *control.deadline.lock().unwrap()
+            || control
+                .deadline
+                .lock()
+                .unwrap()
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
     };
     anyhow::ensure!(!expired(), "step budget exhausted");
     command

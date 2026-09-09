@@ -854,6 +854,11 @@
                   },
                   "type": "array"
                 },
+                "step_budget_exempt": {
+                  "default": false,
+                  "description": "Disable the progress budget for this command step; command timeout still applies.",
+                  "type": "boolean"
+                },
                 "step_budget_seconds": {
                   "default": null,
                   "description": "Seconds without durable progress before the daemon ends an attempt.",
@@ -1554,6 +1559,11 @@
                     "type": "string"
                   },
                   "type": "array"
+                },
+                "step_budget_exempt": {
+                  "default": false,
+                  "description": "Disable the progress budget for this command step; command timeout still applies.",
+                  "type": "boolean"
                 },
                 "step_budget_seconds": {
                   "default": null,
