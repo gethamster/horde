@@ -32,4 +32,18 @@ UPDATE_WEBSITE_SPEC=1 cargo test --test website_spec
 See [release CI](docs/installing.md#release-operator-setup) for platform checks,
 build ordering, and cache policy.
 
+## Website and tool discovery
+
+The horde.sh landing page lives in `website/`. See its [development and hosting
+instructions](website/README.md) for the Next.js build and static export.
+
+The site also publishes the agent-facing description of Horde: Horde discovery
+metadata at `/.well-known/mcp.json`, the tool catalog at
+`/.well-known/tools.json`, and `/llms.txt`. The discovery file uses Horde's own
+format and describes the installed stdio MCP server; it is not an official MCP
+manifest or an HTTP MCP endpoint. The site exposes no API of its own. The tool
+catalog is generated from `src/protocol.rs`; regenerate and commit it with
+`UPDATE_WEBSITE_SPEC=1 cargo test --test website_spec` whenever the operation
+set changes, or `cargo test` will fail.
+
 Contributions are licensed under Apache-2.0.
