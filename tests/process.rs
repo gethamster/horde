@@ -639,6 +639,9 @@ fn daemon_ends_a_streaming_planner_loop_despite_valid_different_calls() {
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             };
+            // Accepted sockets can inherit O_NONBLOCK on macOS. The listener
+            // polls for shutdown, but each HTTP request must use blocking reads.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
