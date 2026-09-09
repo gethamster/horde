@@ -58,10 +58,14 @@ fn default_locations() -> Result<Vec<PathBuf>> {
         .join("skills");
     let mut locations = vec![adjacent];
     // Development binaries use the checked-out files on every submission.
-    if cfg!(debug_assertions)
-        && executable.starts_with(Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
-    {
-        locations.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills"));
+    // Compare canonical paths: `current_exe` resolves symlinks, so a checkout
+    // reached through one (macOS `/tmp` -> `/private/tmp`) would otherwise never
+    // match its own `target/` and every development binary would report no pack.
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let target = checkout.join("target");
+    let target = target.canonicalize().unwrap_or(target);
+    if cfg!(debug_assertions) && executable.canonicalize()?.starts_with(&target) {
+        locations.push(checkout.join("skills"));
     }
     Ok(locations)
 }
