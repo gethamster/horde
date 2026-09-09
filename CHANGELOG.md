@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Serialize a task's integrated worktree allocation per task, so parallel agent steps
+  no longer race on `worktree add -b horde/<task>` and fail their dependents (#41).
 - `horde validate` captures the skill catalog a submission would pin and fails on an
   unknown step skill; development binaries resolve the checkout's
   skills through symlinked paths.

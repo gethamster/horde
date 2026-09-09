@@ -369,3 +369,42 @@ fn validate_captures_the_catalog_a_submission_would_pin() {
         "{stderr}"
     );
 }
+
+#[test]
+fn concurrent_attempts_share_one_integrated_worktree() {
+    // issue #41: parallel agent steps of one task each ran `worktree add -b horde/<task>`
+    // and the loser failed on the existing ref, skipping every dependent step.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    repository(&repo);
+    let root = dir.path().join("db");
+    let task = Store::open(&root)
+        .unwrap()
+        .submit("race", &repo, &Settings::default(), &plan())
+        .unwrap();
+    let handles: Vec<_> = (0..6)
+        .map(|_| {
+            let (root, task) = (root.clone(), task.clone());
+            std::thread::spawn(move || {
+                let db = Store::open(&root).unwrap();
+                horde::git::task_workspace(&db, &task)
+            })
+        })
+        .collect();
+    let paths: Vec<_> = handles
+        .into_iter()
+        .map(|h| {
+            h.join()
+                .unwrap()
+                .expect("every concurrent allocation succeeds")
+        })
+        .collect();
+    assert!(paths.iter().all(|p| p == &paths[0]));
+    assert!(paths[0].join(".git").exists());
+    let branches = std::process::Command::new("git")
+        .args(["branch", "--list", &format!("horde/{task}")])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&branches.stdout).lines().count(), 1);
+}

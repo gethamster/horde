@@ -23,23 +23,50 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(out.stdout)?.trim().to_owned())
 }
 pub fn task_workspace(db: &Store, oid: &str) -> Result<PathBuf> {
+    use fs2::FileExt;
     let o = db.task(oid)?;
     let repo = Path::new(o["repo"].as_str().context("repo")?);
-    let path = db.root.join("workspaces").join(oid).join("integrated");
-    if !path.exists() {
-        std::fs::create_dir_all(path.parent().context("parent")?)?;
-        run(
+    let dir = db.root.join("workspaces").join(oid);
+    let path = dir.join("integrated");
+    std::fs::create_dir_all(&dir)?;
+    // Concurrent attempts of one task (parallel agent steps under `concurrency > 1`)
+    // allocate the same integrated worktree; without a lock both ran
+    // `worktree add -b horde/<task>` and the loser failed on the existing ref, which
+    // skipped every dependent step (issue #41). Serialize per task and re-check
+    // under the lock; a branch left behind by an interrupted allocation is reused.
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(".allocate.lock"))?;
+    lock.lock_exclusive()?;
+    let allocated = (|| -> Result<()> {
+        if path.exists() {
+            return Ok(());
+        }
+        let branch = format!("horde/{oid}");
+        let path_str = path.to_str().context("path")?;
+        let branch_exists = run(
             repo,
             &[
-                "worktree",
-                "add",
-                "-b",
-                &format!("horde/{oid}"),
-                path.to_str().context("path")?,
-                "HEAD",
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
             ],
-        )?;
-    }
+        )
+        .is_ok();
+        if branch_exists {
+            let _ = run(repo, &["worktree", "prune"]);
+            run(repo, &["worktree", "add", path_str, &branch])?;
+        } else {
+            run(repo, &["worktree", "add", "-b", &branch, path_str, "HEAD"])?;
+        }
+        Ok(())
+    })();
+    let _ = lock.unlock();
+    allocated?;
     if run(&path, &["branch", "--show-current"])? != format!("horde/{oid}") {
         bail!("integrated workspace is on an unexpected branch");
     }
