@@ -244,12 +244,18 @@ async fn remote_root_flow(scoped: bool) {
         use std::os::unix::fs::PermissionsExt;
         let program = dir.path().join("mock-harness");
         let invocation_log = dir.path().join("invoked-models");
-        std::fs::write(&program, format!("#!/bin/sh\nmodel=\nwhile [ $# -gt 0 ]; do\n if [ \"$1\" = --model ]; then shift; model=$1; fi\n shift\ndone\nprintf '%s\\n' \"$model\" >> '{}'\nprintf '%s\\n' \"$model\" > chosen-model.txt\ngit -c core.hooksPath=/dev/null add chosen-model.txt || exit 1\ngit -c core.hooksPath=/dev/null -c user.name=Test -c user.email=test@localhost commit -q -m result || exit 1\nprintf '%s\\n' '{{\"result\":\"{{\\\"accepted\\\":true,\\\"result\\\":\\\"mock worker completed\\\"}}\",\"usage\":{{}}}}'\n", invocation_log.display())).unwrap();
+        std::fs::write(&program, format!("#!/bin/sh\nmodel=\nwhile [ $# -gt 0 ]; do\n if [ \"$1\" = --model ]; then shift; model=$1; fi\n shift\ndone\ncat > '{}' || exit 1\nprintf '%s\\n' \"$model\" >> '{}'\nprintf '%s\\n' \"$model\" > chosen-model.txt\ngit -c core.hooksPath=/dev/null add chosen-model.txt || exit 1\ngit -c core.hooksPath=/dev/null -c user.name=Test -c user.email=test@localhost commit -q -m result || exit 1\nprintf '%s\\n' '{{\"result\":\"{{\\\"accepted\\\":true,\\\"result\\\":\\\"mock worker completed\\\"}}\",\"usage\":{{}}}}'\n", dir.path().join("received-prompt").display(), invocation_log.display())).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(user.join("horde/config.toml"), format!("autonomy = true\n[providers.claude]\nprogram = {:?}\nmodel = 'opus-test'\n[executors.codex]\nprovider = 'claude'\nmodel = 'astra-test'\n[executors.glm]\nprovider = 'claude'\nmodel = 'glm-5.3'\n", program)).unwrap();
         let templates = repo.join(".horde/templates");
         std::fs::create_dir_all(&templates).unwrap();
-        std::fs::write(templates.join("selected.toml"), "name = 'selected'\nversion = '1'\ninputs = ['task']\n[[steps]]\nid = 'work'\nkind = 'agent'\nrole = 'worker'\ninstructions = 'Perform the supplied task'\nscope = ['.']\n").unwrap();
+        // Exceed common pipe buffers so the fake provider must consume stdin,
+        // just as a real harness does, before returning its result.
+        let instructions = format!(
+            "Perform the supplied task: {}PROMPT-END",
+            "bounded context ".repeat(8192)
+        );
+        std::fs::write(templates.join("selected.toml"), format!("name = 'selected'\nversion = '1'\ninputs = ['task']\n[[steps]]\nid = 'work'\nkind = 'agent'\nrole = 'worker'\ninstructions = {instructions:?}\nscope = ['.']\n")).unwrap();
         horde::git::run(&repo, &["add", "."]).unwrap();
         horde::git::run(&repo, &["commit", "-m", "selected worker fixture"]).unwrap();
     } else {
@@ -317,13 +323,14 @@ async fn remote_root_flow(scoped: bool) {
     horde::git::run(&repo, &["commit", "-m", "later local work"]).unwrap();
     loop {
         horde::federation::tick(&db).await.unwrap();
-        if db.task(id).unwrap()["status"] == "succeeded" {
+        let status = db.task(id).unwrap()["status"].clone();
+        if status == "succeeded" {
             break;
         }
         assert!(
-            Instant::now() < deadline,
-            "remote task did not complete: {:?}",
-            db.rows("SELECT kind,data FROM events WHERE task=?", &[&id])
+            Instant::now() < deadline && !["failed", "blocked", "cancelled"].iter().any(|terminal| status == *terminal),
+            "remote task did not complete ({status}): {:?}",
+            db.rows("SELECT kind,json_extract(data,'$.remote_status') AS remote_status,json_extract(data,'$.remote_steps[0].result') AS remote_result FROM events WHERE task=? AND kind='task.finished'", &[&id])
                 .unwrap()
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -358,6 +365,12 @@ async fn remote_root_flow(scoped: bool) {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("invoked-models")).unwrap(),
             "glm-5.3\n"
+        );
+        let prompt = std::fs::read_to_string(dir.path().join("received-prompt")).unwrap();
+        assert!(prompt.len() > 128 * 1024, "large prompt was not delivered");
+        assert!(
+            prompt.contains("PROMPT-END"),
+            "prompt delivery was truncated"
         );
         let review = std::path::Path::new(result["result_workspace"].as_str().unwrap());
         assert_eq!(
