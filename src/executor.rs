@@ -597,7 +597,7 @@ pub fn record_tool_completed(
     };
     i.db.event(i.task, "tool.completed", json!({"step":i.step,"attempt":i.attempt,"worker":i.worker,"tool":name,"time":now(),
         "success":result.is_ok(),"duration_ms":duration_ms,"arguments":arguments,"arguments_truncated":arguments_truncated,
-        "result":result_text,"result_summary":result_text,"result_truncated":result_truncated,"error":error,"error_truncated":error_truncated}))
+        "timing":crate::budget::status(i.db,i.attempt)?,"result":result_text,"result_summary":result_text,"result_truncated":result_truncated,"error":error,"error_truncated":error_truncated}))
 }
 
 async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
@@ -727,7 +727,7 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                 i.attempt
             ],
         )?;
-        i.db.event(i.task,"executor.progress",json!({"step":i.step,"attempt":i.attempt,"kind":"model_response","turn":turn + 1,"usage":usage}))?;
+        i.db.event(i.task,"executor.progress",json!({"step":i.step,"attempt":i.attempt,"kind":"model_response","turn":turn + 1,"usage":usage,"timing":crate::budget::status(i.db,i.attempt)?}))?;
         let mut message = data["choices"][0]["message"].clone();
         if !message.is_object() {
             bail!("Tuara returned no message");
@@ -772,7 +772,18 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                         if name == "complete_step" {
                             crate::native_protocol::completion_result(args, calls.len(), i.spec)
                         } else if crate::protocol::worker_allowed(name) {
-                            crate::protocol::dispatch(i.db, name, args, Some(i.token))
+                            let root = i.db.root.clone();
+                            let name = name.to_owned();
+                            let token = i.token.to_owned();
+                            crate::budget::blocking(move || {
+                                crate::protocol::dispatch(
+                                    &Store::open(&root)?,
+                                    &name,
+                                    args,
+                                    Some(&token),
+                                )
+                            })
+                            .await
                         } else {
                             crate::native::call(
                                 i.db,

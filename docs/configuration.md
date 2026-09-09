@@ -99,3 +99,41 @@ Set `autonomy = false` to hold new tasks until the initial question is answered:
 ```sh
 horde answer TASK_ID QUESTION_ID yes
 ```
+
+## Step progress budgets
+
+The daemon ends an attempt after `step_budget_seconds` without durable progress.
+Defaults are 600 seconds for planners and reviewers, and 1800 seconds for workers.
+A step's explicit value wins over its executor role's value, which wins over the
+global default. All values must be positive seconds:
+
+```toml
+step_budget_seconds = 1800
+
+[executors.planner]
+step_budget_seconds = 600
+
+[executors.reviewer]
+step_budget_seconds = 600
+```
+
+An accepted plan proposal, a new artifact, or changed workspace files/commits
+resets the window. Reads, messages, worker status changes, and identical writes
+or duplicate artifacts do not. Command and harness file changes are observed by
+periodic workspace scans; ignored files are excluded. This is a **progress timeout**:
+a worker making changes can run longer than the configured number of seconds.
+Total elapsed wall time continues to accumulate across resets.
+
+The window covers workspace setup, model requests, tools, and integration.
+Exhaustion stops owned commands, records `step.budget_exhausted`, and finishes the
+attempt with `{"error":"step budget exhausted","elapsed_s":...,"budget_s":...}`.
+The existing retry/fallback policy applies, with a fresh budget for each attempt.
+`timeout_seconds` remains the separate request/command timeout and can fail an
+operation earlier.
+
+`horde inspect TASK_ID` adds `timing` to attempts: `elapsed_s`, `idle_s`, `budget_s`,
+and `remaining_s`. `horde events TASK_ID` includes budget start, progress,
+exhaustion, and finish events, plus timing on model responses and tool calls.
+`horde metrics TASK_ID` reports a `steps` array with wall time, summed attempt time,
+tokens, coordination counts, and attempt timing. Step wall time includes gaps
+between retries; summed attempt time excludes those gaps.

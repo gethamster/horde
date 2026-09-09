@@ -171,3 +171,12 @@ encoding and truncation, including secrets containing quotes or newlines.
 Unavailable application secrets cause diagnostic content to be withheld. Usage
 and extra-field objects each have a 64 KiB diagnostic limit. No assistant
 transcript is copied into the usage record.
+
+Streaming usage-only chunks with `choices: []` are retained per response in
+`executor.progress` (`kind: model_response`) and metrics, including cached tokens
+and provider-specific fields. A later chunk with `usage: null` does not erase them.
+These records survive budget exhaustion even when no final completion is returned.
+
+The daemon's [step progress budget](configuration.md#step-progress-budgets) also
+bounds loops of valid, changing tool calls. Read-only coordination never renews it.
+Model-response and tool-completion events include the current attempt's `timing`.

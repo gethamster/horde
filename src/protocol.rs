@@ -181,6 +181,8 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Integrate a committed worker worktree; optional validation argv",
     ),
 ];
+pub const KNOWLEDGE_KINDS: &[&str] = &["fact", "decision", "evidence"];
+
 fn string<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
     v[k].as_str().with_context(|| format!("missing string {k}"))
 }
@@ -404,6 +406,9 @@ pub fn admin_schema(name: &str) -> Value {
                     json!({"type":"string"})
                 };
             }
+            if name == "add_knowledge" && *k == "kind" {
+                s["enum"] = json!(KNOWLEDGE_KINDS);
+            }
             if *k == "steps" {
                 s["description"] = json!("Workflow Step objects. Call this tool with a steps array; step IDs are data, never tool names. Use expanded steps, not nested template invocations.");
                 if name == "propose_steps" {
@@ -568,10 +573,18 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
     let oid = string(&args, "task")?;
     db.task(oid)?;
     if token.is_some() && worker_allowed(name) {
+        let worker = string(&args, "worker")?;
+        let step = db.worker(worker)?["step"].clone();
+        let active = db.rows("SELECT id FROM attempts WHERE worker=? AND state='running' ORDER BY started DESC LIMIT 1", &[&worker])?;
+        let attempt = active.first().and_then(|a| a["id"].as_str());
+        let timing = attempt
+            .map(|a| crate::budget::status(db, a))
+            .transpose()?
+            .unwrap_or(Value::Null);
         db.event(
             oid,
             "coordination.call",
-            json!({"worker":args["worker"],"tool":name}),
+            json!({"worker":worker,"step":step,"attempt":attempt,"tool":name,"timing":timing}),
         )?;
     }
     if let Some(wid) = args["worker"].as_str()
@@ -617,7 +630,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         "refresh_bundles" => db.atomic(|| {let names:Vec<String>=db.rows("SELECT name FROM task_bundles WHERE task=?",&[&oid])?.iter().filter_map(|r|r["name"].as_str().map(str::to_owned)).collect();db.conn.execute("DELETE FROM task_bundles WHERE task=?",[oid])?;crate::secrets::select(db,oid,&names)?;Ok(json!({"refreshed":true}))}),
         "metrics" => crate::metrics::report(db, oid),
         "inspect" => Ok(
-            json!({"task":db.task(oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=?",&[&oid])?,"attempts":db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?}),
+            json!({"task":db.task(oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=?",&[&oid])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?}),
         ),
         "events" => {
             let cursor:i64=if let Some(consumer)=args["consumer"].as_str(){db.conn.query_row("SELECT COALESCE((SELECT seq FROM event_receipts WHERE task=? AND consumer=?),0)",rusqlite::params![oid,consumer],|r|r.get(0))?}else{0};
@@ -864,6 +877,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
                     "workflow.proposed",
                     json!({"worker":wid,"revision":revision,"steps":new_ids}),
                 )?;
+                crate::budget::progress(db, wid, "proposal_accepted", &revision.to_string())?;
                 Ok(json!({"revision":revision,"steps":new_ids}))
             })
         }
@@ -878,9 +892,16 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             crate::skills::validate_steps(&crate::skills::packet(db, oid)?, &plan.steps)?;
             db.atomic(||{crate::delegation::invalidate_acceptance(db,oid)?;for s in &added{db.conn.execute("INSERT INTO steps(id,task,name,spec,state) VALUES(?,?,?,?,'pending')",rusqlite::params![id(),oid,s.id,serde_json::to_string(s)?])?;}let rev:i64=db.conn.query_row("SELECT COALESCE(MAX(revision),0)+1 FROM revisions WHERE task=?",[oid],|r|r.get(0))?;let serialized=serde_json::to_string(&plan)?;db.conn.execute("INSERT INTO revisions VALUES(?,?,?,?)",rusqlite::params![oid,rev,serialized,now()])?;db.conn.execute("UPDATE tasks SET plan=?,status=CASE WHEN status='succeeded' THEN 'running' ELSE status END WHERE id=?",rusqlite::params![serialized,oid])?;db.event(oid,"workflow.revised",json!({"revision":rev}))?;Ok(json!({"revision":rev}))})
         }
-        "put_artifact" => Ok(
-            json!({"hash":db.artifact(oid,args["step"].as_str(),string(&args,"name")?,string(&args,"content")?.as_bytes(),args.get("inputs").unwrap_or(&json!({})),args["verified"].as_bool().unwrap_or(false))?}),
-        ),
+        "put_artifact" => {
+            let content = string(&args,"content")?.as_bytes();
+            let hash = crate::store::hash(content);
+            let seen = !db.rows("SELECT hash FROM artifact_links WHERE task=? AND hash=?", &[&oid,&hash])?.is_empty();
+            let hash = db.artifact(oid,args["step"].as_str(),string(&args,"name")?,content,args.get("inputs").unwrap_or(&json!({})),args["verified"].as_bool().unwrap_or(false))?;
+            if !seen && let Some(worker) = args["worker"].as_str() {
+                crate::budget::progress(db, worker, "artifact_committed", &hash)?;
+            }
+            Ok(json!({"hash":hash}))
+        },
         "get_artifact" => {
             let h = string(&args, "hash")?;
             if h.len() != 64 || !h.bytes().all(|c| c.is_ascii_hexdigit()) {
@@ -908,8 +929,8 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         "add_knowledge" => {
             let kid = id();
             let kind = string(&args, "kind")?;
-            if !["fact", "decision", "evidence"].contains(&kind) {
-                bail!("invalid knowledge kind");
+            if !KNOWLEDGE_KINDS.contains(&kind) {
+                bail!("invalid knowledge kind; expected one of: {}", KNOWLEDGE_KINDS.join(", "));
             }
             if args["provenance"].is_null() {
                 bail!("provenance is required");

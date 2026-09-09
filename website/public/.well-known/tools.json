@@ -854,6 +854,16 @@
                   },
                   "type": "array"
                 },
+                "step_budget_seconds": {
+                  "default": null,
+                  "description": "Seconds without durable progress before the daemon ends an attempt.",
+                  "format": "uint64",
+                  "minimum": 1,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
                 "template": {
                   "description": "Planner proposals must be expanded; omit template.",
                   "type": "null"
@@ -1545,6 +1555,16 @@
                   },
                   "type": "array"
                 },
+                "step_budget_seconds": {
+                  "default": null,
+                  "description": "Seconds without durable progress before the daemon ends an attempt.",
+                  "format": "uint64",
+                  "minimum": 1,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
                 "template": {
                   "default": null,
                   "description": "Nested template name, expanded only during template compilation. Submit expanded steps to revision tools.",
@@ -1683,6 +1703,11 @@
             "type": "object"
           },
           "kind": {
+            "enum": [
+              "fact",
+              "decision",
+              "evidence"
+            ],
             "type": "string"
           },
           "provenance": {

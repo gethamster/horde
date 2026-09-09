@@ -7,11 +7,12 @@ use std::{
 };
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<String> {
-    let out = crate::executor::clean_command("git")
-        .current_dir(repo)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+    let out = crate::budget::command_output(
+        crate::executor::clean_command("git")
+            .current_dir(repo)
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )?;
     if !out.status.success() {
         bail!(
             "git {}: {}",
@@ -240,11 +241,14 @@ pub fn integrate(
     if !run(&target, &["status", "--porcelain"])?.is_empty() {
         bail!("integrated workspace is dirty; reconciliation required");
     }
-    let already = Command::new("git")
-        .current_dir(&target)
-        .args(["merge-base", "--is-ancestor", &commit, "HEAD"])
-        .status()?
-        .success();
+    let already = crate::budget::command_output(Command::new("git").current_dir(&target).args([
+        "merge-base",
+        "--is-ancestor",
+        &commit,
+        "HEAD",
+    ]))?
+    .status
+    .success();
     if !already {
         db.conn.execute("UPDATE integrations SET state='running',evidence=? WHERE task=? AND worker=? AND commit_id=?",rusqlite::params![json!({"before":before,"validation":validation}).to_string(),oid,wid,commit])?;
         if let Err(e) = run(&target, &["merge", "--no-ff", "--no-edit", &commit]) {
@@ -261,11 +265,12 @@ pub fn integrate(
     }
     if !validation.is_empty() {
         let values = crate::secrets::values(db, oid)?;
-        let out = crate::executor::clean_command(&validation[0])
-            .args(&validation[1..])
-            .current_dir(&target)
-            .envs(&values)
-            .output()?;
+        let out = crate::budget::command_output(
+            crate::executor::clean_command(&validation[0])
+                .args(&validation[1..])
+                .current_dir(&target)
+                .envs(&values),
+        )?;
         if !out.status.success() {
             let evidence = crate::secrets::redact_json(
                 &json!({"stdout":String::from_utf8_lossy(&out.stdout),"stderr":String::from_utf8_lossy(&out.stderr),"before":before,"validation":validation}),

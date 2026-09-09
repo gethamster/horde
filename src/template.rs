@@ -25,6 +25,10 @@ pub struct Step {
     /// Unique workflow-local name for this step, not a tool/function name.
     #[schemars(length(min = 1))]
     pub id: String,
+    /// Seconds without durable progress before the daemon ends an attempt.
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    pub step_budget_seconds: Option<u64>,
     /// Configured executor role (defaults to worker). Must exist for planner proposals.
     #[serde(default = "worker")]
     pub role: String,
@@ -252,6 +256,7 @@ fn expand(
                 plan,
             )?;
             for child in &mut plan.steps[child_start..] {
+                child.step_budget_seconds = child.step_budget_seconds.or(s.step_budget_seconds);
                 if child.kind == "agent" {
                     child.skills.extend(s.skills.clone());
                     child.skills.sort();
@@ -327,6 +332,9 @@ pub fn validate(steps: &[Step]) -> Result<()> {
         if let Some(e) = &s.environment {
             e.validate()
                 .map_err(|e| anyhow::anyhow!("{path}.environment: {e:#}"))?;
+        }
+        if s.step_budget_seconds == Some(0) {
+            bail!("{path}.step_budget_seconds: must be positive");
         }
         if s.kind == "environment" && s.environment.is_none() {
             bail!("{path}.environment: environment step requires environment configuration");
