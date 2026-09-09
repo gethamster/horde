@@ -5,6 +5,7 @@ use std::{
     io::{BufRead, Write},
     path::PathBuf,
 };
+mod watch;
 #[derive(Parser)]
 #[command(name = "horde", version, about = "Durable local task orchestration")]
 struct Cli {
@@ -45,10 +46,24 @@ enum Commands {
     Metrics {
         task: String,
     },
+    /// Print a task's durable events; with --follow, stream them as NDJSON until the task ends.
     Events {
         task: String,
-        #[arg(long, default_value_t = 0)]
-        after: i64,
+        /// Keep streaming until the task is terminal (same as `watch`).
+        #[arg(long)]
+        follow: bool,
+        #[command(flatten)]
+        options: watch::Options,
+    },
+    /// Stream a task's durable events as NDJSON until it succeeds (exit 0), fails (1), or is cancelled (2).
+    Watch {
+        task: String,
+        #[command(flatten)]
+        options: watch::Options,
+    },
+    /// Print the terminal summary: status, step outcomes, integrated head, and delivery outcome.
+    Summary {
+        task: String,
     },
     Cancel {
         task: String,
@@ -486,9 +501,20 @@ async fn main() -> Result<()> {
         Commands::Inspect { task } => request(&root, "inspect", json!({"task":task}))?,
         Commands::Metrics { task } => request(&root, "metrics", json!({"task":task}))?,
         Commands::List => request(&root, "list_tasks", json!({}))?,
-        Commands::Events { task, after } => {
-            request(&root, "events", json!({"task":task,"after":after}))?
+        Commands::Events {
+            task,
+            follow: false,
+            options,
+        } => request(&root, "events", json!({"task":task,"after":options.after}))?,
+        Commands::Events {
+            task,
+            follow: true,
+            options,
         }
+        | Commands::Watch { task, options } => {
+            std::process::exit(watch::run(&root, &task, &options).await?)
+        }
+        Commands::Summary { task } => request(&root, "summary", json!({"task":task}))?,
         Commands::Cancel { task } => request(&root, "cancel", json!({"task":task}))?,
         Commands::Resume { task } => request(&root, "resume", json!({"task":task}))?,
         Commands::Answer {
