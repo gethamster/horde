@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a `grok` executor kind: the Grok CLI under its subscription login, prompt as an
+  argument, coordination MCP server written to the workspace's `.grok/config.toml`,
+  usable as a fallback hop after claude and codex.
 - Start each task's integrated worktree from a freshly fetched `origin/<base>`
   instead of the operator's local `HEAD`, so pull requests no longer trail the
   base branch by however far the local checkout had drifted. Allocation fails

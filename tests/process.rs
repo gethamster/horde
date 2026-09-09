@@ -1216,3 +1216,80 @@ fn command_workspace_rejects_invalid_values_and_noncommand_steps() {
         std::fs::remove_file(d.repo.join(format!(".horde/templates/{name}.toml"))).unwrap();
     }
 }
+
+#[test]
+fn mock_grok_adapter_gets_the_prompt_as_an_argument_and_a_project_mcp_config() {
+    // Grok's headless mode (`grok -p PROMPT --output-format json --always-approve`) takes the
+    // prompt as an argument, never on stdin, and reads MCP servers from the workspace's
+    // `.grok/config.toml`; the reply is one JSON object with text/usage/total_cost_usd.
+    let d = Daemon::new();
+    let script = d.dir.path().join("grok-mock");
+    let argv_log = d.dir.path().join("grok-argv");
+    let code = r#"#!/bin/sh
+printf '%s\n' "$@" > ARGV_LOG
+test -f .grok/config.toml || { echo "no project mcp config" >&2; exit 3; }
+grep -q HORDE_WORKER_TOKEN .grok/config.toml || { echo "no token" >&2; exit 4; }
+printf 'hello\n' > hello.txt
+git add hello.txt
+git commit -qm test
+printf '%s\n' '{"text":"{\"result\":\"implemented\",\"accepted\":true}","stopReason":"end_turn","usage":{"input_tokens":12,"output_tokens":4,"cache_read_input_tokens":0},"total_cost_usd":0.01}'
+"#
+    .replace("ARGV_LOG", &format!("'{}'", argv_log.display()));
+    std::fs::write(&script, code).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        format!(
+            "[executors.worker]\nprovider=\"grok\"\nprogram={:?}\n",
+            script.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    d.template(
+        "mock",
+        r#"
+name="mock"
+version="1"
+[[steps]]
+id="code"
+scope=["hello.txt"]
+instructions="Implement hello"
+"#,
+    );
+    let oid = d.submit("mock");
+    let v = d.wait(&oid, "succeeded");
+    assert_eq!(v["integrations"][0]["state"], "succeeded");
+    let argv = std::fs::read_to_string(&argv_log).unwrap();
+    // the prompt is one multi-line argument, so it spans several logged lines
+    let words: Vec<&str> = argv.lines().collect();
+    assert_eq!(words[0], "-p");
+    assert!(argv.contains("Implement hello"), "{argv}");
+    assert!(words.contains(&"--output-format") && words.contains(&"json"));
+    assert!(words.contains(&"--always-approve"));
+    let cfg = std::fs::read_to_string(
+        d.root
+            .join("workspaces")
+            .join(&oid)
+            .join("integrated")
+            .join(".grok")
+            .join("config.toml"),
+    )
+    .unwrap_or_default();
+    assert!(cfg.contains("[mcp_servers.coordination]"), "{cfg}");
+}
+
+#[test]
+fn grok_project_config_matches_the_cli_shape() {
+    let cfg = horde::executor::grok_project_config(
+        std::path::Path::new("/opt/horde"),
+        &["--data-dir".into(), "/tmp/hd".into(), "mcp".into()],
+        "tok123",
+    );
+    let parsed: toml::Value = toml::from_str(&cfg).unwrap();
+    let server = &parsed["mcp_servers"]["coordination"];
+    assert_eq!(server["command"].as_str(), Some("/opt/horde"));
+    assert_eq!(server["args"].as_array().unwrap().len(), 3);
+    assert_eq!(server["enabled"].as_bool(), Some(true));
+    assert_eq!(server["env"]["HORDE_WORKER_TOKEN"].as_str(), Some("tok123"));
+}
