@@ -3,3 +3,8 @@ package task.federation.v1;
 service Federation { rpc Call(CallRequest) returns (CallReply); rpc Control(stream CallRequest) returns (stream CallReply); }
 message CallRequest { string method = 1; string json = 2; }
 message CallReply { string json = 1; }
+// Served only on the separate enrollment listener; never exposes runtime RPCs.
+service Enrollment { rpc Register(EnrollmentRequest) returns (EnrollmentReply); rpc Renew(RenewalRequest) returns (EnrollmentReply); }
+message EnrollmentRequest { string key_id = 1; string token = 2; string csr_pem = 3; }
+message RenewalRequest { string csr_pem = 1; }
+message EnrollmentReply { string json = 1; }

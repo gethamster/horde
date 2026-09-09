@@ -10,7 +10,120 @@ caller. When networking is configured, `horde start` supervises the listener.
 Managed workers connect outbound to the controller and do not need inbound ports.
 Do not run `horde network listen` on an address already used by the daemon.
 
-## Automatic setup and pairing
+## Automatic fleet enrollment
+
+A fleet credential lets workers join from Docker, Kubernetes, E2B, Daytona,
+VMs, or individual machines. Each worker generates its own private key and
+connects outbound to the controller. SSH is optional and is used only by the
+separate remote installation command below.
+
+Configure the controller's network identity first, using `horde network setup`
+for Tailscale or the direct network configuration described below. Then create
+a credential. Replace the example addresses and TLS name with reachable
+controller addresses and a DNS name in its certificate:
+
+```sh
+horde network key create workers \
+  --listen 192.0.2.10:7444 \
+  --controller-address 192.0.2.10:7443 \
+  --tls-name controller.example.com \
+  --max-workers 100 \
+  --output workers.json
+horde start
+```
+
+`--listen` is a specific local address for the enrollment service, on a separate
+port from the runtime listener. If a router forwards connections to this address,
+set `--enrollment-address` to its public address. Both ports must be reachable
+from workers. The existing runtime listener continues to require a worker
+certificate; the enrollment listener exposes only registration and renewal.
+Running controllers notice new enrollment settings within five seconds.
+
+The output file has mode 0600 and contains the fleet secret, controller addresses,
+and controller trust certificate. Existing output files are never overwritten.
+The default credential permits 100 distinct workers to join over 30 days, with
+four concurrent tasks per worker. Set `--expires-in` in seconds,
+`--max-workers`, and `--concurrency` to change those limits. The worker limit
+counts all identities ever admitted with that credential, including revoked
+workers; retries with the same local identity do not consume another slot.
+
+Supply the credential once through the platform that launches the fleet:
+
+| Platform | Credential delivery |
+| --- | --- |
+| Docker | Mount a credential file readable only by the worker user; set `HORDE_ENROLLMENT_FILE` to its container path. |
+| Kubernetes | Store the file in a Secret and expose its value as `HORDE_ENROLLMENT_JSON` through `secretKeyRef`. |
+| E2B or Daytona | Supply `HORDE_ENROLLMENT_JSON` through the sandbox environment, or provision a private file and set `HORDE_ENROLLMENT_FILE` in the template's startup environment. |
+| VMs | Use the image's secret delivery or startup configuration to provision a private file and set `HORDE_ENROLLMENT_FILE`. |
+| Individual machines | Run `horde network join --invitation workers.json`, then `horde start`. |
+
+For example, create a Kubernetes Secret in the worker namespace:
+
+```sh
+kubectl -n horde create secret generic horde-fleet --from-file=invitation=workers.json
+```
+
+Add this environment entry to the worker container specification:
+
+```yaml
+env:
+  - name: HORDE_ENROLLMENT_JSON
+    valueFrom:
+      secretKeyRef:
+        name: horde-fleet
+        key: invitation
+```
+
+Every platform uses the same worker startup command:
+
+```sh
+horde --data-dir /data daemon
+```
+
+Set only one of `HORDE_ENROLLMENT_FILE` and `HORDE_ENROLLMENT_JSON`. File
+credentials must be private regular files; mounted symlinks are supported when
+their targets meet those requirements. Use the provider's restart policy or
+the sandbox supervisor to retry an initial connection failure. Horde performs
+a bounded enrollment attempt and retains its pending identity for the retry.
+Preserve a separate data directory for each worker across ordinary restarts;
+cloning an enrolled directory would also clone that worker's identity.
+
+Workers retain their own keys and certificates without retaining the fleet
+secret in enrollment state. Certificates last 24 hours and renew automatically
+after 12 hours, including while the worker is connected. Restarts reuse the
+saved identity without needing the fleet credential while its certificate is
+valid. If the certificate expires, the worker automatically presents its fleet
+credential again and proves ownership of its existing private key. Recovery
+keeps the same identity and uses no additional enrollment slot. The fleet key
+must still be valid, and the worker must not have been revoked.
+
+Workers read the recovery credential from `HORDE_ENROLLMENT_FILE` or
+`HORDE_ENROLLMENT_JSON`. A file-based join also remembers the original file path
+for later recovery; keep that private file available. The secret itself is not
+copied into worker state. If it is unavailable, restore the configured credential
+source or run `horde network join --invitation workers.json` again. A disposable
+container can instead start with a fresh data directory and enroll a new identity,
+subject to the fleet key's remaining admission limit.
+Provision model credentials separately through each worker's existing provider
+configuration. Fleet enrollment does not copy the controller's API keys.
+
+```sh
+horde network key list
+horde runtime list
+horde runtime inspect WORKER_ID
+horde network key revoke KEY_ID
+horde network revoke WORKER_ID
+```
+
+Revoking a fleet key stops new admissions. Existing workers can still renew,
+and a previously admitted worker can recover a lost registration reply while
+its certificate remains valid. Revoking a worker stops renewal and readmission and closes its
+control connection within the five-second authorization check. A connected
+worker appears as ready only after it reports to the controller. Enrollment
+does not give Horde ownership of the Docker container, sandbox, VM, or machine;
+the platform that launched it remains responsible for its lifecycle.
+
+## Remote installation over SSH
 
 On the controller, with Horde installed:
 
@@ -26,7 +139,7 @@ Tailscale sign-in when needed, generates a private controller CA and identity,
 and starts Horde. Stop an existing unconfigured daemon before initial setup.
 Existing manually configured trust is preserved and requires explicit migration.
 
-The worker must already be reachable through Tailscale SSH using a non-root account.
+For `network add`, the worker must already be reachable through Tailscale SSH using a non-root account.
 If Horde is installed on a Linux worker, prepare that access with:
 
 ```sh

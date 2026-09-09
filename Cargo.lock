@@ -636,7 +636,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "horde"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -669,6 +669,7 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]

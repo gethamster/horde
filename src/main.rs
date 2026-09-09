@@ -228,6 +228,18 @@ enum RuntimeCommands {
 
 #[derive(Subcommand)]
 enum NetworkCommands {
+    /// Create, inspect, or revoke credentials for automatic fleet enrollment.
+    Key {
+        #[command(subcommand)]
+        command: horde::fleet_enrollment::cli::KeyCommands,
+    },
+    /// Enroll this machine using a fleet credential file, without SSH.
+    Join {
+        #[arg(long)]
+        invitation: PathBuf,
+    },
+    /// Revoke an enrolled worker's access and certificate renewal.
+    Revoke { runtime: String },
     /// Install/connect Tailscale and generate Horde certificates automatically.
     Setup {
         /// Prepare a Linux worker for pairing over Tailscale SSH.
@@ -319,6 +331,39 @@ async fn main() -> Result<()> {
     let output = match cli.command {
         Commands::Network { config, command } => {
             match &command {
+                NetworkCommands::Key { command } => {
+                    anyhow::ensure!(
+                        config.is_none(),
+                        "fleet keys use the controller's configured network identity; omit --config"
+                    );
+                    println!(
+                        "{}",
+                        horde::fleet_enrollment::cli::run(&root, config.as_deref(), command)?
+                    );
+                    return Ok(());
+                }
+                NetworkCommands::Join { invitation } => {
+                    anyhow::ensure!(
+                        config.is_none(),
+                        "join obtains its network settings from the fleet invitation; omit --config"
+                    );
+                    let certificate =
+                        horde::fleet_enrollment::worker::join(&root, invitation).await?;
+                    println!(
+                        "{}",
+                        json!({"runtime":certificate.runtime_id,"enrolled":true,"next":"Run horde start to connect this worker."})
+                    );
+                    return Ok(());
+                }
+                NetworkCommands::Revoke { runtime } => {
+                    horde::fleet_enrollment::admin()?;
+                    horde::fleet_enrollment::authority::revoke_worker(
+                        &horde::store::Store::open(&root)?,
+                        runtime,
+                    )?;
+                    println!("{}", json!({"runtime":runtime,"revoked":true}));
+                    return Ok(());
+                }
                 NetworkCommands::Setup { worker, service } => {
                     anyhow::ensure!(
                         config.is_none(),
@@ -356,6 +401,9 @@ async fn main() -> Result<()> {
             )?;
             match command {
                 NetworkCommands::Config
+                | NetworkCommands::Key { .. }
+                | NetworkCommands::Join { .. }
+                | NetworkCommands::Revoke { .. }
                 | NetworkCommands::Setup { .. }
                 | NetworkCommands::Add { .. }
                 | NetworkCommands::Accept { .. } => unreachable!(),

@@ -162,12 +162,14 @@ fn identifier(s: &str) -> Result<()> {
 }
 pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
     if name == "runtime_list" {
-        return Ok(Some(json!(db.rows("SELECT r.id,r.profile,r.resource,r.state,r.version,r.created,r.error,p.observed AS last_seen,p.status AS runtime_status FROM managed_runtimes r LEFT JOIN runtime_presence p ON p.runtime=r.id ORDER BY r.created",&[])?)));
+        return Ok(Some(json!(db.rows("SELECT r.id,r.profile,r.resource,r.state,r.version,r.created,r.error,p.observed AS last_seen,p.status AS runtime_status FROM managed_runtimes r LEFT JOIN runtime_presence p ON p.runtime=r.id
+UNION ALL SELECT m.runtime,'fleet:' || k.name,NULL,CASE WHEN m.state='revoked' THEN 'revoked' WHEN c.expires<=? THEN 'expired' WHEN p.observed>? THEN 'ready' ELSE 'offline' END,json_extract(p.status,'$.version'),m.created,NULL,p.observed,p.status
+FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint LEFT JOIN runtime_presence p ON p.runtime=m.runtime ORDER BY created",&[&now(),&(now()-30)])?)));
     }
     if name == "runtime_inspect" {
         let id = args["id"].as_str().context("id required")?;
         return Ok(Some(
-            json!({"runtime":db.rows("SELECT * FROM managed_runtimes WHERE id=?",&[&id])?,"operations":db.rows("SELECT * FROM runtime_operations WHERE runtime=? ORDER BY created",&[&id])?}),
+            json!({"runtime":db.rows("SELECT * FROM managed_runtimes WHERE id=?",&[&id])?,"fleet_membership":db.rows("SELECT m.runtime,m.key_id,k.name AS fleet,m.state,m.created,c.expires,c.renew_after FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint WHERE m.runtime=?",&[&id])?,"operations":db.rows("SELECT * FROM runtime_operations WHERE runtime=? ORDER BY created",&[&id])?}),
         ));
     }
     if ![

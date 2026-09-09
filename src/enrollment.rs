@@ -96,6 +96,19 @@ pub fn issue(db: &Store, id: &str, profile: &crate::fleet::Profile) -> Result<Op
     ))
 }
 pub fn identity(db: &Store, fingerprint: &str) -> Result<Option<String>> {
+    if let Some(id) = crate::fleet_enrollment::authority::identity(db, fingerprint)? {
+        return Ok(Some(id));
+    }
+    // Fleet certificates are authorized only through their expiry-aware table.
+    if !db
+        .rows(
+            "SELECT runtime FROM fleet_enrollment_certificates WHERE fingerprint=?",
+            &[&fingerprint],
+        )?
+        .is_empty()
+    {
+        return Ok(None);
+    }
     Ok(db.rows("SELECT runtime FROM runtime_enrollments WHERE fingerprint=? AND (state='active' OR (state='pending' AND expires>?))",&[&fingerprint,&now()])?.first().and_then(|v|v["runtime"].as_str()).map(str::to_owned))
 }
 pub fn activate(db: &Store, id: &str, token: Option<&str>) -> Result<bool> {

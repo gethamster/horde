@@ -101,6 +101,15 @@ npx skills add gethamster/horde
 
 You can also assign your own [runtime skills](docs/runtime-skills.md) to workers.
 
+## Connect worker machines
+
+Create a fleet credential with `horde network key create` and supply it to workers
+through `HORDE_ENROLLMENT_FILE` or `HORDE_ENROLLMENT_JSON`. Each worker generates
+its own key, enrolls without SSH, and renews its certificate automatically. The
+same startup flow works across containers, sandboxes, VMs, and individual machines.
+See [automatic fleet enrollment](docs/networking.md#automatic-fleet-enrollment)
+for controller setup and credential delivery.
+
 ## Documentation
 
 | Guide | What it covers |

@@ -657,7 +657,15 @@ impl Scheduler {
 
 pub async fn daemon(root: &Path) -> Result<()> {
     use fs2::FileExt;
-    crate::enrollment::bootstrap(root)?;
+    anyhow::ensure!(
+        crate::branding::var_os("HORDE_BOOTSTRAP_JSON").is_none()
+            || (crate::branding::var_os("HORDE_ENROLLMENT_FILE").is_none()
+                && crate::branding::var_os("HORDE_ENROLLMENT_JSON").is_none()
+                && !root.join("fleet-worker.json").exists()
+                && !root.join("fleet-worker-pending.json").exists()
+                && !root.join("fleet-worker.key").exists()),
+        "legacy bootstrap and fleet enrollment cannot be combined"
+    );
     let db = Store::open(root)?;
     let lock = std::fs::OpenOptions::new()
         .read(true)
@@ -667,6 +675,8 @@ pub async fn daemon(root: &Path) -> Result<()> {
         .open(root.join("daemon.lock"))?;
     lock.try_lock_exclusive()
         .context("another daemon is already running")?;
+    crate::enrollment::bootstrap(root)?;
+    crate::fleet_enrollment::worker::bootstrap(root).await?;
     let shutdown = root.join("shutdown.request");
     if shutdown.exists() {
         std::fs::remove_file(&shutdown)?;
@@ -745,13 +755,35 @@ pub async fn daemon(root: &Path) -> Result<()> {
     } else {
         None
     })?;
+    let admission = tokio::task::spawn_local(crate::fleet_enrollment::service::supervise(
+        root.to_owned(),
+        network_settings.clone(),
+    ));
+    let renewal_root = root.to_owned();
+    let renewal = tokio::task::spawn_local(async move {
+        loop {
+            if let Err(error) = crate::fleet_enrollment::worker::renew_if_due(&renewal_root).await {
+                eprintln!("Worker certificate renewal: {error:#}");
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
     let reverse = if network_settings.controller_peer.is_some() {
         let root = root.to_owned();
         let config = network_settings.clone();
         crate::federation::configure(&root, &config)?;
         Some(tokio::task::spawn_local(async move {
             loop {
-                if let Err(e) = crate::control::connect(root.clone(), config.clone()).await {
+                let current = if root.join("fleet-worker.json").exists() {
+                    crate::network::NetworkConfig::load(Some(&root.join("managed-network.toml")))
+                } else {
+                    Ok(config.clone())
+                };
+                let result = match current {
+                    Ok(current) => crate::control::connect(root.clone(), current).await,
+                    Err(error) => Err(error),
+                };
+                if let Err(e) = result {
                     eprintln!("Control connection: {e:#}");
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -796,6 +828,10 @@ pub async fn daemon(root: &Path) -> Result<()> {
         reverse.abort();
         let _ = reverse.await;
     }
+    admission.abort();
+    let _ = admission.await;
+    renewal.abort();
+    let _ = renewal.await;
     fleet.abort();
     let _ = fleet.await;
     if let Some(network) = network {

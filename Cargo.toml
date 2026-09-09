@@ -1,6 +1,6 @@
 [package]
 name = "horde"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/gethamster/horde"
@@ -11,6 +11,7 @@ description = "Local-first durable task orchestration and worker coordination"
 [dependencies]
 rcgen = { version = "0.14", features = ["x509-parser"] }
 pem = "3"
+x509-parser = { version = "0.18", features = ["verify"] }
 time = "0.3"
 ring = "0.17.14"
 anyhow = "1"

@@ -458,6 +458,9 @@ async fn serve_inner(
         request
             .extensions_mut()
             .insert(crate::federation::PeerIdentity(identity));
+        request
+            .extensions_mut()
+            .insert(crate::federation::PeerCertificate(fingerprint));
         Ok(request)
     };
     let federation =

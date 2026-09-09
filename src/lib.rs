@@ -24,6 +24,7 @@ pub mod capacity;
 pub mod control;
 pub mod enrollment;
 pub mod fleet;
+pub mod fleet_enrollment;
 pub mod management;
 pub mod service;
 pub mod update;
