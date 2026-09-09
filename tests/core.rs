@@ -116,6 +116,230 @@ fn messages_are_durable_deduplicated_and_acknowledged_per_recipient() {
     assert_eq!(reopened.worker(b).unwrap()["status"], "notified");
 }
 #[test]
+fn solo_task_broadcast_delivers_to_sender() {
+    let f = Fixture::new();
+    let a = f.worker();
+    let a = a["id"].as_str().unwrap();
+    let mid = id();
+    let sent =
+        f.db.send(&f.oid, a, &mid, "task", "note to self", &json!({}), true)
+            .unwrap();
+    assert_eq!(sent["recipients"], 1);
+    let mail = f.db.messages(a, 0, 100).unwrap();
+    assert_eq!(mail.as_array().unwrap().len(), 1);
+    assert_eq!(mail[0]["id"], mid);
+    assert_eq!(mail[0]["sender"], a);
+    f.db.acknowledge(a, std::slice::from_ref(&mid)).unwrap();
+    assert_eq!(f.db.messages(a, 0, 100).unwrap(), json!([]));
+    assert_eq!(
+        f.db.send(&f.oid, a, &mid, "task", "note to self", &json!({}), true)
+            .unwrap()["duplicate"],
+        true
+    );
+}
+#[test]
+fn task_broadcast_does_not_echo_with_peers() {
+    let f = Fixture::new();
+    let a = f.worker();
+    let b = f.worker();
+    let a = a["id"].as_str().unwrap();
+    let b = b["id"].as_str().unwrap();
+    let sent =
+        f.db.send(&f.oid, a, &id(), "task", "peers only", &json!({}), true)
+            .unwrap();
+    assert_eq!(sent["recipients"], 1);
+    assert_eq!(f.db.messages(a, 0, 100).unwrap(), json!([]));
+    assert_eq!(
+        f.db.messages(b, 0, 100).unwrap().as_array().unwrap().len(),
+        1
+    );
+}
+#[test]
+fn operator_steer_reaches_every_worker() {
+    let f = Fixture::new();
+    let a = f.worker();
+    let b = f.worker();
+    let a = a["id"].as_str().unwrap();
+    let b = b["id"].as_str().unwrap();
+    let operator = horde::store::operator_id(&f.oid);
+    let sent = f.call("steer", json!({"body":"stop and report"})).unwrap();
+    assert_eq!(sent["recipients"], 2);
+    assert_eq!(sent["sender"], operator);
+    for w in [a, b] {
+        let mail = f.db.messages(w, 0, 100).unwrap();
+        assert_eq!(mail.as_array().unwrap().len(), 1, "{w}");
+        assert_eq!(mail[0]["sender"], operator);
+        assert_eq!(mail[0]["body"], "stop and report");
+        assert_eq!(f.db.worker(w).unwrap()["status"], "notified");
+    }
+    let listed = f.call("list_workers", json!({})).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+    let inspected = f.call("inspect", json!({})).unwrap();
+    assert_eq!(inspected["workers"].as_array().unwrap().len(), 2);
+    for list in [&listed, &inspected["workers"]] {
+        assert!(list.as_array().unwrap().iter().all(|w| w["id"] != operator));
+    }
+    // Presence steering delivers without changing worker status.
+    f.call("set_worker_status", json!({"worker":a,"status":"idle"}))
+        .unwrap();
+    let quiet = f
+        .call("steer", json!({"body":"fyi","actionable":false}))
+        .unwrap();
+    assert_eq!(quiet["recipients"], 2);
+    assert_eq!(f.db.worker(a).unwrap()["status"], "idle");
+    assert_eq!(
+        f.db.messages(a, 0, 100).unwrap().as_array().unwrap().len(),
+        2
+    );
+    // Explicit ids deduplicate retries.
+    let mid = id();
+    assert_eq!(
+        f.call("steer", json!({"id":mid,"body":"again"})).unwrap()["duplicate"],
+        false
+    );
+    assert_eq!(
+        f.call("steer", json!({"id":mid,"body":"again"})).unwrap()["duplicate"],
+        true
+    );
+    // Workers cannot address or impersonate the operator identity.
+    assert!(
+        f.call(
+            "send_message",
+            json!({"worker":a,"id":id(),"destination":operator,"body":"reply"})
+        )
+        .is_err()
+    );
+    assert!(
+        f.call(
+            "set_worker_status",
+            json!({"worker":operator,"status":"idle"})
+        )
+        .is_err()
+    );
+    assert!(
+        f.call("reconcile_worker", json!({"worker":operator}))
+            .is_err()
+    );
+    // The operator row keeps its status, so later steers still fan out to every worker.
+    assert_eq!(
+        f.call("steer", json!({"body":"still steering"})).unwrap()["recipients"],
+        2
+    );
+    let events =
+        f.db.rows(
+            "SELECT data FROM events WHERE task=? AND kind='message.sent'",
+            &[&f.oid],
+        )
+        .unwrap();
+    let first: Value = serde_json::from_str(events[0]["data"].as_str().unwrap()).unwrap();
+    assert_eq!(first["sender"], operator);
+    assert_eq!(first["operator"], true);
+}
+#[test]
+fn operator_steer_needs_workers_and_admin_credentials() {
+    let f = Fixture::new();
+    assert!(f.call("steer", json!({"body":"nobody home"})).is_err());
+    let w = f.worker();
+    let token = w["token"].as_str().unwrap();
+    assert!(
+        protocol::dispatch(
+            &f.db,
+            "steer",
+            json!({"task":f.oid,"body":"from a worker"}),
+            Some(token)
+        )
+        .is_err()
+    );
+    assert_eq!(
+        f.call("steer", json!({"body":"solo"})).unwrap()["recipients"],
+        1
+    );
+    f.call("cancel", json!({})).unwrap();
+    assert!(f.call("steer", json!({"body":"too late"})).is_err());
+}
+#[test]
+fn operator_steer_can_target_one_worker() {
+    let f = Fixture::new();
+    let a = f.worker();
+    let b = f.worker();
+    let a = a["id"].as_str().unwrap();
+    let b = b["id"].as_str().unwrap();
+    let operator = horde::store::operator_id(&f.oid);
+    let plan = template::compile(
+        "simulated",
+        &template::load_templates(Path::new("absent")).unwrap(),
+        BTreeMap::from([("task".into(), "other".into())]),
+    )
+    .unwrap();
+    let other_oid =
+        f.db.submit(
+            "other",
+            Path::new(f.db.task(&f.oid).unwrap()["repo"].as_str().unwrap()),
+            &Settings::default(),
+            &plan,
+        )
+        .unwrap();
+    let outsider = f.db.register(&other_oid, None).unwrap();
+    let outsider = outsider["id"].as_str().unwrap();
+
+    let sent = f
+        .call("steer", json!({"body":"only you","worker":a}))
+        .unwrap();
+    assert_eq!(sent["recipients"], 1);
+    assert_eq!(sent["sender"], operator);
+    assert_eq!(
+        f.db.messages(a, 0, 100).unwrap().as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(f.db.messages(b, 0, 100).unwrap(), json!([]));
+    assert_eq!(f.db.worker(a).unwrap()["status"], "notified");
+    assert_eq!(f.db.worker(b).unwrap()["status"], "idle");
+
+    // Fan-out still reaches every worker when worker is omitted.
+    assert_eq!(
+        f.call("steer", json!({"body":"everyone"})).unwrap()["recipients"],
+        2
+    );
+    assert_eq!(
+        f.db.messages(a, 0, 100).unwrap().as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        f.db.messages(b, 0, 100).unwrap().as_array().unwrap().len(),
+        1
+    );
+
+    // destination is accepted as an alias for worker.
+    assert_eq!(
+        f.call("steer", json!({"body":"via destination","destination":b}))
+            .unwrap()["recipients"],
+        1
+    );
+    assert_eq!(
+        f.db.messages(b, 0, 100).unwrap().as_array().unwrap().len(),
+        2
+    );
+
+    assert!(
+        f.call("steer", json!({"body":"ghost","worker":"missing-worker"}))
+            .unwrap_err()
+            .to_string()
+            .contains("unknown worker")
+    );
+    assert!(
+        f.call("steer", json!({"body":"wrong task","worker":outsider}))
+            .unwrap_err()
+            .to_string()
+            .contains("another task")
+    );
+    assert!(
+        f.call("steer", json!({"body":"self","worker":operator}))
+            .unwrap_err()
+            .to_string()
+            .contains("operator")
+    );
+}
+#[test]
 fn direct_and_group_messages_do_not_leak() {
     let f = Fixture::new();
     let a = f.worker();

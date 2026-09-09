@@ -1,5 +1,5 @@
 {
-  "count": 61,
+  "count": 62,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -1175,6 +1175,38 @@
         "type": "object"
       },
       "scope": "worker"
+    },
+    {
+      "description": "Operator: post a message to workers on a task; omit worker to fan out, or set worker to target one",
+      "name": "steer",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "actionable": {
+            "type": "boolean"
+          },
+          "body": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "refs": {
+            "type": "object"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
     },
     {
       "description": "Read unacknowledged messages; after is an optional sequence cursor",
