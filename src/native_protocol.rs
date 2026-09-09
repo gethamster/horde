@@ -31,6 +31,7 @@ pub(crate) fn request_bytes(
     extra_body: &std::collections::BTreeMap<String, Value>,
 ) -> Result<Vec<u8>> {
     validate_extra_body(extra_body)?;
+    let extra_body = extra_body_with_usage(extra_body, stream);
     #[derive(Serialize)]
     struct Request<'a> {
         model: &'a str,
@@ -50,8 +51,24 @@ pub(crate) fn request_bytes(
         stream,
         max_tokens,
         max_price,
-        extra_body,
+        extra_body: &extra_body,
     })?)
+}
+
+pub(crate) fn extra_body_with_usage(
+    extra_body: &std::collections::BTreeMap<String, Value>,
+    stream: bool,
+) -> std::collections::BTreeMap<String, Value> {
+    let mut extra_body = extra_body.clone();
+    if stream {
+        let options = extra_body
+            .entry("stream_options".into())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(options) = options.as_object_mut() {
+            options.entry("include_usage").or_insert(Value::Bool(true));
+        }
+    }
+    extra_body
 }
 
 pub(crate) fn validate_extra_body(
@@ -203,6 +220,47 @@ mod tests {
     use super::*;
     use serde::Deserialize;
     use serde_json::json;
+
+    #[test]
+    fn streamed_requests_default_to_usage_and_preserve_explicit_provider_options() {
+        let history = Conversation::new(vec![]).unwrap();
+        let tools = RawValue::from_string("[]".into()).unwrap();
+        for (stream, extra, expected) in [
+            (
+                true,
+                serde_json::json!({}),
+                serde_json::json!({"include_usage":true}),
+            ),
+            (false, serde_json::json!({}), Value::Null),
+            (
+                true,
+                serde_json::json!({"stream_options":{"include_obfuscation":false}}),
+                serde_json::json!({"include_usage":true,"include_obfuscation":false}),
+            ),
+            (
+                true,
+                serde_json::json!({"stream_options":{"include_usage":false}}),
+                serde_json::json!({"include_usage":false}),
+            ),
+            (
+                true,
+                serde_json::json!({"stream_options":null}),
+                Value::Null,
+            ),
+        ] {
+            let fields: std::collections::BTreeMap<String, Value> =
+                serde_json::from_value(extra).unwrap();
+            let original = fields.clone();
+            let body =
+                request_bytes("model", &history, &tools, stream, 128, None, &fields).unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["stream_options"], expected);
+            assert_eq!(fields, original);
+            if !stream {
+                assert!(body.get("stream_options").is_none());
+            }
+        }
+    }
 
     #[test]
     fn appended_messages_preserve_previous_wire_bytes_and_tool_order() {

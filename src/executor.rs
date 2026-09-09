@@ -918,9 +918,9 @@ pub async fn probe_tools(config: &ExecutorConfig) -> Result<Value> {
     crate::native_protocol::validate_extra_body(&config.extra_body)?;
     let key = crate::config::credential(&config.api_key_env)?;
     let mut body = json!({"model":model,"messages":[{"role":"user","content":"Call ping with value ok."}],"stream":true,"max_tokens":128,"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}}],"tool_choice":{"type":"function","function":{"name":"ping"}}});
-    body.as_object_mut()
-        .expect("request object")
-        .extend(config.extra_body.clone());
+    body.as_object_mut().expect("request object").extend(
+        crate::native_protocol::extra_body_with_usage(&config.extra_body, true),
+    );
     body["tool_choice"] = json!({"type":"function","function":{"name":"ping"}});
     if let Some(price) = &config.max_price {
         body["max_price"] = json!(price);
