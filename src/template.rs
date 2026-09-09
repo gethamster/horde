@@ -64,6 +64,9 @@ pub struct Step {
     #[serde(default)]
     #[schemars(extend("additionalProperties" = {"type":"string","enum":["string","number","integer","boolean","array","object","null"]}))]
     pub output_types: BTreeMap<String, String>,
+    /// Command working directory: isolated integrated worktree by default, or the live checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<CommandWorkspace>,
     /// Command argv for a command step, not a shell string.
     #[serde(default)]
     pub command: Vec<String>,
@@ -84,6 +87,13 @@ pub struct Step {
     #[schemars(range(min = 1, max = 20))]
     pub attempts: u32,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandWorkspace {
+    Worktree,
+    Checkout,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Condition {
@@ -241,6 +251,12 @@ fn expand(
             .map(|x| render(x, inputs).replace("${", &format!("${{{prefix}")))
             .collect();
         if let Some(nested) = &s.template {
+            if s.workspace.is_some() {
+                bail!(
+                    "step {}.workspace: set workspace on the command inside the nested template",
+                    s.id
+                );
+            }
             if s.step_budget_exempt {
                 bail!(
                     "step {:?}: set step_budget_exempt on command steps, not template inclusions",
@@ -339,6 +355,11 @@ pub fn validate(steps: &[Step]) -> Result<()> {
                 "{path}.kind: unknown kind {}; use agent, command, delivery, simulated, or environment",
                 s.kind
             );
+        }
+        if s.workspace.is_some()
+            && (s.kind != "command" || s.environment.is_some() || s.template.is_some())
+        {
+            bail!("{path}.workspace: only plain command steps can select a workspace");
         }
         if let Some(e) = &s.environment {
             e.validate()

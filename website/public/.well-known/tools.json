@@ -1313,6 +1313,18 @@
                     "object",
                     "null"
                   ]
+                },
+                "workspace": {
+                  "description": "Command working directory: isolated integrated worktree by default, or the live checkout.",
+                  "enum": [
+                    "worktree",
+                    "checkout",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -2142,6 +2154,18 @@
                   ],
                   "type": [
                     "object",
+                    "null"
+                  ]
+                },
+                "workspace": {
+                  "description": "Command working directory: isolated integrated worktree by default, or the live checkout.",
+                  "enum": [
+                    "worktree",
+                    "checkout",
+                    null
+                  ],
+                  "type": [
+                    "string",
                     "null"
                   ]
                 }

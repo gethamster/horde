@@ -1129,3 +1129,89 @@ fn failing_command_output_redacts_worker_token() {
     let serialized = inspect.to_string();
     assert!(serialized.contains("[REDACTED]"), "{inspect}");
 }
+
+#[test]
+fn commands_opt_into_checkout_files_and_collect_artifacts_from_that_workspace() {
+    let d = Daemon::new();
+    std::fs::write(d.repo.join(".gitignore"), "data/\n").unwrap();
+    std::fs::write(d.repo.join("tracked.txt"), "committed\n").unwrap();
+    horde::git::run(&d.repo, &["add", "."]).unwrap();
+    horde::git::run(&d.repo, &["commit", "-m", "workspace fixture"]).unwrap();
+    std::fs::write(d.repo.join("queue.txt"), "queue\n").unwrap();
+    std::fs::create_dir(d.repo.join("data")).unwrap();
+    std::fs::write(d.repo.join("data/input.txt"), "ignored data\n").unwrap();
+    std::fs::write(d.repo.join("tracked.txt"), "dirty checkout\n").unwrap();
+    for (name, workspace, command) in [
+        (
+            "isolated",
+            "",
+            "test ! -e queue.txt && test ! -e data/input.txt && test $(cat tracked.txt) = committed",
+        ),
+        (
+            "checkout",
+            "workspace='checkout'\n",
+            "cat queue.txt data/input.txt tracked.txt > verdict.txt",
+        ),
+    ] {
+        d.template(name, &format!("name='{name}'\nversion='1'\n[[steps]]\nid='measure'\nkind='command'\n{workspace}command=['sh','-c','{command}']\n{}", if name == "checkout" { "artifacts=['verdict.txt']" } else { "" }));
+        let task = d.submit(name);
+        let inspect = d.wait(&task, "succeeded");
+        let db = horde::store::Store::open(&d.root).unwrap();
+        let events = db
+            .rows(
+                "SELECT data FROM events WHERE task=? AND kind='step.workspace'",
+                &[&task],
+            )
+            .unwrap();
+        let event: Value = serde_json::from_str(events[0]["data"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            event["mode"],
+            if name == "checkout" {
+                "checkout"
+            } else {
+                "worktree"
+            }
+        );
+        if name == "checkout" {
+            assert_eq!(
+                Path::new(event["path"].as_str().unwrap()),
+                d.repo.canonicalize().unwrap()
+            );
+            assert!(
+                inspect["artifacts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a["name"] == "verdict.txt")
+            );
+            assert_eq!(
+                std::fs::read_to_string(d.repo.join("verdict.txt")).unwrap(),
+                "queue\nignored data\ndirty checkout\n"
+            );
+        } else {
+            assert_ne!(
+                Path::new(event["path"].as_str().unwrap()),
+                d.repo.canonicalize().unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn command_workspace_rejects_invalid_values_and_noncommand_steps() {
+    let d = Daemon::new();
+    for (name, kind, workspace, expected) in [
+        ("bad-value", "command", "checkuot", "checkuot"),
+        ("bad-kind", "agent", "checkout", "only plain command steps"),
+    ] {
+        d.template(name, &format!("name='{name}'\nversion='1'\n[[steps]]\nid='run'\nkind='{kind}'\nworkspace='{workspace}'\n"));
+        let error = d
+            .call_result(
+                "submit_task",
+                json!({"objective":"invalid","repo":d.repo,"template":name}),
+            )
+            .unwrap_err();
+        assert!(error.contains(expected), "{error}");
+        std::fs::remove_file(d.repo.join(format!(".horde/templates/{name}.toml"))).unwrap();
+    }
+}

@@ -95,7 +95,8 @@ fn every_published_tool_is_function_calling_compatible() {
 
 #[test]
 fn workflow_tools_publish_the_rust_step_fields_and_inline_nested_types() {
-    let step: horde::template::Step = serde_json::from_value(json!({"id":"sample"})).unwrap();
+    let step: horde::template::Step =
+        serde_json::from_value(json!({"id":"sample","workspace":"worktree"})).unwrap();
     let serialized = serde_json::to_value(step).unwrap();
     for name in ["propose_steps", "add_steps"] {
         let parameters = schema(name);

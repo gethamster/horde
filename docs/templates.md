@@ -189,3 +189,30 @@ budgets; an exempt child also ignores a template inclusion's inherited budget.
 The separate `timeout_seconds` command limit still applies. See the
 [configuration example](configuration.md#step-progress-budgets) before running a
 long bench. Elapsed time remains visible in inspect, events, and metrics.
+
+### Command workspace
+
+Command steps use the task's integrated worktree by default. That workspace starts
+from the pinned submit commit and includes integrated task changes; it does not
+contain dirty, untracked, or ignored files from the repository checkout.
+
+A command that needs local data can explicitly select the live checkout:
+
+```toml
+[[steps]]
+id = "measure"
+kind = "command"
+workspace = "checkout"
+command = ["sh", "scripts/measure.sh"]
+artifacts = ["results/verdict.json"]
+```
+
+Omit `workspace`, or set it to `"worktree"`, for the default. The `"checkout"`
+option uses the receiving task's repository directory, including local edits and
+ignored files. Artifacts are collected from that same directory. Checkout writes
+are shared with people and other tasks and are not automatically integrated into
+the task branch. Coordinate shared files and resource locks when using it.
+Delegated and remote tasks use their own receiving repository, which may differ
+from the caller's checkout. This setting applies only to plain command steps;
+set it on the command inside a nested template. Each attempt records its selected
+mode and absolute directory in a `step.workspace` event.

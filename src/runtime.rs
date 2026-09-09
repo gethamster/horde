@@ -257,10 +257,14 @@ async fn execute_step(
         *arg = template::resolve_refs(arg, &outputs)?;
     }
     let simulated = step.kind == "simulated"
-        || settings
-            .executor(&step.role)
-            .is_some_and(|e| e.kind == "simulated");
-    let workspace = if simulated {
+        || (step.kind == "agent"
+            && settings
+                .executor(&step.role)
+                .is_some_and(|e| e.kind == "simulated"));
+    let checkout = step.workspace == Some(template::CommandWorkspace::Checkout);
+    let workspace = if checkout {
+        PathBuf::from(o["repo"].as_str().context("repo")?).canonicalize()?
+    } else if simulated {
         PathBuf::from(o["repo"].as_str().context("repo")?)
     } else if ["command", "delivery", "environment"].contains(&step.kind.as_str()) {
         let root = db.root.clone();
@@ -281,6 +285,9 @@ async fn execute_step(
             .await?
         }
     };
+    if step.kind == "command" {
+        db.event(oid, "step.workspace", json!({"step":tid,"attempt":attempt,"mode":if checkout {"checkout"} else {"worktree"},"path":workspace}))?;
+    }
     if !simulated && step.kind == "agent" {
         db.claim(oid, wid, &step.scope)?;
     }
