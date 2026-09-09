@@ -520,3 +520,101 @@ mod stream_tests {
         );
     }
 }
+
+/// A completion action is local to the native conversation. Store::finish remains
+/// responsible for workflow validation and acceptance after the executor returns.
+pub(crate) fn completion_tool(step: &crate::template::Step) -> Value {
+    let mut tool = serde_json::json!({"type":"function","function":{
+        "name":"complete_step",
+        "description":"Finish this assigned step and return control to the runtime. Call alone, after required work and checks. For planning, return the completed plan; do not wait for proposed implementation steps. Use accepted=false to report a blocker. This does not certify artifacts or bypass runtime acceptance checks.",
+        "parameters":{"type":"object","properties":{
+            "result":{"type":"string","description":"Completed work or the reason this step is blocked."},
+            "accepted":{"type":"boolean"},
+            "artifacts":{"type":"array","items":{"type":"string"}}
+        },"required":["result","accepted","artifacts"],"additionalProperties":false}
+    }});
+    for (name, kind) in &step.output_types {
+        tool["function"]["parameters"]["properties"]
+            .as_object_mut()
+            .unwrap()
+            .entry(name.clone())
+            .or_insert_with(|| serde_json::json!({"type":kind}));
+    }
+    tool
+}
+
+pub(crate) fn completion_result(
+    args: Value,
+    calls: usize,
+    step: &crate::template::Step,
+) -> Result<Value> {
+    anyhow::ensure!(
+        calls == 1,
+        "complete_step must be the only tool call in its turn; finish other tool calls first"
+    );
+    let object = args
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("complete_step requires an object"))?;
+    anyhow::ensure!(
+        object.keys().all(
+            |k| ["result", "accepted", "artifacts"].contains(&k.as_str())
+                || step.output_types.contains_key(k)
+        ),
+        "complete_step accepts only result, accepted, artifacts, and declared named outputs"
+    );
+    anyhow::ensure!(
+        args["result"].is_string() && args["accepted"].is_boolean(),
+        "complete_step requires a string result and boolean accepted"
+    );
+    anyhow::ensure!(
+        args["artifacts"]
+            .as_array()
+            .is_some_and(|a| a.iter().all(Value::is_string)),
+        "complete_step artifacts must be an array of paths"
+    );
+    if args["accepted"] == true {
+        crate::template::validate_result(step, &args)?;
+    }
+    Ok(args)
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn completion_preserves_declared_outputs_and_rejects_runtime_fields() {
+        let step: crate::template::Step =
+            serde_json::from_value(json!({"id":"work","output_types":{"count":"integer"}}))
+                .unwrap();
+        let tool = completion_tool(&step);
+        assert_eq!(
+            tool["function"]["parameters"]["properties"]["count"]["type"],
+            "integer"
+        );
+        let valid = json!({"result":"done","accepted":true,"artifacts":[],"count":3});
+        assert_eq!(completion_result(valid.clone(), 1, &step).unwrap(), valid);
+        let mut invalid = valid.clone();
+        invalid["count"] = json!("3");
+        assert!(
+            completion_result(invalid, 1, &step)
+                .unwrap_err()
+                .to_string()
+                .contains("count must be integer")
+        );
+        for field in ["task", "worker", "verified", "usage", "_token"] {
+            let mut invalid = valid.clone();
+            invalid[field] = json!(true);
+            assert!(completion_result(invalid, 1, &step).is_err(), "{field}");
+        }
+        assert!(
+            completion_result(
+                json!({"result":"blocked","accepted":false,"artifacts":[]}),
+                1,
+                &step
+            )
+            .is_ok()
+        );
+    }
+}

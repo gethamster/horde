@@ -69,8 +69,7 @@ class SmokeTests(unittest.TestCase):
                 elif len(requests) == 3:
                     name, args = "command", {"argv": ["git", "commit", "-m", "Add hello"]}
                 else:
-                    self.reply({"choices": [{"message": {"role": "assistant", "content": json.dumps({"accepted": True, "result": "created and committed"})}}]})
-                    return
+                    name, args = "complete_step", {"accepted": True, "result": "created and committed", "artifacts": ["hello.txt"]}
                 self.reply({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [{"id": str(len(requests)), "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]}}]})
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
@@ -85,6 +84,7 @@ class SmokeTests(unittest.TestCase):
                 ]))
             self.assertEqual(len(requests), 4)
             self.assertTrue(all(r["model"] == "offline-model" for r in requests))
+            self.assertTrue(all(any(t["function"]["name"] == "complete_step" for t in r["tools"]) for r in requests))
             self.assertEqual(json.loads((root / "result.json").read_text())["task"]["status"], "succeeded")
             for name in ["events.json", "metrics.json"]:
                 json.loads((root / name).read_text())
