@@ -13,14 +13,19 @@ jobs:
     with:
       platforms: '["ubuntu-22.04", "ubuntu-24.04-arm", "macos-15", "macos-15-intel"]'
   build:
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
+            arch: amd64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+            arch: arm64
           - os: macos-15-intel
             target: x86_64-apple-darwin
           - os: macos-15
@@ -76,6 +81,7 @@ jobs:
           reported=$(target/${{ matrix.target }}/release/horde --version)
           echo "$reported"
           test "$reported" = "horde ${GITHUB_REF_NAME#v}"
+      # Keep platform archives binary-only so older updaters can install them.
       - name: Package binary
         run: |
           mkdir release-archive
@@ -85,6 +91,48 @@ jobs:
         with:
           name: horde-${{ matrix.target }}
           path: horde-${{ matrix.target }}.tar
+          overwrite: true
+      # Build each image natively as soon as its binary is ready. Only immutable
+      # digest references are pushed here; the version tag waits for all checks.
+      - name: Prepare native container binary
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist/${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/horde dist/${{ matrix.arch }}/horde
+      - uses: docker/setup-buildx-action@v3
+        if: runner.os == 'Linux'
+      - uses: docker/login-action@v3
+        if: runner.os == 'Linux'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build native container image
+        if: runner.os == 'Linux'
+        uses: docker/build-push-action@v6
+        id: image
+        with:
+          context: .
+          file: packaging/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          provenance: mode=min
+          cache-from: type=gha,scope=horde-image-${{ matrix.arch }}
+          cache-to: type=gha,scope=horde-image-${{ matrix.arch }},mode=max
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+      - name: Record image digest
+        if: runner.os == 'Linux'
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          mkdir -p image-digests
+          printf '%s\n' "$IMAGE_DIGEST" > image-digests/${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: image-digests/${{ matrix.arch }}
+          overwrite: true
+          if-no-files-found: error
   publish:
     needs: [build, checks]
     runs-on: ubuntu-22.04
@@ -96,31 +144,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          pattern: horde-*
           path: dist
           merge-multiple: true
-      - name: Prepare container binaries
-        run: |
-          mkdir -p dist/amd64 dist/arm64
-          tar -xf dist/horde-x86_64-unknown-linux-musl.tar -C dist/amd64
-          tar -xf dist/horde-aarch64-unknown-linux-musl.tar -C dist/arm64
-      - uses: docker/setup-qemu-action@v3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-digest-*
+          path: image-digests
+          merge-multiple: true
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - name: Publish multi-platform image index
         id: image
-        with:
-          context: .
-          file: packaging/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha,scope=horde-image
-          cache-to: type=gha,scope=horde-image,mode=max
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: python3 scripts/merge_release_image.py "$IMAGE" "$GITHUB_REF_NAME" image-digests >> "$GITHUB_OUTPUT"
+      - name: Package editable default skills
+        run: python3 scripts/package_release.py skills dist/skills.tar
       - name: Sign release
         env:
           HORDE_RELEASE_PRIVATE_KEY: ${{ secrets.HORDE_RELEASE_PRIVATE_KEY }}

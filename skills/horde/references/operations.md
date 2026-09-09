@@ -131,6 +131,9 @@ None of these are available to a worker token.
 | `runtime_create` | `id`*, `profile`*, `request_id`* |
 | `runtime_destroy` / `runtime_restart` / `runtime_start` / `runtime_stop` | `id`*, `request_id`* |
 | `runtime_update` | `id`*, `request_id`*, `version`* |
+| `runtime_skills_update` | `id`*, `request_id`* |
+| `skill_pack_list` | none |
+| `skill_pack_install` | `path`* (absolute pack directory) |
 | `runtime_reconcile` | `id`*, `request_id`*, `resource`* |
 | `runtime_updates_resume` | none |
 | `account_status` | none |
@@ -138,24 +141,29 @@ None of these are available to a worker token.
 | `management_events` | `after` |
 | `management_ack` | `consumer`*, `seq`* |
 
-Fleet enrollment uses administrative CLI commands:
+To connect and use a named worker, configure the controller network once, then:
 
 ```sh
-horde network key create workers --listen 192.0.2.10:7444 --controller-address 192.0.2.10:7443 --tls-name controller.example.com --output workers.json
-horde network key list
-horde network key revoke KEY_ID
-horde network join --invitation workers.json
-horde network revoke WORKER_ID
+# Controller: creates workers.json with inferred addresses and trust.
+horde network key create workers
+# Worker: provide workers.json through a private file or secret mount.
+horde network join workers.json --name apollo
+# Controller: submit a whole task without creating a parent first.
+horde submit --on apollo --repo /path/to/repo "Implement and test the change"
+horde result TASK_ID
 ```
 
-Configure the controller network first and substitute its reachable addresses
-and certificate DNS name. Deploy the private credential through
-`HORDE_ENROLLMENT_FILE` or `HORDE_ENROLLMENT_JSON`, then start `horde daemon` on
-each worker. Workers generate separate identities and renew automatically.
-Expired certificates can recover with the original valid fleet credential;
-revoked workers cannot recover. Admission-key revocation blocks new admissions
-and expired recovery, while valid workers can still renew. Fleet membership
-appears in `runtime_list` and `runtime_inspect`; the launching platform owns the
+`submit_task` accepts an optional `on` runtime name or ID. `remote_result` takes a
+`task` ID and returns a separate checkout for review, preserving the original
+repository. `runtime_rename` takes `id` and `name`; `runtime_forget` takes `id` and
+only removes disconnected entries without unfinished work. Names never replace
+authenticated runtime IDs. `horde runtime list --json` returns full records.
+
+Use `horde network key list`, `horde network key revoke KEY_ID`, and
+`horde network revoke WORKER_ID` to manage admissions and membership. For fleet
+startup, inject `HORDE_ENROLLMENT_FILE` or `HORDE_ENROLLMENT_JSON` and run
+`horde daemon`. Expired certificates can recover with the original valid fleet
+credential; revoked workers cannot recover. The launching platform owns the
 resource lifecycle. See [fleet enrollment](../../../docs/networking.md#automatic-fleet-enrollment)
 for limits and secret delivery.
 

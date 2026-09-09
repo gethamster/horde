@@ -273,7 +273,7 @@ fn worker_tokens_cannot_cross_tasks_or_invoke_admin_operations() {
     assert!(knowledge["id"].is_string());
     assert_eq!(
         f.db.rows(
-            "SELECT verified FROM artifact_links WHERE task=?",
+            "SELECT verified FROM artifact_links WHERE task=? AND name='x'",
             &[&f.oid]
         )
         .unwrap()[0]["verified"],

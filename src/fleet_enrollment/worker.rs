@@ -500,6 +500,32 @@ fn ensure_unused_user_network(config: &NetworkConfig) -> Result<()> {
 
 /// Enroll once from a private invitation file. Existing workers retain their identity.
 pub async fn join(root: &Path, invitation_path: &Path) -> Result<Certificate> {
+    join_inner(root, invitation_path, false).await
+}
+
+/// Join a dedicated worker root without changing user-level network authority.
+pub async fn join_isolated(root: &Path, invitation_path: &Path) -> Result<Certificate> {
+    join_inner(root, invitation_path, true).await
+}
+
+/// Read a private invitation before selecting its local worker directory.
+pub fn read_invitation(path: &Path) -> Result<Invitation> {
+    super::admin()?;
+    Credential::File(path.into()).read()
+}
+
+/// Validate an existing worker without replacing state owned by its running daemon.
+pub fn validate_join(root: &Path, invitation_path: &Path) -> Result<Option<Certificate>> {
+    super::admin()?;
+    let _lock = lock(root)?;
+    let Some(state) = load(root)? else {
+        return Ok(None);
+    };
+    validate_reassertion(&state, &read_invitation(invitation_path)?)?;
+    Ok(Some(state.certificate))
+}
+
+async fn join_inner(root: &Path, invitation_path: &Path, isolated: bool) -> Result<Certificate> {
     super::admin()?;
     let _lock = lock(root)?;
     let canonical_root = root.canonicalize()?;
@@ -516,7 +542,9 @@ pub async fn join(root: &Path, invitation_path: &Path) -> Result<Certificate> {
         install(root, &state)?;
         return Ok(state.certificate);
     }
-    ensure_unused_user_network(&NetworkConfig::load(None)?)?;
+    if !isolated {
+        ensure_unused_user_network(&NetworkConfig::load(None)?)?;
+    }
     enroll(root, &Credential::File(invitation_path.into())).await
 }
 

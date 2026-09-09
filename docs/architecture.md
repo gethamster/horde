@@ -144,6 +144,34 @@ The native loop offers file reads, search, full-file writes, unified patches, co
 
 ## Runtime management and distribution
 
+Authenticated heartbeats advertise bounded capability records without credentials.
+The controller combines those reports with local inventory for parent planning.
+Reports retain freshness and separate credential presence from verified access.
+Conversational role pools resolve to explicit runtime/capability pairs; the parent
+chooses each task's executor. Immutable execution policies bind those pairs to
+provider/model identities and can only narrow through delegation. Receiving
+workers validate their local bindings and apply a task-specific settings copy.
+
+Orchestration skill files are discovered from the installed pack alongside
+configured instructions. Optional per-skill metadata controls automatic injection;
+no skill names or instruction bodies are compiled into the runtime. Immutable
+runtime-local packs activate through an atomic pointer for future submissions.
+Authenticated skill update requests capture and retain a complete pack for safe
+retry, independently of signed binary updates. Both update paths support generic
+fleet members as well as provider-managed runtimes.
+
+Shipped orchestration skills are captured alongside configured instructions.
+Accepted project overrides are stored independently from the shipped baseline;
+proposals use revision/hash checks before activation. Task snapshots and remote
+packets retain the exact skill content they started with. A skill cannot expand
+runtime execution grants, provider access, or delivery authorization.
+
+Schema version 4 records execution policies, submission receipts, and project
+skill revisions. The version advances only after all additive migrations finish;
+reopening never lowers it. Older runtimes reject this database instead of running
+tasks without their saved execution constraints. Release manifests accept upgrades
+from schema 2 and advertise schema 4 support.
+
 Administrative runtime settings, capacity snapshots, enrollment fingerprints,
 management receipts, provider resources, and operation intents are stored separately
 from worker conversation. A user-owned concurrency override applies live to each
@@ -170,6 +198,19 @@ the selected non-root host over Tailscale SSH, and confirms readiness through th
 existing mTLS enrollment and heartbeat path. Exact private bootstrap packets and
 receiver intents are retained for retry recovery; SQLite retains only enrollment
 hashes and authoritative state. Discovery never creates execution grants.
+
+Named remote submissions retain a root task on the controller and attach the
+existing durable remote-link state to that task. Its plan is pinned for remote
+execution; the controller scheduler excludes every task with a remote link, even
+after a status change or restart. Root authorization is resolved before dispatch.
+Remote completion records execution status and an unverified result snapshot.
+Explicit result retrieval creates a separate checkout with recorded snapshot
+identity; it does not integrate changes into the caller's repository.
+
+Runtime names are presentation metadata. Controller-assigned aliases take
+precedence over names reported on authenticated control connections. Name
+resolution returns a stable runtime ID and rejects ambiguity. Forgetting a stale
+runtime retains revocation and audit records, and never invokes provider deletion.
 
 Universal fleet enrollment uses a separate server-authenticated TLS listener.
 Fleet credentials carry controller trust and authorize admission only. The

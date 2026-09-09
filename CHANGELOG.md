@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Let coding agents discover worker capabilities and resolve separate machine and
+  model pools for thinking and delivery. Pin task-specific choices, inherit their
+  limits, and reject unavailable or changed bindings without rewriting providers.
+- Load default skills and injection metadata from files, with independent pack
+  installation and authenticated worker synchronization. Binary updates and
+  restarts accept named fleet-enrolled workers without SSH.
+- Ship setup, discovery, model selection, planning, delegation, and review skills. Agents can
+  propose project overrides, apply accepted changes, and review or restore history;
+  existing tasks retain their captured skill versions.
+- Expose setup actions and missing-access requirements to coding agents, including
+  generic fleet startup through platform-managed secrets.
+- Advance the database to schema 4 so older runtimes cannot ignore pinned
+  execution constraints. Existing tasks and configuration migrate additively.
+- Infer fleet key addresses and certificate names from controller configuration.
+  Joining a named worker starts it and checks the authenticated connection while
+  preserving unrelated existing runtime identities.
+- Submit directly to a named worker with `horde submit --on`, inspect progress
+  through the controller, and retrieve a separate review checkout with `horde result`.
+- Show runtime names in terminal listings and support renaming or forgetting a
+  disconnected entry without provider deletion or manual database edits.
+
 ## 0.6.0
 
 - Mint fleet enrollment credentials with `horde network key create`. Workers

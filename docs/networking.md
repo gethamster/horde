@@ -17,20 +17,56 @@ VMs, or individual machines. Each worker generates its own private key and
 connects outbound to the controller. SSH is optional and is used only by the
 separate remote installation command below.
 
-Configure the controller's network identity first, using `horde network setup`
-for Tailscale or the direct network configuration described below. Then create
-a credential. Replace the example addresses and TLS name with reachable
-controller addresses and a DNS name in its certificate:
+Configure the controller's network identity once with `horde network setup` for
+Tailscale, or use the direct network configuration below. On the controller:
 
 ```sh
-horde network key create workers \
-  --listen 192.0.2.10:7444 \
-  --controller-address 192.0.2.10:7443 \
-  --tls-name controller.example.com \
-  --max-workers 100 \
-  --output workers.json
-horde start
+horde network key create workers
 ```
+
+This creates a private `workers.json` file. Horde infers its addresses and TLS
+name from the existing controller configuration, and reuses saved enrollment
+settings for later keys. Explicit `--listen`, `--controller-address`, and
+`--tls-name` options remain available for NAT or certificates with several names.
+An ambiguous configuration produces an actionable error rather than guessing.
+
+Provide the file to a worker, then run:
+
+```sh
+horde network join workers.json --name apollo
+```
+
+The command enrolls and starts the worker, then waits for an authenticated
+connection to the controller. If the machine already has an unrelated runtime,
+Horde keeps it and uses a separate worker directory automatically. Repeating the
+join reuses that worker; you do not need to remember a data-directory path. Names
+default to the machine's hostname. Use `--no-start` when another supervisor owns
+startup. The previous `--invitation workers.json` spelling is also accepted.
+
+Back on the controller:
+
+```sh
+horde runtime list
+horde submit --on apollo --repo /path/to/repo "Run the tests and fix failures"
+horde inspect TASK_ID
+horde result TASK_ID
+```
+
+Commit repository changes before remote submission. Horde sends the committed
+snapshot and keeps the task's status locally. `horde result` creates a separate
+checkout for review; it does not merge remote changes into your working branch.
+Model credentials stay on the worker. See [remote tasks](delegation.md#run-a-task-on-a-worker)
+for status, cancellation, and result handling.
+
+Runtime names are labels for authenticated identities. Duplicate names are
+rejected when selecting a target. For workers enrolled with older versions, give
+an existing identity a name with `horde runtime rename WORKER_ID apollo`.
+`horde runtime remove NAME` forgets a disconnected entry without deleting its
+machine or container; it refuses entries with active connections or unfinished
+work. Runtime listings show names and statuses in a terminal; `--json` preserves
+the full machine-readable response.
+
+### Advanced enrollment settings
 
 `--listen` is a specific local address for the enrollment service, on a separate
 port from the runtime listener. If a router forwards connections to this address,
@@ -55,7 +91,7 @@ Supply the credential once through the platform that launches the fleet:
 | Kubernetes | Store the file in a Secret and expose its value as `HORDE_ENROLLMENT_JSON` through `secretKeyRef`. |
 | E2B or Daytona | Supply `HORDE_ENROLLMENT_JSON` through the sandbox environment, or provision a private file and set `HORDE_ENROLLMENT_FILE` in the template's startup environment. |
 | VMs | Use the image's secret delivery or startup configuration to provision a private file and set `HORDE_ENROLLMENT_FILE`. |
-| Individual machines | Run `horde network join --invitation workers.json`, then `horde start`. |
+| Individual machines | Run `horde network join workers.json`; it starts and verifies the connection. |
 
 For example, create a Kubernetes Secret in the worker namespace:
 

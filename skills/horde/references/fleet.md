@@ -2,78 +2,107 @@
 
 Everything here is optional. A single local daemon needs none of it.
 
-## Connect your own machines
+## Set up a controller and workers through the agent
 
-The fast path uses Tailscale. On the controller, with Horde installed:
+Use the calling agent's tools to complete the requested setup. Keep internal
+ports, IDs, and configuration JSON in tool calls. Explain progress and blockers
+in plain language instead of asking the user to assemble a networking recipe.
 
-```sh
-horde network setup
-horde network peers
-horde network add alice@worker
-horde runtime list
-```
+Start with `agent_setup` action `inspect`. Follow the relevant returned
+`next_actions`: call the named tool for `kind:tool`, and run the supplied argv
+through the agent's execution tool for `kind:exec`. Use the tool or execution API
+that already reaches each target. An unchanged inspection will keep returning the
+same unresolved checks, so evaluate their results before repeating the action.
 
-`network setup` installs Tailscale if needed (Homebrew is required on macOS),
-prompts for sign-in, generates a private controller CA and identity, and starts
-Horde. Stop an existing unconfigured daemon before the initial setup. Existing
-manually configured trust is preserved and needs explicit migration.
+Use `configure_provider` for missing requested providers or models. Presets are
+convenient defaults; discover custom endpoints and concrete model names from
+existing configuration or official provider information. The request supports
+`kind`, `auth_mode`, `base_url`, `model`, `api_key_env`, and executor `roles`.
+Provide credentials through `credential_env` or a private `credential_file`.
+These fields refer to secret storage; never replace them with a credential value.
+Subscription harnesses keep their own login stores on each machine.
 
-The worker must already be reachable over Tailscale SSH with a non-root account.
-On a Linux worker that already has Horde, prepare it with
-`horde network setup --worker`. Otherwise install and connect Tailscale there and
-enable its SSH server first. Tailnet policy must permit that SSH login and worker
-connections to controller TCP port 7443; Horde does not change tailnet policy.
+Use `configure_controller` to preserve an existing controller identity or create
+one through available Tailscale access. If private network access is missing,
+follow the returned setup action using the caller's authorized platform tools.
+A worker must be able to reach the controller; enrollment cannot create that
+route or override a network policy. Existing direct networking is also supported.
 
-`network add` installs Horde from `https://horde.sh/install` when absent, sends a
-unique certificate and enrollment packet over SSH, starts the remote daemon, and
-waits for its authenticated outbound handshake. Repeating the same command reuses
-the saved identity after an interrupted pairing.
+Use `create_fleet_key` to save a private enrollment credential. Its `bootstrap`
+response describes the daemon argv and a mode-0600 secret mount with
+`HORDE_ENROLLMENT_FILE`. Use those returned values to configure worker startup;
+do not expose the credential contents in a conversation or command argument.
+On a machine that already has Horde, call `agent_setup` action `join_worker` with
+the injected `invitation_file` and a human-readable `name`. The join flow preserves
+an existing local runtime by selecting a separate worker data directory when
+needed, then starts and checks the worker unless `no_start` was requested.
 
-Boot services: `network setup --service` on the controller,
-`network add alice@worker --service` for the worker (needs remote passwordless
-sudo).
+For E2B, Daytona, Docker, Kubernetes, or VM startup, inject that file through the
+platform's secret facility and run the returned daemon argv. Each worker generates
+its own private key and gets an individual certificate. Keep its data directory
+across ordinary restarts, and never share one identity directory among replicas.
+The credential's worker limit counts total distinct identities; replacing a
+disposable worker with a fresh identity consumes another slot. Horde does not
+create these external resources through `agent_setup`; use the caller's existing
+platform access within the authorized scope.
 
-Configure the worker's executors and provider authentication separately. SSH
-pairing deliberately does not copy controller credentials or subscription logins.
-Controller certificates last one year, worker certificates 30 days; renewal is an
-operator-managed re-enrollment.
+A platform that injects only environment secrets may supply `HORDE_ENROLLMENT_JSON`
+through that secret facility. Prefer `HORDE_ENROLLMENT_FILE` when available.
+Neither mechanism requires someone to paste a key for each worker. Provider API
+credentials remain separate from enrollment credentials and must be available to
+the worker's selected executors.
 
-## The trust model
+Shared enrollment does not require SSH. Existing SSH access can still execute a
+setup command on a machine, and legacy `network add user@host` remains an optional
+installation path. Do not make editing Tailscale SSH policy a prerequisite for
+workers that the agent can already reach through another execution API.
 
-Both the `direct` and `tailscale` providers use tonic gRPC with rustls and
-mandatory mutual TLS. Networking is disabled by default and configured separately
-from project settings in `~/.config/horde/network.toml`. A repository `.horde.toml`
-cannot change it. Start from `horde network config`.
+## Confirm what is ready
 
-Four independent things, none of which implies another:
+`agent_setup` distinguishes saved configuration from verified operation. A
+`configured` result does not prove the provider accepts its credential, the
+controller listener is reachable, or the selected model can execute. The `verify`
+action currently performs inspection; `provider_api`, subscription authentication,
+and listener checks reported as `not_probed` are still unverified.
 
-1. **Certificate enrollment** — a client fingerprint in `allowed_clients`.
-2. **Discovery** — being visible on the tailnet or in a peer table. Never a grant.
-3. **Execution grant** — `delegate_peers` on the caller, `execution_clients` on the
-   executor.
-4. **Bundle grant** — `share_bundles` on the caller, `receive_bundles` on the
-   executor.
+Execute returned harness authentication-status checks and evaluate their actual
+results. For API providers, report credential presence separately from successful
+authentication or model execution. Confirm the worker's authenticated control
+connection, then inspect `runtime_capabilities` and use `plan_execution` to resolve
+the requested runtime/model pools. Check actual execution when required by the
+task; do not describe configuration alone as a successful model test.
 
-Servers require both CA validation and a matching leaf fingerprint. Clients
-validate the CA and the server's expected DNS name. There is no insecure mode and
-no plaintext fallback. Store private keys mode 0600; Horde rejects group- or
-world-readable keys.
+A failed or missing login may need the user's interactive authentication. Continue
+independent authorized setup while that input is pending. Do not add a new
+approval step to work already authorized, or silently create unrelated paid
+resources to resolve a missing capability.
 
-```sh
-horde network peers            # discovery, refreshed every call
-horde network probe nEXAMPLE   # verify a peer's certificate, health, and execution permission
-horde network listen           # foreground listener; horde start supervises it when configured
-```
+## Trust and renewal
 
-Do not run `network listen` on an address the daemon already uses. Restart
-listeners after rotating certificates, changing enrollment, or switching tailnets:
-configuration is read at startup.
+Fleet admission uses a separate TLS endpoint. The worker validates the controller
+using trust from the invitation and proves possession of its own key. The
+controller validates the fleet credential and issues a client certificate with
+its own runtime identity. The normal control connection requires mutual TLS and
+an active enrolled identity. There is no plaintext or insecure fallback.
 
-Repository transfer across the network carries committed files only, not history
-or untracked files. Archives are content-hashed, capped at 24 MiB compressed and
-64 MiB expanded, and reject traversal, symlinks, special files, Git metadata,
-tracked `.env`, and `*.key`. Those filename checks do not prove an arbitrary
-repository is secret-free.
+Admission credentials authorize joining a fleet, not controller administration.
+Revoking a fleet key stops new admissions and expired-identity readmission;
+existing members with valid certificates can still renew. Revoking a worker stops
+its connection and renewal. Fleet certificates last 24 hours and renew after
+12 hours. After expiry, a worker may reassert its still-valid fleet credential with
+the same private key, retaining its identity and quota slot. An expired or revoked
+fleet key cannot recover an expired worker certificate.
+
+Execution authorization and secret-bundle sharing remain separate from discovery
+and enrollment. A visible worker is not automatically permitted to run a task.
+Keep selected runtime/capability pairs within the approved execution pools.
+Provider-owned provisioning below uses a separate bootstrap path; its settings
+and certificate lifetime do not describe shared fleet enrollment.
+
+Repository transfer carries committed files, without history or untracked files.
+Archives are content-hashed, capped at 24 MiB compressed and 64 MiB expanded, and
+reject traversal, symlinks, special files, Git metadata, tracked `.env`, and `*.key`.
+Those filename checks do not prove an arbitrary repository is secret-free.
 
 ## Managed runtimes
 
@@ -145,7 +174,8 @@ Reconciliation verifies the ownership label. It does not certify the effects of
 interrupted tasks. Docker volumes and Kubernetes PVCs are retained on destruction
 and must be removed separately.
 
-For automatic enrollment, add these before any profile table:
+For the provider-owned bootstrap path, the agent configures these values before
+any profile table:
 
 ```toml
 issuer_key = "/private/path/to/dedicated-horde-ca.key"
@@ -212,6 +242,9 @@ JSON array of snapshots:
 ## Updates
 
 ```sh
+horde skills install ./skills
+horde runtime update apollo --skills
+horde runtime inspect apollo
 horde update --check
 horde update --version 0.3.2
 horde runtime update worker-1 --version 0.3.2 --request-id update-worker-1-021
@@ -240,3 +273,11 @@ horde call runtime_updates_resume '{}'
 
 Wait for one runtime's update to reach `succeeded` before requesting the next. An
 accepted remote command shows as waiting until the remote reports completion.
+
+Skills update separately from the binary. `runtime_skills_update` takes a worker
+name or ID and a stable request ID, captures the controller's default pack, and
+sends it over the existing management connection. The result includes its hash;
+running tasks and descendants keep their original pins. Binary updates and
+restarts also support fleet-enrolled workers without SSH. Provider-owned containers
+retain their image replacement path; independently launched hosts still need a
+managed installation for binary self-update.

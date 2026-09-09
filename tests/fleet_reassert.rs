@@ -142,7 +142,7 @@ fn state(root: &Path) -> Certificate {
 
 async fn join(root: &Path, invitation: &Path) -> Output {
     command(root)
-        .args(["network", "join", "--invitation"])
+        .args(["network", "join", "--no-start", "--invitation"])
         .arg(invitation)
         .output()
         .await

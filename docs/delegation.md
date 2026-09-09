@@ -4,6 +4,73 @@ Horde owns execution. Your agent or bot owns the user conversation and connects
 through the same CLI or stdio MCP interface. There is no Slack-specific server,
 public webhook, or extra chat store to configure inside Horde.
 
+## Let your agent arrange the work
+
+Describe the work split in your coding session. For example, ask for thinking on
+the local machine using Codex and Astra, with delivery on Apollo using a pool of
+Claude, Codex, and GLM 5.3. The parent chooses which allowed model suits each task.
+Horde does not interpret that list as a requirement to invoke every model.
+
+The shipped skills guide the agent through `runtime_capabilities` and
+`plan_execution`. Discovery includes each worker's reported executors and models,
+available capacity, freshness, and authentication evidence. A credential's
+presence does not prove the provider will accept it. Ambiguous names, missing
+models, and stale workers require resolution before a scoped assignment proceeds.
+
+`agent_setup` exposes local setup actions and precise missing requirements. Your
+agent uses its available execution or platform tools to deliver enrollment
+credentials and start remote workers. Horde cannot create access to a machine or
+provider that the agent does not have. Fleet startup accepts the same secret
+reference across containers, Kubernetes, sandboxes, VMs, and individual machines.
+
+After briefly explaining its work split, the parent submits or delegates with an
+`execution` policy. Each allowed entry binds a runtime to a set of capability IDs;
+`selected` chooses one pair for that task. Child policies may narrow their parent's
+pool. The receiving worker checks the pinned model/provider binding against its
+own configuration and supplies its own credentials. Drift fails explicitly.
+Horde preserves the assignment through retries and never moves it to local work
+because a worker disconnects.
+
+The agent supplies a stable `request_id` to `submit_task`, or `id` to
+`delegate_task`. If a reply is lost, retrying that same request returns its existing
+task before looking up live workers again. Reusing an ID for different work fails.
+Task inspection includes the pinned execution policy for review.
+
+The parent follows progress and questions through the existing task tree, checks
+the returned changes, and reports a reviewable result. Merge and deployment need
+their own authorization. Lasting changes to this behavior go through discussed
+project skill proposals; see [runtime skills](runtime-skills.md).
+
+## Run a task on a worker
+
+Choose a worker by its name from `horde runtime list`:
+
+```sh
+horde submit --on apollo --repo /path/to/repo "Run the tests and fix failures"
+```
+
+The returned task ID belongs to the controller. Use the usual `horde inspect`,
+`horde events`, `horde metrics`, and `horde cancel` commands with that ID. The
+controller sends a committed repository snapshot through the worker's existing
+connection. It does not start local executor steps or fall back to local execution
+if that worker disconnects. Unknown or ambiguous names fail before a task is
+created. An offline enrolled worker keeps its queued work until it reconnects.
+
+Once remote execution succeeds, retrieve a local checkout for review:
+
+```sh
+horde result TASK_ID
+```
+
+The result includes the checkout path. Your original repository and branch remain
+unchanged. Repeating the command returns the same checkout, but refuses to
+replace it if you edited it. Remote execution success does not certify those
+changes for a local merge. Review and test the result before applying it.
+
+A remote task cannot be resumed as local work. Failed or interrupted remote work
+retains its existing recovery state; submit a new task explicitly when a new run
+is appropriate. Workers need their own provider configuration and credentials.
+
 ## One bounded tree
 
 Configure defaults in user settings or `.horde.toml`:

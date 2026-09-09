@@ -31,6 +31,7 @@ fn worker_cannot_change_runtime_or_publish_capacity() {
         "runtime_config_set",
         "runtime_create",
         "runtime_update",
+        "runtime_skills_update",
         "account_observe",
         "runtime_drain",
         "management_ack",
@@ -204,14 +205,14 @@ fn signed_release_rejects_tampering_and_incompatibility() {
     let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
     let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
     let manifest =
-        json!({"version":"0.5.0","protocol":1,"schema_min":2,"schema_max":3,"artifacts":[]})
+        json!({"version":"0.5.0","protocol":1,"schema_min":2,"schema_max":4,"artifacts":[]})
             .to_string();
     let sig = key.sign(manifest.as_bytes());
     assert!(
         horde::update::verify(manifest.as_bytes(), sig.as_ref(), key.public_key().as_ref()).is_ok()
     );
     assert!(horde::update::verify(b"changed", sig.as_ref(), key.public_key().as_ref()).is_err());
-    for (minimum, maximum, compatible) in [(2, 3, true), (3, 3, true), (2, 2, false), (4, 4, false)]
+    for (minimum, maximum, compatible) in [(2, 4, true), (4, 4, true), (2, 3, false), (5, 5, false)]
     {
         let mut candidate: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         candidate["schema_min"] = json!(minimum);
@@ -365,11 +366,23 @@ async fn outbound_mtls_control_enrolls_once_and_manages_without_inbound_remote_p
             .unwrap()[0],
         json!({"state":"active","token_hash":""})
     );
-    let args = json!({"request_id":"update-1","action":"runtime_update","version":"0.2.1"});
-    let result = horde::federation::call(&parent, "child", "manage", args.clone())
-        .await
+    // Fleet enrollment deliberately has no provider-owned managed_runtimes row.
+    db.conn.execute("INSERT INTO fleet_enrollment_keys VALUES('fleet-key','workers','fixture',9999999999,10,4,'active',0)", []).unwrap();
+    db.conn.execute("INSERT INTO fleet_enrollment_members VALUES('child','fleet-key','fixture-pk','active',0,?)", [&child_fingerprint]).unwrap();
+    db.conn
+        .execute(
+            "INSERT INTO fleet_enrollment_certificates VALUES(?,'child','fixture',?,?,4)",
+            rusqlite::params![child_fingerprint, now() + 3600, now() + 1800],
+        )
         .unwrap();
-    assert_eq!(result["state"], "accepted");
+    horde::federation::configure(&root, &parent).unwrap();
+    horde::runtime_directory::rename(&db, "child", "apollo").unwrap();
+    let intent = json!({"id":"apollo","request_id":"update-1","version":"0.2.1"});
+    horde::fleet::dispatch(&db, "runtime_update", &intent).unwrap();
+    horde::fleet::tick(&db).await.unwrap();
+    let operation = db.rows("SELECT * FROM runtime_operations", &[]).unwrap();
+    assert_eq!(operation[0]["state"], "waiting");
+    let args = json!({"request_id":"update-1","action":"runtime_update","version":"0.2.1"});
     let result = horde::federation::call(&parent, "child", "manage", args)
         .await
         .unwrap();
@@ -399,6 +412,12 @@ async fn outbound_mtls_control_enrolls_once_and_manages_without_inbound_remote_p
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(completed);
+    horde::fleet::tick(&db).await.unwrap();
+    assert_eq!(
+        db.rows("SELECT state FROM runtime_operations", &[])
+            .unwrap()[0]["state"],
+        "succeeded"
+    );
     assert_eq!(
         remote_db
             .rows("SELECT * FROM runtime_operations", &[])
