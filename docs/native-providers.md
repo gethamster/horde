@@ -54,7 +54,7 @@ to 0 to disable this guard. A different call or changed result resets the count.
 
 ## Provider request options
 
-Native providers accept an optional `extra_body` table. Fields are merged at the
+Native providers and executor roles accept an optional `extra_body` table. Fields are merged at the
 top level of every model request. The provider decides which sampling and template
 options it supports. For example:
 
@@ -85,6 +85,18 @@ reserved in `extra_body`. Use the dedicated setting where one exists. In
 particular, the existing per-role `max_tokens` setting takes effect normally.
 These options do not modify requests made internally by external CLI harnesses.
 Never put a key value in `extra_body`; use the provider's key environment variable.
+
+
+Role `extra_body` fields override provider fields with the same key. The merge is
+shallow: a role's `chat_template_kwargs` replaces that whole provider object.
+Fields unique to either level are retained. Reserved keys are rejected at both
+levels before a request is sent. Use the dedicated per-role `max_tokens` setting.
+
+```toml
+[executors.planner.extra_body]
+temperature = 0.7
+chat_template_kwargs = { enable_thinking = true }
+```
 
 With `model = "auto"`, Horde requires exactly one entry with a nonempty ID from
 `/models`. Zero entries or multiple entries produce an error asking for an explicit
