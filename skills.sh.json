@@ -5,7 +5,7 @@
     {
       "title": "Using Horde",
       "description": "Install Horde, connect it to your agent, and run work on it.",
-      "skills": ["horde"]
+      "skills": ["horde", "horde-sdlc"]
     },
     {
       "title": "Building on Horde",
