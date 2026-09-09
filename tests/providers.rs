@@ -543,6 +543,72 @@ async fn native_planner_corrects_a_nested_step_after_receiving_its_field_error()
 }
 
 #[tokio::test]
+async fn ambiguous_auto_model_names_every_catalog_id() {
+    let (url, _, handle) = server(vec![(
+        200,
+        json!({"data":[{"id":"/models/first"},{"id":"/models/second"}]}).to_string(),
+    )]);
+    let mut cfg = config(url);
+    cfg.model = Some("auto".into());
+    let error = horde::executor::probe(&cfg).await.unwrap_err().to_string();
+    handle.join().unwrap();
+    assert!(
+        error.contains("/models/first") && error.contains("/models/second"),
+        "{error}"
+    );
+    assert!(error.contains("explicit model ID"));
+}
+#[test]
+fn ordinary_doctor_resolves_auto_from_a_minimal_default_provider_block() {
+    let (url, requests, handle) = server(vec![(
+        200,
+        json!({"data":[{"id":"/models/local-only"}]}).to_string(),
+    )]);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".horde.toml"),
+        format!(
+            "[providers.default]\nbase_url = {url:?}\napi_key_env = \"PATH\"\nmodel = \"auto\"\n"
+        ),
+    )
+    .unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_horde"))
+        .args(["doctor", "--repo"])
+        .arg(dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result["resolved_models"]["default"]["model"],
+        "/models/local-only"
+    );
+    handle.join().unwrap();
+    assert_eq!(
+        requests.lock().unwrap().as_slice(),
+        &[json!({"method":"GET"})]
+    );
+}
+
+#[test]
+fn a_named_auto_provider_needs_only_endpoint_key_variable_and_model() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[providers.local]\nbase_url = \"http://127.0.0.1:8122/v1\"\napi_key_env = \"PMLX_KEY\"\nmodel = \"auto\"\n").unwrap();
+    let settings = Settings::load_dir(dir.path()).unwrap();
+    let provider = settings.provider("local").unwrap();
+    assert_eq!(provider.kind, "tuara");
+    assert_eq!(provider.auth_mode, "api");
+    assert_eq!(provider.model.as_deref(), Some("auto"));
+    assert_eq!(provider.api_key_env, "PMLX_KEY");
+}
+
+#[tokio::test]
 async fn auto_model_requires_one_named_catalog_entry() {
     for (data, expected) in [
         (

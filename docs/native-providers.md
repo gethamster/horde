@@ -99,10 +99,23 @@ chat_template_kwargs = { enable_thinking = true }
 ```
 
 With `model = "auto"`, Horde requires exactly one entry with a nonempty ID from
-`/models`. Zero entries or multiple entries produce an error asking for an explicit
-choice. Horde resolves the ID once per invocation and records it in an
+`/models`. Zero entries or multiple entries produce an error listing the catalog IDs and
+asking for an explicit choice. Horde resolves the ID once per invocation and records it in an
 `executor.model_resolved` event. A path-shaped model ID works without copying it
 into every configuration. Explicit IDs continue to require an exact catalog match.
+
+A provider with `model = "auto"`, an endpoint, and a key-variable name selects the
+native executor when `kind` is omitted. Named providers and the built-in default
+can both use only these three fields:
+
+```toml
+[providers.default]
+base_url = "http://127.0.0.1:8122/v1"
+api_key_env = "LOCAL_MODEL_KEY"
+model = "auto"
+```
+
+`horde doctor` reports the selected ID under `resolved_models.default.model`.
 
 ## Streaming and probes
 
@@ -117,7 +130,8 @@ from that turn executes. Interrupted or oversized responses fail the attempt.
 Run `horde doctor --probe --provider local` to verify the catalog and request a
 small streamed `ping` call using the executor's parser. Omitting `--provider` probes
 `default`. `--probe-tuara` remains an alias for probing the `native` role. Ordinary
-`doctor` prints configuration without calling a model. A probe consumes model
+`doctor` prints configuration and resolves native `auto` catalogs without making
+a chat-completions request. Use `doctor --provider NAME` to inspect one catalog. A probe consumes model
 capacity and must be requested explicitly.
 
 ## Events and metrics
