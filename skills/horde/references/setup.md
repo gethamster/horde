@@ -76,7 +76,7 @@ environment or from a private `credentials.env` beside `config.toml` with mode
 | App secret bundle map | `~/.config/horde/secrets.toml` |
 | Runtime/fleet profiles | `~/.config/horde/runtimes.toml` |
 | Network trust | `~/.config/horde/network.toml` |
-| Project settings | `.horde.toml` in the submitted repository |
+| Project settings | `.horde/horde.toml` in the submitted repository |
 | Project templates | `.horde/templates/*.toml` |
 
 Use `--data-dir /absolute/path` on **every** command to run a second instance.

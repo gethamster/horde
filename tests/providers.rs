@@ -311,6 +311,21 @@ async fn native_result_after_configured(
     planner: bool,
     configure: impl FnOnce(&mut Settings),
 ) -> (Result<Value, String>, Vec<Value>, Vec<Value>) {
+    let run = native_run_after_configured(turns, planner, configure).await;
+    (run.result, run.sent, run.events)
+}
+struct NativeRun {
+    result: Result<Value, String>,
+    sent: Vec<Value>,
+    events: Vec<Value>,
+    progress: Vec<Value>,
+    metrics: Value,
+}
+async fn native_run_after_configured(
+    turns: Vec<(u16, String)>,
+    planner: bool,
+    configure: impl FnOnce(&mut Settings),
+) -> NativeRun {
     let mut responses = vec![(
         200,
         json!({"data":[{"id":"z-ai/glm-5.3-flash"}]}).to_string(),
@@ -352,6 +367,12 @@ async fn native_result_after_configured(
     }
     let w = db.register(&oid, Some(&tid)).unwrap();
     let wid = w["id"].as_str().unwrap();
+    db.conn
+        .execute(
+            "INSERT INTO attempts(id,step,worker,state,started) VALUES('test',?,?,'running',?)",
+            rusqlite::params![tid, wid, horde::store::now()],
+        )
+        .unwrap();
     let step: Step =
         serde_json::from_value(json!({"id":"native","role":if planner {"planner"} else {"worker"},"tools":[],"instructions":"think","skills":settings.skills.keys().collect::<Vec<_>>()})).unwrap();
     let i = Invocation {
@@ -378,7 +399,23 @@ async fn native_result_after_configured(
         .into_iter()
         .map(|row| serde_json::from_str(row["data"].as_str().unwrap()).unwrap())
         .collect();
-    (result, sent, events)
+    let progress = db
+        .rows(
+            "SELECT data FROM events WHERE task=? AND kind='executor.progress' ORDER BY seq",
+            &[&oid],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| serde_json::from_str(row["data"].as_str().unwrap()).unwrap())
+        .collect();
+    let metrics = horde::metrics::report(&db, &oid).unwrap();
+    NativeRun {
+        result,
+        sent,
+        events,
+        progress,
+        metrics,
+    }
 }
 fn turn(content: Value) -> (u16, String) {
     (
@@ -981,4 +1018,47 @@ fn provider_and_role_extra_body_reject_reserved_fields_at_config_load() {
             );
         }
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn streamed_usage_is_recorded_per_response_in_events_and_metrics() {
+    let run = native_run_after_configured(vec![
+        streamed(vec![
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"questions","function":{"name":"pending_questions","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":15}},"speculation":{"accepted_tokens":8}}),
+            json!({"choices":[],"usage":null}),
+        ],true),
+        streamed(vec![
+            json!({"choices":[{"delta":{"content":json!({"result":"done","accepted":true}).to_string()},"finish_reason":"stop"}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+        ],true),
+    ], false, |s| {
+        let p = s.providers.get_mut("default").unwrap();
+        p.stream = true;
+        p.extra_body.insert("stream_options".into(),json!({"include_usage":true}));
+    }).await;
+    assert!(run.result.is_ok(), "{:?}", run.result);
+    let responses: Vec<_> = run
+        .progress
+        .iter()
+        .filter(|event| event["kind"] == "model_response")
+        .collect();
+    assert_eq!(responses.len(), 2);
+    assert_eq!(run.metrics["turns"].as_array().unwrap().len(), 2);
+    for (index, response) in responses.iter().enumerate() {
+        assert_eq!(response["turn"], index + 1);
+        assert_eq!(run.metrics["turns"][index]["usage"], response["usage"]);
+        assert_eq!(run.metrics["turns"][index]["attempt"], "test");
+        assert_eq!(run.sent[index + 1]["stream_options"]["include_usage"], true);
+    }
+    assert_eq!(responses[0]["usage"]["provider"]["completion_tokens"], 10);
+    assert_eq!(responses[1]["usage"]["provider"]["completion_tokens"], 5);
+    assert_eq!(
+        responses[0]["usage"]["provider_extras"]["speculation"]["accepted_tokens"],
+        8
+    );
+    assert_eq!(run.metrics["reported_input_tokens"], 50);
+    assert_eq!(run.metrics["reported_output_tokens"], 15);
+    assert_eq!(run.metrics["reported_cached_tokens"], 15);
+    assert_eq!(run.metrics["reported_api_cost_usd"], Value::Null);
 }

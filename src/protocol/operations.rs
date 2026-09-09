@@ -175,6 +175,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Persist a message to worker id, group:name, or task. Supply id for deduplication",
     ),
     (
+        "steer",
+        "Operator: post a message to workers on a task; omit worker to fan out, or set worker to target one",
+    ),
+    (
         "read_messages",
         "Read unacknowledged messages; after is an optional sequence cursor",
     ),

@@ -35,6 +35,7 @@ pub mod skill_catalog;
 pub mod skills;
 
 pub mod agent_setup;
+pub mod budget;
 pub mod capabilities;
 pub mod daemon_client;
 pub mod execution_selection;

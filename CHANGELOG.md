@@ -22,6 +22,13 @@
   through the controller, and retrieve a separate review checkout with `horde result`.
 - Show runtime names in terminal listings and support renaming or forgetting a
   disconnected entry without provider deletion or manual database edits.
+- Deliver `task` broadcasts to the sender when it is the only worker, so a solo
+  planner hears its own coordination messages instead of reaching nobody.
+- Add `horde steer TASK_ID "message"` for operators. It posts as
+  `operator:TASK_ID`, reaches every worker on the task including a single one,
+  and wakes idle workers unless `--presence` is given. Pass `--worker ID`
+  (alias `--to`) after `horde call list_workers` to target one worker instead
+  of fan-out.
 
 ## 0.6.0
 

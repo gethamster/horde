@@ -252,7 +252,7 @@ fn parent_selects_local_astra_and_delegates_one_narrowed_apollo_glm_child() {
         dir.path(),
         "controller",
         &format!(
-            "autonomy = true\n[providers.codex]\nprogram = {local_program:?}\nmodel = 'astra'\n"
+            "autonomy = true\n[providers.codex]\nprogram = {local_program:?}\nmodel = 'astra'\n[executors.worker]\nstep_budget_seconds = 7\n[executors.codex]\nstep_budget_seconds = 23\n"
         ),
     );
     let remote_user = user_config(
@@ -331,6 +331,8 @@ fn parent_selects_local_astra_and_delegates_one_narrowed_apollo_glm_child() {
     let parent_id = parent["id"].as_str().unwrap();
     let completed = controller.wait_success(parent_id);
     assert_eq!(completed["attempts"].as_array().unwrap().len(), 1);
+    // Selecting Codex changes execution, while the workflow's worker role keeps its budget.
+    assert_eq!(completed["attempts"][0]["timing"]["budget_s"], 7);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("parent-models")).unwrap(),
         "astra\n"
@@ -466,7 +468,7 @@ fn parent_selects_local_astra_and_delegates_one_narrowed_apollo_glm_child() {
             "transport":"mutual TLS between two real daemons",
             "providers":"fake executable harnesses; no live provider calls",
             "role_pools":plan["allowed"],
-            "parent":{"capability":completed["execution"]["selected"]["capability"],"model":completed["execution"]["selected"]["model"],"attempts":parent_attempts},
+            "parent":{"capability":completed["execution"]["selected"]["capability"],"model":completed["execution"]["selected"]["model"],"attempts":parent_attempts,"original_role_budget_s":completed["attempts"][0]["timing"]["budget_s"]},
             "child":{"capability":receiver_policy["selected"]["capability"],"model":receiver_policy["selected"]["model"],"attempts":child_attempts,"inherited_narrowed_policy":receiver_policy == caller_policy},
             "skills":{"remote_update_completed":true,"duplicate_update_preserved_latest":true,"child_retained_parent_pin":true,"fresh_task_used_latest_pack":true,"latest_hash":latest_pack["hash"]},
             "duplicate_delegation_reused_child":duplicate["id"] == child["id"],

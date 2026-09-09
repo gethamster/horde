@@ -343,6 +343,119 @@ fn idle_managed_worker_resumes_on_actionable_message_only() {
         std::thread::sleep(Duration::from_millis(30));
     }
 }
+const SOLO_TEMPLATE: &str = r#"
+name="solo"
+version="1"
+[[steps]]
+id="plan"
+kind="simulated"
+"#;
+fn wait_for_attempts(d: &Daemon, oid: &str, count: usize) -> Value {
+    let start = Instant::now();
+    loop {
+        let v = d.inspect(oid);
+        if v["attempts"].as_array().unwrap().len() == count && v["task"]["status"] == "succeeded" {
+            return v;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "{v}");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+#[test]
+fn solo_worker_task_broadcast_reaches_itself_over_daemon() {
+    let d = Daemon::new();
+    d.template("solo", SOLO_TEMPLATE);
+    let oid = d.submit("solo");
+    let v = d.wait(&oid, "succeeded");
+    assert_eq!(v["workers"].as_array().unwrap().len(), 1);
+    let solo = v["workers"][0]["id"].clone();
+    let mid = horde::store::id();
+    let args = json!({"task":oid,"worker":solo,"id":mid,"destination":"task","body":"note to self","actionable":false});
+    let output = Command::new(BIN)
+        .arg("--data-dir")
+        .arg(&d.root)
+        .args(["call", "send_message", &args.to_string()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sent: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(sent["recipients"], 1);
+    let mail = d.call("read_messages", json!({"task":oid,"worker":solo}));
+    assert_eq!(mail.as_array().unwrap().len(), 1);
+    assert_eq!(mail[0]["id"], mid);
+    assert_eq!(mail[0]["sender"], solo);
+}
+#[test]
+fn operator_steer_wakes_solo_worker_from_cli() {
+    let d = Daemon::new();
+    d.template("solo", SOLO_TEMPLATE);
+    let oid = d.submit("solo");
+    let v = d.wait(&oid, "succeeded");
+    assert_eq!(v["workers"].as_array().unwrap().len(), 1);
+    assert_eq!(v["attempts"].as_array().unwrap().len(), 1);
+    let solo = v["workers"][0]["id"].clone();
+    let operator = horde::store::operator_id(&oid);
+    let steer = |args: &[&str]| {
+        let output = Command::new(BIN)
+            .arg("--data-dir")
+            .arg(&d.root)
+            .args(["steer", &oid])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let quiet = steer(&["just so you know", "--presence"]);
+    assert_eq!(quiet["recipients"], 1);
+    assert_eq!(quiet["sender"], operator);
+    std::thread::sleep(Duration::from_millis(300));
+    let v = d.inspect(&oid);
+    assert_eq!(v["attempts"].as_array().unwrap().len(), 1);
+    assert!(
+        v["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["id"] != operator)
+    );
+    let mail = d.call("read_messages", json!({"task":oid,"worker":solo}));
+    assert_eq!(mail.as_array().unwrap().len(), 1);
+    assert_eq!(mail[0]["sender"], operator);
+    let solo_id = solo.as_str().unwrap();
+    let targeted = steer(&["only you", "--worker", solo_id, "--presence"]);
+    assert_eq!(targeted["recipients"], 1);
+    let aliased = steer(&["via alias", "--to", solo_id, "--presence"]);
+    assert_eq!(aliased["recipients"], 1);
+    let mail = d.call("read_messages", json!({"task":oid,"worker":solo}));
+    assert_eq!(mail.as_array().unwrap().len(), 3);
+    let sent = steer(&["re-check the plan"]);
+    assert_eq!(sent["recipients"], 1);
+    let v = wait_for_attempts(&d, &oid, 2);
+    assert_eq!(v["workers"].as_array().unwrap().len(), 1);
+    let mail = d.call("read_messages", json!({"task":oid,"worker":solo}));
+    assert_eq!(mail.as_array().unwrap().len(), 4);
+    assert!(
+        mail.as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["sender"] == operator)
+    );
+    let events = d.call("events", json!({"task":oid}));
+    assert!(events.as_array().unwrap().iter().any(|e| {
+        e["kind"] == "message.sent"
+            && serde_json::from_str::<Value>(e["data"].as_str().unwrap()).unwrap()["sender"]
+                == operator
+    }));
+}
 #[test]
 fn mock_codex_adapter_runs_in_registered_worktree_and_integrates() {
     let d = Daemon::new();
@@ -557,5 +670,337 @@ fn slow_peer_discovery_does_not_block_cli_or_shutdown() {
             "shutdown waited for peer"
         );
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn daemon_enforces_step_budget_and_retries_with_a_fresh_budget() {
+    let d = Daemon::new();
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        "step_budget_seconds = 8\n[executors.worker]\nstep_budget_seconds = 3\n",
+    )
+    .unwrap();
+    d.template(
+        "budgeted",
+        r#"name = "budgeted"
+version = "1"
+[[steps]]
+id = "stall"
+kind = "command"
+attempts = 2
+step_budget_seconds = 1
+command = ["sh", "-c", "sleep 30"]
+"#,
+    );
+    let task = d.submit("budgeted");
+    let started = Instant::now();
+    loop {
+        let inspect = d.inspect(&task);
+        if inspect["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["timing"]["budget_s"] == 1)
+        {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let result = d.wait(&task, "failed");
+    assert_eq!(result["attempts"].as_array().unwrap().len(), 2);
+    for attempt in result["attempts"].as_array().unwrap() {
+        assert_eq!(attempt["state"], "failed");
+        let value: Value = serde_json::from_str(attempt["result"].as_str().unwrap()).unwrap();
+        assert_eq!(value["error"], "step budget exhausted");
+        assert_eq!(value["budget_s"], 1);
+        assert_eq!(attempt["timing"]["remaining_s"], 0.0);
+    }
+    let events = d.call("events", json!({"task":task}));
+    assert_eq!(
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "step.budget_exhausted")
+            .count(),
+        2
+    );
+    let metrics = d.call("metrics", json!({"task":task}));
+    assert_eq!(metrics["steps"][0]["attempts"].as_array().unwrap().len(), 2);
+    assert!(metrics["steps"][0]["elapsed_seconds"].as_i64().unwrap() >= 2);
+}
+
+#[test]
+fn daemon_ends_a_streaming_planner_loop_despite_valid_different_calls() {
+    use std::io::Read;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let d = Daemon::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = stop.clone();
+    let server = std::thread::spawn(move || {
+        let mut turn = 0;
+        while !stopped.load(Ordering::Relaxed) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            // Accepted sockets can inherit O_NONBLOCK on macOS. The listener
+            // polls for shutdown, but each HTTP request must use blocking reads.
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut header = vec![];
+            let mut byte = [0; 1];
+            while !header.ends_with(b"\r\n\r\n") {
+                if stream.read_exact(&mut byte).is_err() {
+                    return;
+                }
+                header.push(byte[0]);
+            }
+            let header = String::from_utf8(header).unwrap();
+            let length = header
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .and_then(|s| s.parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            let mut request = vec![0; length];
+            if stream.read_exact(&mut request).is_err() {
+                continue;
+            }
+            let body = if header.starts_with("GET ") {
+                json!({"data":[{"id":"test-model"}]}).to_string()
+            } else {
+                turn += 1;
+                std::thread::sleep(Duration::from_millis(120));
+                let call = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":format!("read-{turn}"),"type":"function","function":{"name":"read_context","arguments":json!({"after":turn}).to_string()}}]}}]});
+                let usage =
+                    json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2}});
+                format!("data: {call}\n\ndata: {usage}\n\ndata: [DONE]\n\n")
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                if body.starts_with("data:") {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+                body
+            );
+        }
+    });
+    // Budget includes Git workspace setup. Leave room for multiple model turns
+    // on slower CI hosts; the command regression separately tests a one-second cap.
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        format!(
+            r#"
+max_tool_rounds = 10000
+[providers.default]
+kind = "tuara"
+auth_mode = "api"
+base_url = "http://{address}/v1"
+api_key_env = "PATH"
+model = "test-model"
+stream = true
+[executors.planner]
+step_budget_seconds = 5
+"#
+        ),
+    )
+    .unwrap();
+    d.template(
+        "loop",
+        "name=\"loop\"\nversion=\"1\"\n[[steps]]\nid=\"plan\"\nrole=\"planner\"\nattempts=1\n",
+    );
+    let task = d.submit("loop");
+    let inspect = d.wait(&task, "failed");
+    stop.store(true, Ordering::Relaxed);
+    server.join().unwrap();
+    let result: Value =
+        serde_json::from_str(inspect["attempts"][0]["result"].as_str().unwrap()).unwrap();
+    assert_eq!(result["error"], "step budget exhausted", "{result}");
+    assert_eq!(result["budget_s"], 5);
+    assert!(result["elapsed_s"].as_f64().unwrap() >= 5.0);
+    let events = d.call("events", json!({"task":task}));
+    let calls: Vec<_> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "tool.completed")
+        .collect();
+    assert!(calls.len() >= 2, "{events}");
+    for call in calls {
+        let data: Value = serde_json::from_str(call["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["success"], true, "{data}");
+    }
+    let metrics = d.call("metrics", json!({"task":task}));
+    assert!(
+        metrics["steps"][0]["reported_input_tokens"]
+            .as_u64()
+            .unwrap()
+            > 0,
+        "{metrics}"
+    );
+}
+
+#[test]
+fn missing_checkout_scripts_explain_the_command_worktree() {
+    let d = Daemon::new();
+    std::fs::create_dir_all(d.repo.join("tools")).unwrap();
+    std::fs::write(d.repo.join("tools/untracked.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    for (name, command) in [
+        ("direct", r#"["./tools/untracked.sh"]"#),
+        ("interpreter", r#"["sh", "tools/untracked.sh"]"#),
+        ("shell", r#"["sh", "-c", "tools/untracked.sh"]"#),
+        ("unrelated", r#"["sh", "-c", "exit 7"]"#),
+    ] {
+        d.template(name,&format!("name={name:?}\nversion=\"1\"\n[[steps]]\nid=\"gate\"\nkind=\"command\"\ncommand={command}\n"));
+        let task = d.submit(name);
+        let inspect = d.wait(&task, "failed");
+        let result: Value =
+            serde_json::from_str(inspect["attempts"][0]["result"].as_str().unwrap()).unwrap();
+        let error = result["error"].as_str().unwrap();
+        if name == "unrelated" {
+            assert!(!error.contains("repository checkout"), "{error}");
+            assert!(error.contains("exit_code"), "{error}");
+        } else {
+            for expected in [
+                "gate",
+                "tools/untracked.sh",
+                "missing from task workspace",
+                "exists in repository checkout",
+                "untracked files",
+                "Commit the required file",
+            ] {
+                assert!(error.contains(expected), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn silent_command_can_opt_out_of_progress_budget_and_still_report_time() {
+    let d = Daemon::new();
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        "step_budget_seconds=1\ntimeout_seconds=10\n",
+    )
+    .unwrap();
+    d.template(
+        "exempt",
+        r#"name="exempt"
+version="1"
+[[steps]]
+id="bench"
+kind="command"
+step_budget_exempt=true
+command=["sleep","2"]
+"#,
+    );
+    let task = d.submit("exempt");
+    let started = Instant::now();
+    loop {
+        let inspect = d.inspect(&task);
+        if let Some(a) = inspect["attempts"].as_array().unwrap().first()
+            && a["timing"]["budget_exempt"] == true
+        {
+            assert!(a["timing"]["budget_s"].is_null());
+            assert!(a["timing"]["remaining_s"].is_null());
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let inspect = d.wait(&task, "succeeded");
+    let timing = &inspect["attempts"][0]["timing"];
+    assert_eq!(timing["budget_exempt"], true);
+    assert!(timing["elapsed_s"].as_f64().unwrap() >= 2.0);
+    let metrics = d.call("metrics", json!({"task":task}));
+    assert_eq!(metrics["steps"][0]["attempts"][0]["timing"], *timing);
+    let events = d.call("events", json!({"task":task}));
+    assert!(
+        !events
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "step.budget_exhausted")
+    );
+}
+
+#[test]
+fn progress_exempt_commands_still_obey_command_timeout_and_cancellation() {
+    for cancel in [false, true] {
+        let d = Daemon::new();
+        std::fs::write(
+            d.repo.join(".horde.toml"),
+            format!(
+                "step_budget_seconds=1\ntimeout_seconds={}\n",
+                if cancel { 30 } else { 1 }
+            ),
+        )
+        .unwrap();
+        d.template(
+            "exempt",
+            r#"name="exempt"
+version="1"
+[[steps]]
+id="bench"
+kind="command"
+step_budget_exempt=true
+command=["sleep","30"]
+"#,
+        );
+        let task = d.submit("exempt");
+        let started = Instant::now();
+        let pid = loop {
+            let inspect = d.inspect(&task);
+            if let Some(pid) = inspect["attempts"]
+                .as_array()
+                .unwrap()
+                .first()
+                .and_then(|a| a["pid"].as_i64())
+            {
+                break pid as i32;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        if cancel {
+            d.call("cancel", json!({"task":task}));
+        }
+        let inspect = d.wait(&task, if cancel { "cancelled" } else { "failed" });
+        if !cancel {
+            let result: Value =
+                serde_json::from_str(inspect["attempts"][0]["result"].as_str().unwrap()).unwrap();
+            assert!(
+                result["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("executor timed out after 1s"),
+                "{result}"
+            );
+        }
+        let stopped = Instant::now();
+        while horde::executor::process_alive(pid) {
+            assert!(
+                stopped.elapsed() < Duration::from_secs(5),
+                "exempt command survived termination"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }

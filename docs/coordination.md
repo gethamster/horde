@@ -32,7 +32,18 @@ horde call read_messages '{"task":"TASK_ID","worker":"WORKER_ID"}'
 horde call acknowledge_messages '{"task":"TASK_ID","worker":"WORKER_ID","ids":["unique-client-message-id"]}'
 ```
 
-Destinations are a worker ID, `group:NAME`, or `task`. Join a group with `join_channel`. Broadcast recipients are snapshotted at send time. Retrying the same message ID with the same payload is idempotent; changing its payload is rejected. Acknowledgement is explicit and per recipient, with a cursor that never skips unread mail.
+Destinations are a worker ID, `group:NAME`, or `task`. Join a group with `join_channel`. Broadcast recipients are snapshotted at send time. A `task` broadcast reaches every other worker; when the sender is the only worker on the task, it is delivered to the sender itself so a solo planner still hears the message. Retrying the same message ID with the same payload is idempotent; changing its payload is rejected. Acknowledgement is explicit and per recipient, with a cursor that never skips unread mail.
+
+Operators steer a running task without a worker identity. List workers first, then fan out or target one:
+
+```sh
+horde call list_workers '{"task":"TASK_ID"}'
+horde steer TASK_ID "Prefer the streaming parser; skip the CLI flag"
+horde steer TASK_ID "Only you: re-check the parser" --worker WORKER_ID
+horde steer TASK_ID "Status update only" --presence
+```
+
+Steering posts as `operator:TASK_ID`. Omit `--worker` (alias `--to`) to reach every worker on the task, including a single worker; pass `--worker ID` to deliver only to that worker. It is actionable by default; `--presence` delivers without waking idle workers. Messages from `operator:TASK_ID` are operator instructions, not peer chat; workers cannot reply to that identity. Steering requires operator credentials and fails when the task has no workers, the target worker is unknown or on another task, the target is the operator identity, or the task is cancelled.
 
 Actionable messages notify idle managed workers and create a follow-up step, retaining worker identity. Presence messages and acknowledgements do not invoke models. Native workers receive unread messages at each model/tool round; harnesses receive a launch prompt and coordination MCP tools. Continuous push into an already-running CLI harness is not available in this release.
 
@@ -57,3 +68,7 @@ Git integration is serialized per task. Merge conflicts are aborted without chan
 ## Local service and data
 
 `horde stop` shuts the service down gracefully. `horde daemon` runs in the foreground; `horde start` detaches it and writes `daemon.log`. The default data directory is `~/.local/share/horde`. Set `--data-dir PATH` consistently on every command to use a different instance. Keep this path short enough for a Unix socket (under roughly 90 characters on macOS).
+
+`add_knowledge.kind` accepts exactly `fact`, `decision`, or `evidence`. These values
+are enumerated in both the worker and administrative tool schemas; unsupported
+values return an error listing the valid choices.

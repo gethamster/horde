@@ -179,3 +179,14 @@ fn published_worker_schemas_omit_runtime_owned_arguments() {
         );
     }
 }
+
+#[test]
+fn knowledge_kind_schema_publishes_the_runtime_choices() {
+    let expected = serde_json::json!(["fact", "decision", "evidence"]);
+    for schema in [
+        horde::protocol::schema("add_knowledge"),
+        horde::protocol::admin_schema("add_knowledge"),
+    ] {
+        assert_eq!(schema["properties"]["kind"]["enum"], expected);
+    }
+}

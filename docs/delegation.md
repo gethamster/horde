@@ -73,7 +73,7 @@ is appropriate. Workers need their own provider configuration and credentials.
 
 ## One bounded tree
 
-Configure defaults in user settings or `.horde.toml`:
+Configure defaults in user settings or `.horde/horde.toml`:
 
 ```toml
 [limits]

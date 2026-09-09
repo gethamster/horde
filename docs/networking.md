@@ -234,7 +234,7 @@ files under the data directory. For manual setup, network trust is configured
 separately from project settings in
 `$XDG_CONFIG_HOME/horde/network.toml`, falling back to
 `~/.config/horde/network.toml`. An explicit file can be selected with
-`horde network --config /path/to/network.toml ...`. Repository `.horde.toml`
+`horde network --config /path/to/network.toml ...`. Repository `.horde/horde.toml`
 files cannot change this configuration. Relative certificate paths resolve
 against the network configuration's directory.
 

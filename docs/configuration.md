@@ -18,7 +18,12 @@ Settings merge in this order:
 
 1. Built-in defaults.
 2. `$XDG_CONFIG_HOME/horde/config.toml`, or `~/.config/horde/config.toml`.
-3. `.horde.toml` in the submitted repository.
+3. `.horde.toml` in the submitted repository (legacy path).
+4. `.horde/horde.toml` in the submitted repository (preferred path).
+
+Later files override matching settings and retain settings they do not restate.
+Both repository paths remain supported; if both exist, `.horde/horde.toml` wins.
+To migrate, move `.horde.toml` to `.horde/horde.toml` after updating Horde.
 
 The merged settings are pinned to the task. Later file changes affect new tasks.
 
@@ -99,3 +104,71 @@ Set `autonomy = false` to hold new tasks until the initial question is answered:
 ```sh
 horde answer TASK_ID QUESTION_ID yes
 ```
+
+## Step progress budgets
+
+The daemon ends an attempt after `step_budget_seconds` without durable progress.
+Defaults are 600 seconds for planners and reviewers, and 1800 seconds for workers.
+A step's explicit value wins over its executor role's value, which wins over the
+global default. All values must be positive seconds:
+
+```toml
+step_budget_seconds = 1800
+
+[executors.planner]
+step_budget_seconds = 600
+
+[executors.reviewer]
+step_budget_seconds = 600
+```
+
+An accepted plan proposal, a new artifact, or changed workspace files/commits
+resets the window. Reads, messages, worker status changes, and identical writes
+or duplicate artifacts do not. Command and harness file changes are observed by
+periodic workspace scans; ignored files are excluded. This is a **progress timeout**:
+a worker making changes can run longer than the configured number of seconds.
+Total elapsed wall time continues to accumulate across resets.
+
+The window covers workspace setup, model requests, tools, and integration.
+Exhaustion stops owned commands, records `step.budget_exhausted`, and finishes the
+attempt with `{"error":"step budget exhausted","elapsed_s":...,"budget_s":...}`.
+The existing retry/fallback policy applies, with a fresh budget for each attempt.
+`timeout_seconds` remains the separate request/command timeout and can fail an
+operation earlier.
+
+`horde inspect TASK_ID` adds `timing` to attempts: `elapsed_s`, `idle_s`, `budget_s`,
+and `remaining_s`. `horde events TASK_ID` includes budget start, progress,
+exhaustion, and finish events, plus timing on model responses and tool calls.
+`horde metrics TASK_ID` reports a `steps` array with wall time, summed attempt time,
+tokens, coordination counts, and attempt timing. Step wall time includes gaps
+between retries; summed attempt time excludes those gaps.
+
+A command that legitimately produces no durable changes for a long time can set
+`step_budget_exempt = true` on its step. This disables only the progress budget;
+it does not make output or heartbeat lines count as durable progress. Agent steps
+cannot opt out. Exempt attempts still report elapsed time, with `budget_exempt: true`
+and null budget/remaining values in their timing.
+
+The separate `timeout_seconds` command limit still applies and defaults to 1800
+seconds. For example, a silent GPU bench with a three-hour ceiling needs both:
+
+```toml
+# .horde/horde.toml
+timeout_seconds = 10800
+```
+
+```toml
+# .horde/templates/bench.toml
+name = "bench"
+version = "1"
+[[steps]]
+id = "gpu-cell"
+kind = "command"
+step_budget_exempt = true
+command = ["bash", "tools/horde/fleet_gate_step.sh"]
+```
+
+Omit `step_budget_seconds` on an exempt step; setting both is an error. Set the
+exemption directly on a command step, not on a template inclusion. Cancellation,
+process cleanup, and retry handling still apply. Existing tasks keep their pinned
+settings, so submit a new task after changing the template or command timeout.

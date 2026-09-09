@@ -82,6 +82,7 @@ Other commands have no operation equivalent: `start`, `stop`, `daemon`, `mcp`,
 | `release_claims` | `task`*, `worker`* | no |
 | `reconcile_worker` | `task`*, `worker`* | no |
 | `send_message` | `task`*, `worker`, `id`*, `destination`*, `body`*, `refs{}`, `actionable` | yes |
+| `steer` | `task`*, `body`*, `id`, `refs{}`, `actionable`, `worker` | no (operator) |
 | `read_messages` | `task`*, `worker`, `after`, `limit` | yes |
 | `acknowledge_messages` | `task`*, `worker`, `ids[]`* | yes |
 | `join_channel` | `task`*, `worker`, `channel`* | yes |
@@ -189,3 +190,5 @@ Additional worker restrictions, enforced at the RPC layer:
 
 These are scope limits at the RPC layer, not process isolation. A worker token
 does not protect against a malicious local process running as the same user.
+
+For `add_knowledge`, `kind` must be `fact`, `decision`, or `evidence`.

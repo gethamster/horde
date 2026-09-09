@@ -1,4 +1,4 @@
-use super::worker_allowed;
+use super::{KNOWLEDGE_KINDS, worker_allowed};
 use crate::template;
 use serde_json::{Value, json};
 
@@ -123,6 +123,14 @@ pub fn admin_schema(name: &str) -> Value {
             ("body", "string"),
             ("refs", "object"),
             ("actionable", "boolean"),
+        ],
+        "steer" => &[
+            ("task", "string"),
+            ("id", "string"),
+            ("body", "string"),
+            ("refs", "object"),
+            ("actionable", "boolean"),
+            ("worker", "string"),
         ],
         "read_messages" => &[
             ("task", "string"),
@@ -293,6 +301,9 @@ pub fn admin_schema(name: &str) -> Value {
                     json!({"type":"string"})
                 };
             }
+            if name == "add_knowledge" && *k == "kind" {
+                s["enum"] = json!(KNOWLEDGE_KINDS);
+            }
             if *k == "steps" {
                 s["description"] = json!("Workflow Step objects. Call this tool with a steps array; step IDs are data, never tool names. Use expanded steps, not nested template invocations.");
                 if name == "propose_steps" {
@@ -335,6 +346,7 @@ pub fn admin_schema(name: &str) -> Value {
         "ack_events" => &["consumer", "seq"],
         "escalate_question" => &["question"],
         "send_message" => &["id", "destination", "body"],
+        "steer" => &["body"],
         "request_question" => &["question"],
         "propose_steps" | "add_steps" => &["steps"],
         "register_workspace" => &["path", "branch", "base"],

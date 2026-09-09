@@ -138,3 +138,53 @@ named step, correct the arguments, and call the same tool again. MCP returns
 validation failures as `isError` tool results; the native executor sends a tool
 error response and records the bounded error in events. Invalid proposals do not
 create a revision or insert partial steps.
+
+A step can override the [progress budget](configuration.md#step-progress-budgets):
+
+```toml
+[[steps]]
+id = "implement"
+role = "worker"
+step_budget_seconds = 2400
+instructions = "Implement and verify the change."
+```
+
+An override on a nested template inclusion supplies the default for its expanded
+steps; a child's explicit value takes precedence. Each retry starts a fresh window.
+
+## Shell expressions and command files
+
+Horde treats every `${...}` in `instructions` and `command` arguments as a step
+output reference. The form must be `${step.field}`, and `step` must be listed in
+`needs`. Shell quotes do not escape this template syntax. Validation errors name
+the expanded step ID, the field or command argument index, and its value.
+
+For a simple shell variable, use `$NAME` without braces. For braced expansions
+such as `${NAME:-default}`, put the shell code in a committed script and invoke
+that script from the command step. Horde does not interpolate script contents:
+
+```toml
+[[steps]]
+id = "gate"
+kind = "command"
+command = ["bash", "tools/horde/fleet_gate_step.sh"]
+```
+
+Command steps run in the task's integrated worktree, initially based on the submit
+commit and updated by preceding integrations. They do not copy untracked files or
+uncommitted edits from your checkout. Commit required scripts before submitting,
+or have an earlier step create them in that worktree.
+
+On a failed command, Horde checks literal relative paths in its arguments,
+including simple shell command strings. If a referenced file is absent from the
+task workspace but exists in the repository checkout, the error identifies both
+locations and explains how to make the file available. Dynamically constructed
+shell paths may not receive this hint; the original command failure is retained.
+
+For a command that can run silently beyond the progress window, set
+`step_budget_exempt = true` instead of `step_budget_seconds`. The field is allowed
+only on command steps, and defaults to false. It overrides global/role progress
+budgets; an exempt child also ignores a template inclusion's inherited budget.
+The separate `timeout_seconds` command limit still applies. See the
+[configuration example](configuration.md#step-progress-budgets) before running a
+long bench. Elapsed time remains visible in inspect, events, and metrics.

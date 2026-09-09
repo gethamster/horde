@@ -79,6 +79,9 @@ resources to resolve a missing capability.
 
 ## Trust and renewal
 
+Networking uses user-owned `~/.config/horde/network.toml`; repository settings
+in `.horde/horde.toml` cannot change its trust or grants.
+
 Fleet admission uses a separate TLS endpoint. The worker validates the controller
 using trust from the invitation and proves possession of its own key. The
 controller validates the fleet credential and issues a client certificate with
