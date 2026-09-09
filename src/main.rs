@@ -16,6 +16,15 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Install repo skills, MCP configuration, and an always-delegate policy.
+    Init {
+        #[arg(long, value_enum)]
+        agent: horde::repo_init::Agent,
+        #[arg(long, value_parser = ["always"])]
+        delegate: String,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
     /// Set up networking, discover hosts, and install authenticated remote runtimes.
     Network {
         /// User-owned network configuration; never merged with repository settings.
@@ -410,10 +419,16 @@ async fn main() -> Result<()> {
         .get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
     let explicit_root = cli.data_dir.is_some();
+    if let Commands::Init { agent, repo, .. } = &cli.command {
+        let report = horde::init::run(repo, *agent, cli.data_dir.as_deref())?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
     let root = cli.data_dir.unwrap_or_else(horde::branding::data_dir);
     std::fs::create_dir_all(&root)?;
     let root = root.canonicalize()?;
     let output = match cli.command {
+        Commands::Init { .. } => unreachable!(),
         Commands::Network { config, command } => {
             match &command {
                 NetworkCommands::Key { command } => {

@@ -19,12 +19,9 @@ when that is writable, otherwise it adds `~/.local/bin` to your shell startup fi
 and tells you to open a new terminal. Versioned executables live under
 `~/.local/share/horde-install`.
 
-Pass `--service` or `--no-service` whenever an agent runs the installer. With
-neither flag the boot-service choice defaults to `ask`, and the prompt is not
-skipped just because stdin is a pipe: the script falls back to writing the
-question to `/dev/tty` and reading the answer from it. Under `curl | bash` in an
-agent tool call that blocks until a human types into the terminal, or until the
-call times out. With an explicit flag the prompt is never reached.
+Pass `--service` or `--no-service` whenever an agent runs the installer so the
+requested scope is explicit. Interactive installation asks about boot startup;
+without a terminal, the installer skips the service unless `--service` is supplied.
 
 Pinned to a version, or downloaded first so you can read it:
 
@@ -37,10 +34,49 @@ From source (development, or an unpublished build):
 
 ```sh
 cargo install --path . --locked
+horde skills install ./skills
 ```
 
 A source build has no embedded release verification key, so `horde update` will
 report that it cannot verify updates. That is expected.
+
+## Repository setup and automatic delegation
+
+After installing Horde, run in the target repository:
+
+```sh
+horde init --agent codex --delegate always
+# For Claude Code:
+horde init --agent claude --delegate always
+```
+
+The command installs all nine bundled repository skills and their resources as
+regular files, including the operator skills and workflow guidance. It adds a
+managed policy block to `AGENTS.md` for Codex or `CLAUDE.md` for Claude, and merges the corresponding repository MCP configuration. It does not
+change worker-provider selection. `--repo PATH` selects another repository.
+An explicit `--data-dir PATH` or `HORDE_DATA_DIR` is pinned in the generated
+MCP arguments.
+
+The policy applies to the personal agent, including small changes. A worker
+already assigned a Horde step must perform that assignment without creating a new
+root task. Explicit user instructions can override the policy.
+
+Initialization preserves unrelated content and tracks the hashes of installed
+skill files. Reruns update managed content without duplicating the policy block.
+Conflicting MCP definitions, edited skills, malformed blocks, and symlink write
+paths produce errors rather than overwrites. Resolve the conflict before retrying.
+
+Read the JSON report. A passing isolated simulation verifies scheduling and task
+completion without calling a model. The daemon also needs a valid default runtime
+skill pack; official installers place it beside the executable. Inspect the
+`runtime_skills` report: a missing or invalid pack blocks readiness. Local checks
+inspect the configured workflow, executables, and credential availability; authentication is not probed. When
+`ready` is false, complete `next_steps` and rerun. When local prerequisites pass,
+the command starts or reuses the selected daemon. Reload the agent and accept
+repository trust or MCP prompts if required.
+
+`npx skills add gethamster/horde` installs skills only. It has no Horde init hook,
+does not write this policy, and is unnecessary when using `horde init`.
 
 ## Running the daemon
 
@@ -112,7 +148,7 @@ discovery, and tool calls, and exposes submit, inspect, events, questions, cance
 resume, metrics, revisions, artifacts, knowledge, delegation, and coordination
 tools. It has administrative authority over this Horde instance.
 
-There is no separate Slack app, webhook, or chat store inside Horde. A bot or
+There is no separate Slack app or chat store inside Horde. A bot or
 personal agent stays the external caller through this same bridge, keeping its own
 mapping from task ids to chat threads and using `events` plus `ack_events` with a
 stable `consumer` string to resume cleanly after a reconnect.

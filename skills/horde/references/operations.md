@@ -33,7 +33,7 @@ for those calls.
 | `horde usage` | `account_status` |
 | `horde runtime status/drain/resume/list/inspect/create/...` | `runtime_*` |
 
-Other commands have no operation equivalent: `start`, `stop`, `daemon`, `mcp`,
+Other commands have no operation equivalent: `init` (repository setup), `start`, `stop`, `daemon`, `mcp`,
 `doctor`, `validate`, `config` (print), `service`, `update`, `network`.
 
 ## Task lifecycle

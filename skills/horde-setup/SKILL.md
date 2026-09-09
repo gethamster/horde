@@ -8,7 +8,17 @@ and internal IDs inside tool calls; ask the user only for a missing preference,
 credential access, or interactive login that the agent cannot supply. Existing
 authorization remains sufficient for actions within that scope.
 
-Start with `agent_setup` action `inspect`. Follow relevant `next_actions`: invoke
+When the user asks to make Horde the default for repository work, use
+`horde init --agent codex --delegate always` or
+`horde init --agent claude --delegate always`, matching the caller. This installs
+repository skills, instructions, and MCP configuration. It does not select worker
+providers. Read the report, complete authorized `next_steps`, and reload the
+caller's instructions and MCP configuration as needed. For other MCP clients,
+configure their bridge and persistent instructions through their supported setup.
+A worker already assigned a Horde step performs that assignment instead of
+initializing a new caller or submitting another root task.
+
+For provider, controller, or fleet setup, start with `agent_setup` action `inspect`. Follow relevant `next_actions`: invoke
 entries with `kind:tool` through the named tool, and run `kind:exec` argv with the
 calling agent's available execution tool on the indicated machine. Resolve a
 reported blocker before retrying that action. Inspect again after a state change;

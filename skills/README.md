@@ -2,18 +2,33 @@
 
 Skills that teach a coding agent what Horde is, why it exists, and how to use it.
 
+For repository setup with automatic delegation, use
+`horde init --agent codex --delegate always` or
+`horde init --agent claude --delegate always`. The command installs the bundled repository skills, MCP configuration, and a
+managed repository instruction block.
+See [repository setup](../docs/installing.md#make-horde-the-default-in-a-repository).
+
 | Skill | For |
 | --- | --- |
 | `horde` | An agent using Horde: install, connect over MCP, submit and monitor tasks, answer questions, collect results, recover from a crash |
 | `horde-templates` | Authoring the versioned TOML workflow templates Horde compiles into a task graph |
 | `horde-worker` | An agent running *inside* a Horde task: claims, mail, questions, artifacts, integration |
+| `horde-setup` | Provider, controller, and worker readiness |
+| `horde-discovery` | Runtime and model names resolved against reported capabilities |
+| `horde-model-selection` | Model choices matched to the task and available checks |
+| `horde-planning` | Bounded tasks and execution choices from permitted models |
+| `horde-delegation` | Execution contracts, retry identities, and pinned skills |
+| `horde-review` | Result checks and persistent guidance review |
 
 These skills are maintained and distributed from the `skills/` folder in
-[gethamster/horde](https://github.com/gethamster/horde). Install all three:
+[gethamster/horde](https://github.com/gethamster/horde). Install the skills:
 
 ```sh
 npx skills add gethamster/horde
 ```
+
+This installs the skills only. It does not execute `horde init` or enable the
+always-delegate policy, and is not needed when you use `horde init`.
 
 Or install one:
 
@@ -44,11 +59,15 @@ than no skill.
 - After editing frontmatter, confirm discovery still works:
 
 ```sh
-npx skills add ./ --list      # must find all three skills
+npx skills add ./ --list      # must find all nine skills
 ```
 
 ## Skills used by workers
 
-Horde can also load and distribute skills during task execution. Configure named
+Repository skills help the caller operate Horde. The daemon separately loads its
+default runtime skill pack and pins the selected resources for each task. Managed
+workers read the selected instructions progressively with `read_skill`.
+
+Horde can also load and distribute additional skills during task execution. Configure named
 directories in `[skills]`, select names in workflow steps, and pass a subset through
 `delegate_task.skills` when assigning child work. See [runtime skills](../docs/runtime-skills.md).
