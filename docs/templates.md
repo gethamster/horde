@@ -171,10 +171,24 @@ kind = "command"
 command = ["bash", "tools/horde/fleet_gate_step.sh"]
 ```
 
-Command steps run in the task's integrated worktree, initially based on the submit
-commit and updated by preceding integrations. They do not copy untracked files or
-uncommitted edits from your checkout. Commit required scripts before submitting,
-or have an earlier step create them in that worktree.
+Command steps run in the task's integrated worktree, updated by preceding
+integrations. That worktree starts from a freshly fetched `origin/<base>` when
+`[delivery] base` is set, and Horde refuses to allocate it if that fetch fails.
+Without a base it fetches `origin` and prefers the remote default branch, then
+the current branch's origin upstream. If fetching fails, it can use a cached
+remote tip and records `workspace.fetch_failed`. It starts from your local
+`HEAD` only when no candidate remote tip can be resolved, and records a
+`workspace.local_head_fallback` event when it does. Your own checkout is never
+modified. The worktree does not copy untracked files or uncommitted edits from
+your checkout. Push the scripts a task needs before submitting, or have an
+earlier step create them in that worktree.
+
+Concurrent allocations share one worktree and one durable start record. Existing
+task branches keep their commits during recovery. If a worktree survives without
+its start record, Horde records its current commit with source `recovered`; the
+original remote source is unknown. If a recorded workspace and its branch are
+both missing, allocation fails for operator reconciliation. Delegated and
+remote-accepted tasks retain their pinned starting snapshot.
 
 On a failed command, Horde checks literal relative paths in its arguments,
 including simple shell command strings. If a referenced file is absent from the

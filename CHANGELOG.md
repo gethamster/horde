@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Start each task's integrated worktree from a freshly fetched `origin/<base>`
+  instead of the operator's local `HEAD`, so pull requests no longer trail the
+  base branch by however far the local checkout had drifted. Allocation fails
+  when a configured `[delivery] base` cannot be fetched. Without a base, Horde
+  fetches `origin` and prefers its default branch, falling back to local `HEAD`
+  only when no remote tip resolves and recording a
+  `workspace.local_head_fallback` event. The operator checkout is never
+  modified; `workspace.integrated` and `workspace.registered` events record the
+  resolved start commit and its source.
 - Serialize a task's integrated worktree allocation per task, so parallel agent steps
   no longer race on `worktree add -b horde/<task>` and fail their dependents (#41).
 - `horde validate` captures the skill catalog a submission would pin and fails on an
