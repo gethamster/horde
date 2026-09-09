@@ -20,7 +20,7 @@ comments and whole single or double quotes supported. There is no shell
 interpolation, no multiline syntax, and no escape evaluation. Duplicate names and
 NUL bytes are rejected.
 
-Select it in user settings or the project's `.horde.toml`:
+Select it in user settings or the project's `.horde/horde.toml`:
 
 ```toml
 secret_bundles = ["app"]

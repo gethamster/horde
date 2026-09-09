@@ -88,7 +88,7 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "result.json").read_text())["task"]["status"], "succeeded")
             for name in ["events.json", "metrics.json"]:
                 json.loads((root / name).read_text())
-            self.assertNotIn("offline-dummy", (root / "repo/.horde.toml").read_text())
+            self.assertNotIn("offline-dummy", (root / "repo/.horde/horde.toml").read_text())
         finally:
             server.shutdown()
             server.server_close()

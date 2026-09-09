@@ -1,6 +1,6 @@
 use crate::{
     config::Settings,
-    store::{Store, id, now},
+    store::{OPERATOR_STATUS, Store, id, now},
     template,
 };
 use anyhow::{Context, Result, bail};
@@ -127,6 +127,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     (
         "send_message",
         "Persist a message to worker id, group:name, or task. Supply id for deduplication",
+    ),
+    (
+        "steer",
+        "Operator: post a message to workers on a task; omit worker to fan out, or set worker to target one",
     ),
     (
         "read_messages",
@@ -257,6 +261,14 @@ pub fn admin_schema(name: &str) -> Value {
             ("body", "string"),
             ("refs", "object"),
             ("actionable", "boolean"),
+        ],
+        "steer" => &[
+            ("task", "string"),
+            ("id", "string"),
+            ("body", "string"),
+            ("refs", "object"),
+            ("actionable", "boolean"),
+            ("worker", "string"),
         ],
         "read_messages" => &[
             ("task", "string"),
@@ -444,6 +456,7 @@ pub fn admin_schema(name: &str) -> Value {
         "ack_events" => &["consumer", "seq"],
         "escalate_question" => &["question"],
         "send_message" => &["id", "destination", "body"],
+        "steer" => &["body"],
         "request_question" => &["question"],
         "propose_steps" | "add_steps" => &["steps"],
         "register_workspace" => &["path", "branch", "base"],
@@ -634,7 +647,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         "refresh_bundles" => db.atomic(|| {let names:Vec<String>=db.rows("SELECT name FROM task_bundles WHERE task=?",&[&oid])?.iter().filter_map(|r|r["name"].as_str().map(str::to_owned)).collect();db.conn.execute("DELETE FROM task_bundles WHERE task=?",[oid])?;crate::secrets::select(db,oid,&names)?;Ok(json!({"refreshed":true}))}),
         "metrics" => crate::metrics::report(db, oid),
         "inspect" => Ok(
-            json!({"task":db.task(oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=?",&[&oid])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?}),
+            json!({"task":db.task(oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?}),
         ),
         "summary" => crate::summary::build(db, oid),
         "events" => {
@@ -643,9 +656,22 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         },
         "register_worker" => db.register(oid, args["step"].as_str()),
         "list_workers" => Ok(json!(db.rows(
-            "SELECT id,step,status,workspace,branch,base,updated FROM workers WHERE task=?",
-            &[&oid]
+            "SELECT id,step,status,workspace,branch,base,updated FROM workers WHERE task=? AND status<>?",
+            &[&oid, &OPERATOR_STATUS]
         )?)),
+        "steer" => {
+            let destination = args["worker"]
+                .as_str()
+                .or_else(|| args["destination"].as_str());
+            db.steer(
+                oid,
+                &args["id"].as_str().map_or_else(id, str::to_owned),
+                string(&args, "body")?,
+                args.get("refs").unwrap_or(&json!({})),
+                args["actionable"].as_bool().unwrap_or(true),
+                destination,
+            )
+        }
         "register_workspace" => {
             crate::git::register(
                 db,
@@ -690,6 +716,9 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             let status = string(&args, "status")?;
             if !["idle", "working", "blocked", "stopped"].contains(&status) {
                 bail!("invalid worker status");
+            }
+            if db.worker(string(&args, "worker")?)?["status"] == OPERATOR_STATUS {
+                bail!("the operator identity has no worker status");
             }
             db.conn.execute(
                 "UPDATE workers SET status=?,updated=? WHERE id=?",
@@ -774,6 +803,9 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         }
         "reconcile_worker" => {
             let wid = string(&args, "worker")?;
+            if db.worker(wid)?["status"] == OPERATOR_STATUS {
+                bail!("the operator identity has no worker status");
+            }
             let attempts = db.rows(
                 "SELECT id,pid FROM attempts WHERE worker=? AND state='uncertain'",
                 &[&wid],

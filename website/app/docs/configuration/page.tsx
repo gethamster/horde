@@ -11,7 +11,7 @@ export default function Configuration() {
   return <>
     <h1>Configure</h1>
     <h2>Settings files</h2>
-    <p>Run <code>horde config</code> to print starter TOML. User settings live in <code>~/.config/horde/config.toml</code>, or <code>$XDG_CONFIG_HOME/horde/config.toml</code>. A repository can override workflow settings in <code>.horde.toml</code>.</p>
+    <p>Run <code>horde config</code> to print starter TOML. User settings live in <code>~/.config/horde/config.toml</code>, or <code>$XDG_CONFIG_HOME/horde/config.toml</code>. A repository can override workflow settings in <code>.horde/horde.toml</code>. The legacy <code>.horde.toml</code> also loads; the nested file wins when both set the same value.</p>
     <p>Horde reads these settings when you submit a task. Later edits apply to new tasks.</p>
     <pre><code>{`concurrency = 4
 autonomy = true

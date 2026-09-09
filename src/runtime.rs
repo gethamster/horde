@@ -159,7 +159,8 @@ async fn run_step(
         serde_json::from_str(db.task(oid)?["settings"].as_str().context("settings")?)?;
     let step = Store::step(&row)?;
     let role = row["dispatch_role"].as_str().unwrap_or(&step.role);
-    let seconds = crate::budget::seconds(&settings, &step, role);
+    let seconds =
+        (!step.step_budget_exempt).then(|| crate::budget::seconds(&settings, &step, role));
     let result = crate::budget::supervise(
         &db,
         oid,

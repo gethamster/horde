@@ -204,3 +204,10 @@ status updates, and duplicate writes do not. Exhaustion records
 `step.budget_exhausted` and uses normal retry/fail handling. Inspect attempt `timing`
 for elapsed, idle, budget, and remaining seconds; metrics also includes per-step
 wall time, attempt time, tokens, and coordination calls.
+
+Silent long-running command steps can use `step_budget_exempt = true` instead of
+`step_budget_seconds`. Agent steps cannot opt out. Exemption disables the progress
+budget only: set the repository's `timeout_seconds` above the expected command
+runtime too (default 1800 seconds). Timing keeps elapsed seconds and reports
+`budget_exempt: true`, with null budget and remaining values. Cancellation and
+process cleanup still apply. Output/heartbeat lines do not reset progress budgets.

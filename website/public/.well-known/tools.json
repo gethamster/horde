@@ -1,5 +1,5 @@
 {
-  "count": 62,
+  "count": 63,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -854,6 +854,11 @@
                   },
                   "type": "array"
                 },
+                "step_budget_exempt": {
+                  "default": false,
+                  "description": "Disable the progress budget for this command step; command timeout still applies.",
+                  "type": "boolean"
+                },
                 "step_budget_seconds": {
                   "default": null,
                   "description": "Seconds without durable progress before the daemon ends an attempt.",
@@ -1185,6 +1190,38 @@
         "type": "object"
       },
       "scope": "worker"
+    },
+    {
+      "description": "Operator: post a message to workers on a task; omit worker to fan out, or set worker to target one",
+      "name": "steer",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "actionable": {
+            "type": "boolean"
+          },
+          "body": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "refs": {
+            "type": "object"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worker": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
     },
     {
       "description": "Read unacknowledged messages; after is an optional sequence cursor",
@@ -1569,6 +1606,11 @@
                     "type": "string"
                   },
                   "type": "array"
+                },
+                "step_budget_exempt": {
+                  "default": false,
+                  "description": "Disable the progress budget for this command step; command timeout still applies.",
+                  "type": "boolean"
                 },
                 "step_budget_seconds": {
                   "default": null,

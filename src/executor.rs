@@ -176,16 +176,25 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         if !i.settings.allow_commands {
             bail!("commands disabled");
         }
-        let r = run_command(
+        let result = run_command(
             &i.spec.command,
             i.workspace,
             i.settings.timeout_seconds,
             Some((i.db, i.attempt)),
         )
-        .await?;
-        if r["success"] != true {
-            bail!("verification command failed: {r}");
-        }
+        .await;
+        let r = match result {
+            Ok(r) if r["success"] == true => r,
+            result => {
+                let hint = missing_workspace_path_hint(i);
+                match result {
+                    Ok(r) => bail!("verification command failed: {r}{hint}"),
+                    Err(e) => {
+                        return Err(e.context(format!("command step {:?} failed{hint}", i.spec.id)));
+                    }
+                }
+            }
+        };
         return Ok(json!({"result":r["stdout"],"accepted":true,"process":r}));
     }
     if i.spec.kind == "delivery" {
@@ -202,6 +211,42 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         _ => bail!("unknown executor kind {}", config.kind),
     }
 }
+/// Diagnose literal paths after a failure; never parse or execute shell syntax.
+fn missing_workspace_path_hint(i: &Invocation<'_>) -> String {
+    let Ok(task) = i.db.task(i.task) else {
+        return String::new();
+    };
+    let Some(repo) = task["repo"].as_str() else {
+        return String::new();
+    };
+    let repo = Path::new(repo);
+    for arg in &i.spec.command {
+        // Whole arguments preserve spaces; tokens also cover simple `sh -c` commands.
+        for candidate in std::iter::once(arg.as_str())
+            .chain(arg.split(|c: char| c.is_whitespace() || ";|&()<>".contains(c)))
+        {
+            let candidate = candidate.trim_matches(['\'', '"']);
+            let path = Path::new(candidate);
+            if candidate.is_empty()
+                || candidate.starts_with('-')
+                || path.is_absolute()
+                || path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                continue;
+            }
+            if !i.workspace.join(path).exists() && repo.join(path).is_file() {
+                return format!(
+                    "; step {:?}: relative path {:?} is missing from task workspace {:?} but exists in repository checkout {:?}. Command steps use the task's committed worktree; untracked files and uncommitted checkout changes are not copied. Commit the required file and submit a new task, or create it in an earlier step",
+                    i.spec.id, candidate, i.workspace, repo
+                );
+            }
+        }
+    }
+    String::new()
+}
+
 async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     if !i.settings.allow_commands {
         bail!(

@@ -18,7 +18,12 @@ Settings merge in this order:
 
 1. Built-in defaults.
 2. `$XDG_CONFIG_HOME/horde/config.toml`, or `~/.config/horde/config.toml`.
-3. `.horde.toml` in the submitted repository.
+3. `.horde.toml` in the submitted repository (legacy path).
+4. `.horde/horde.toml` in the submitted repository (preferred path).
+
+Later files override matching settings and retain settings they do not restate.
+Both repository paths remain supported; if both exist, `.horde/horde.toml` wins.
+To migrate, move `.horde.toml` to `.horde/horde.toml` after updating Horde.
 
 The merged settings are pinned to the task. Later file changes affect new tasks.
 
@@ -164,3 +169,33 @@ exhaustion, and finish events, plus timing on model responses and tool calls.
 `horde metrics TASK_ID` reports a `steps` array with wall time, summed attempt time,
 tokens, coordination counts, and attempt timing. Step wall time includes gaps
 between retries; summed attempt time excludes those gaps.
+
+A command that legitimately produces no durable changes for a long time can set
+`step_budget_exempt = true` on its step. This disables only the progress budget;
+it does not make output or heartbeat lines count as durable progress. Agent steps
+cannot opt out. Exempt attempts still report elapsed time, with `budget_exempt: true`
+and null budget/remaining values in their timing.
+
+The separate `timeout_seconds` command limit still applies and defaults to 1800
+seconds. For example, a silent GPU bench with a three-hour ceiling needs both:
+
+```toml
+# .horde/horde.toml
+timeout_seconds = 10800
+```
+
+```toml
+# .horde/templates/bench.toml
+name = "bench"
+version = "1"
+[[steps]]
+id = "gpu-cell"
+kind = "command"
+step_budget_exempt = true
+command = ["bash", "tools/horde/fleet_gate_step.sh"]
+```
+
+Omit `step_budget_seconds` on an exempt step; setting both is an error. Set the
+exemption directly on a command step, not on a template inclusion. Cancellation,
+process cleanup, and retry handling still apply. Existing tasks keep their pinned
+settings, so submit a new task after changing the template or command timeout.

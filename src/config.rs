@@ -304,7 +304,7 @@ impl Default for Settings {
 /// Written by `horde config init`; must parse back to the built-in defaults.
 pub const STARTER: &str = r#"# Horde settings. Every value here is a built-in default, shown so it can be
 # changed in place. Delete anything you do not need; omitted keys keep their
-# default. A repository may override any of it in its own .horde.toml.
+# default. A repository may override any of it in its own .horde/horde.toml.
 
 concurrency = 4
 autonomy = true
@@ -445,7 +445,11 @@ impl Settings {
         Self::load_files(&[directory.join("config.toml")])
     }
     pub fn load(project: &Path) -> Result<Self> {
-        Self::load_files(&[Self::user_path(), crate::branding::project_config(project)])
+        Self::load_files(&[
+            Self::user_path(),
+            project.join(".horde.toml"),
+            crate::branding::project_config(project),
+        ])
     }
     /// The role resolved against its provider, or `None` when the role is not configured.
     pub fn executor(&self, role: &str) -> Option<ExecutorConfig> {

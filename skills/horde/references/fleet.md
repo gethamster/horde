@@ -42,7 +42,7 @@ operator-managed re-enrollment.
 
 Both the `direct` and `tailscale` providers use tonic gRPC with rustls and
 mandatory mutual TLS. Networking is disabled by default and configured separately
-from project settings in `~/.config/horde/network.toml`. A repository `.horde.toml`
+from project settings in `~/.config/horde/network.toml`. A repository `.horde/horde.toml`
 cannot change it. Start from `horde network config`.
 
 Four independent things, none of which implies another:

@@ -12,6 +12,13 @@ use std::{
 };
 
 pub const SCHEMA_VERSION: u32 = 3;
+/// Status of the per-task synthetic worker row that carries operator steering messages.
+/// Operator rows never receive mail, never wake, and are hidden from worker listings.
+pub const OPERATOR_STATUS: &str = "operator";
+/// Identity of the operator sender for a task; messages from it are operator steering.
+pub fn operator_id(oid: &str) -> String {
+    format!("operator:{oid}")
+}
 
 #[path = "legacy_store.rs"]
 mod legacy_store;
@@ -386,14 +393,95 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             if let Some(old)=self.rows("SELECT * FROM messages WHERE id=?",&[&mid])?.first(){
                 if old["sender"]!=sender || old["body"]!=body || old["destination"]!=destination || serde_json::from_str::<Value>(old["refs"].as_str().context("message refs")?)?!=*refs || old["actionable"]!=json!(i64::from(actionable)){bail!("message id reused with different payload");}return Ok(json!({"id":mid,"duplicate":true}));
             }
-            let recipients=if destination=="task"{self.rows("SELECT id FROM workers WHERE task=? AND id<>?",&[&oid,&sender])?}
-            else if let Some(group)=destination.strip_prefix("group:"){self.rows("SELECT worker AS id FROM channels WHERE task=? AND name=? AND worker<>?",&[&oid,&group,&sender])?}
-            else {let target=self.worker(destination)?;if target["task"]!=oid{bail!("recipient belongs to another task");}vec![target]};
-            if destination.starts_with("group:") && recipients.is_empty(){bail!("group has no other recipients");}
+            let operator=w["status"]==OPERATOR_STATUS;
+            let recipients=self.recipients(oid,sender,destination,operator)?;
+            let self_delivery=recipients.iter().any(|r|r["id"]==sender);
             self.conn.execute("INSERT INTO messages(id,task,sender,destination,body,refs,actionable,created) VALUES(?,?,?,?,?,?,?,?)",params![mid,oid,sender,destination,body,refs.to_string(),actionable,now()])?;
             for r in &recipients {let wid=r["id"].as_str().context("recipient")?;self.conn.execute("INSERT INTO receipts(message,worker) VALUES(?,?)",params![mid,wid])?;if actionable{self.conn.execute("UPDATE workers SET status='notified',updated=? WHERE id=? AND status='idle'",params![now(),wid])?;}}
-            self.event(oid,"message.sent",json!({"id":mid,"sender":sender,"destination":destination,"recipients":recipients.len()}))?;
+            self.event(oid,"message.sent",json!({"id":mid,"sender":sender,"destination":destination,"recipients":recipients.len(),"operator":operator,"self_delivery":self_delivery}))?;
             Ok(json!({"id":mid,"recipients":recipients.len(),"duplicate":false}))
+        })
+    }
+    /// Resolve the workers that receive a message.
+    ///
+    /// `task` broadcasts skip the sender while peers exist, deliver to the sender when it
+    /// is the only worker (so a solo planner still hears itself), and reach every worker
+    /// when the sender is the task's operator identity. Operator rows never receive mail.
+    fn recipients(
+        &self,
+        oid: &str,
+        sender: &str,
+        destination: &str,
+        operator: bool,
+    ) -> Result<Vec<Value>> {
+        if destination == "task" {
+            let peers = self.rows(
+                "SELECT id FROM workers WHERE task=? AND id<>? AND status<>? ORDER BY updated",
+                &[&oid, &sender, &OPERATOR_STATUS],
+            )?;
+            return Ok(match (operator, peers.is_empty()) {
+                (true, true) => bail!("task has no workers to steer"),
+                (true, false) | (false, false) => peers,
+                (false, true) => vec![json!({"id":sender})],
+            });
+        }
+        if let Some(group) = destination.strip_prefix("group:") {
+            let members = self.rows(
+                "SELECT c.worker AS id FROM channels c JOIN workers w ON w.id=c.worker WHERE c.task=? AND c.name=? AND c.worker<>? AND w.status<>?",
+                &[&oid, &group, &sender, &OPERATOR_STATUS],
+            )?;
+            if members.is_empty() {
+                bail!("group has no other recipients");
+            }
+            return Ok(members);
+        }
+        let target = self.worker(destination)?;
+        if target["task"] != oid {
+            bail!("recipient belongs to another task");
+        }
+        if target["status"] == OPERATOR_STATUS {
+            bail!("the operator identity does not receive messages");
+        }
+        Ok(vec![target])
+    }
+    /// Post an operator message as the synthetic `operator:TASK` sender.
+    ///
+    /// `destination` defaults to `task` (fan-out to every non-operator worker).
+    /// Pass a worker id to target only that worker; it must belong to the task
+    /// and must not be the operator identity.
+    pub fn steer(
+        &self,
+        oid: &str,
+        mid: &str,
+        body: &str,
+        refs: &Value,
+        actionable: bool,
+        destination: Option<&str>,
+    ) -> Result<Value> {
+        if self.task(oid)?["status"] == "cancelled" {
+            bail!("task is cancelled");
+        }
+        let destination = destination.unwrap_or("task");
+        let sender = operator_id(oid);
+        self.atomic(|| {
+            // The token hash is derived from an id that is never returned, so nothing can
+            // authenticate as the operator row through worker credentials.
+            let created = self.conn.execute(
+                "INSERT OR IGNORE INTO workers(id,task,step,status,token_hash,updated) VALUES(?,?,NULL,?,?,?)",
+                params![sender, oid, OPERATOR_STATUS, hash(id().as_bytes()), now()],
+            )?;
+            self.conn
+                .execute("INSERT OR IGNORE INTO cursors(worker) VALUES(?)", [&sender])?;
+            self.conn.execute(
+                "INSERT OR IGNORE INTO notifications(worker) VALUES(?)",
+                [&sender],
+            )?;
+            if created == 1 {
+                self.event(oid, "operator.registered", json!({"worker":sender}))?;
+            }
+            let mut result = self.send(oid, &sender, mid, destination, body, refs, actionable)?;
+            result["sender"] = json!(sender);
+            Ok(result)
         })
     }
     pub fn messages(&self, wid: &str, after: i64, limit: i64) -> Result<Value> {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Deliver `task` broadcasts to the sender when it is the only worker, so a solo
+  planner hears its own coordination messages instead of reaching nobody.
+- Add `horde steer TASK_ID "message"` for operators. It posts as
+  `operator:TASK_ID`, reaches every worker on the task including a single one,
+  and wakes idle workers unless `--presence` is given. Pass `--worker ID`
+  (alias `--to`) after `horde call list_workers` to target one worker instead
+  of fan-out.
 - Add `horde watch TASK_ID` and `horde events --follow`, an NDJSON stream of a
   task's durable events that ends with a `task.summary` line and exits 0, 1, or 2
   for succeeded, failed, or cancelled, 3 on `--timeout-secs`, and 4 when the

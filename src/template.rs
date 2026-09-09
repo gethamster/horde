@@ -29,6 +29,9 @@ pub struct Step {
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub step_budget_seconds: Option<u64>,
+    /// Disable the progress budget for this command step; command timeout still applies.
+    #[serde(default)]
+    pub step_budget_exempt: bool,
     /// Configured executor role (defaults to worker). Must exist for planner proposals.
     #[serde(default = "worker")]
     pub role: String,
@@ -238,6 +241,12 @@ fn expand(
             .map(|x| render(x, inputs).replace("${", &format!("${{{prefix}")))
             .collect();
         if let Some(nested) = &s.template {
+            if s.step_budget_exempt {
+                bail!(
+                    "step {:?}: set step_budget_exempt on command steps, not template inclusions",
+                    s.id
+                );
+            }
             if s.when.is_some() {
                 bail!("put conditional execution on child steps, not template inclusion");
             }
@@ -256,7 +265,9 @@ fn expand(
                 plan,
             )?;
             for child in &mut plan.steps[child_start..] {
-                child.step_budget_seconds = child.step_budget_seconds.or(s.step_budget_seconds);
+                if !child.step_budget_exempt {
+                    child.step_budget_seconds = child.step_budget_seconds.or(s.step_budget_seconds);
+                }
                 if child.kind == "agent" {
                     child.skills.extend(s.skills.clone());
                     child.skills.sort();
@@ -333,44 +344,61 @@ pub fn validate(steps: &[Step]) -> Result<()> {
             e.validate()
                 .map_err(|e| anyhow::anyhow!("{path}.environment: {e:#}"))?;
         }
+        if s.step_budget_exempt && s.kind != "command" {
+            bail!(
+                "{path}.step_budget_exempt: only command steps can opt out of the progress budget"
+            );
+        }
+        if s.step_budget_exempt && s.step_budget_seconds.is_some() {
+            bail!("{path}: choose step_budget_exempt or step_budget_seconds, not both");
+        }
         if s.step_budget_seconds == Some(0) {
             bail!("{path}.step_budget_seconds: must be positive");
         }
         if s.kind == "environment" && s.environment.is_none() {
             bail!("{path}.environment: environment step requires environment configuration");
         }
-        for text in std::iter::once(&s.instructions).chain(s.command.iter()) {
-            let mut rest = text.as_str();
-            while let Some(start) = rest.find("${") {
-                rest = &rest[start + 2..];
-                let end = rest.find('}').context("unterminated output reference")?;
-                let (step, field) = rest[..end]
-                    .rsplit_once('.')
-                    .context("output reference must be step.field")?;
-                if field.is_empty() || !s.needs.iter().any(|n| n == step) {
-                    bail!(
-                        "output reference must name a direct dependency: {}",
-                        &rest[..end]
-                    );
+        for (field, text) in std::iter::once(("instructions".to_owned(), &s.instructions)).chain(
+            s.command
+                .iter()
+                .enumerate()
+                .map(|(i, text)| (format!("command[{i}]"), text)),
+        ) {
+            (|| -> Result<()> {
+                let mut rest = text.as_str();
+                while let Some(start) = rest.find("${") {
+                    rest = &rest[start + 2..];
+                    let end = rest.find('}').context("unterminated output reference")?;
+                    let (step, field) = rest[..end]
+                        .rsplit_once('.')
+                        .context("output reference must be step.field")?;
+                    if field.is_empty() || !s.needs.iter().any(|n| n == step) {
+                        bail!(
+                            "output reference must name a direct dependency: {}",
+                            &rest[..end]
+                        );
+                    }
+                    let producer = steps.iter().find(|s| s.id == step).context("output step")?;
+                    if ![
+                        "result",
+                        "accepted",
+                        "artifacts",
+                        "usage",
+                        "integration",
+                        "events_artifact",
+                        "latency_ms",
+                        "process",
+                    ]
+                    .contains(&field)
+                        && !producer.output_types.contains_key(field)
+                    {
+                        bail!("undeclared output {step}.{field}");
+                    }
+                    rest = &rest[end + 1..];
                 }
-                let producer = steps.iter().find(|s| s.id == step).context("output step")?;
-                if ![
-                    "result",
-                    "accepted",
-                    "artifacts",
-                    "usage",
-                    "integration",
-                    "events_artifact",
-                    "latency_ms",
-                    "process",
-                ]
-                .contains(&field)
-                    && !producer.output_types.contains_key(field)
-                {
-                    bail!("undeclared output {step}.{field}");
-                }
-                rest = &rest[end + 1..];
-            }
+                Ok(())
+            })()
+            .map_err(|e| anyhow::anyhow!("{path}.{field}: {e:#}; value={text:?}"))?;
         }
         for ty in s.output_types.values() {
             if ![

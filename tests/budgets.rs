@@ -75,7 +75,7 @@ impl Fixture {
             &self.step,
             "attempt",
             &self.worker,
-            1,
+            Some(1),
             work,
         )
         .await
@@ -309,4 +309,26 @@ async fn slow_blocking_git_is_cancelled_without_stalling_the_daemon_timer() {
             panic!("expired blocking command is still alive");
         })
         .await;
+}
+
+#[test]
+fn progress_exemption_is_explicit_and_command_only() {
+    let child: template::Template = serde_json::from_value(json!({"name":"child","version":"1","steps":[{"id":"bench","kind":"command","step_budget_exempt":true}]})).unwrap();
+    let parent: template::Template = serde_json::from_value(json!({"name":"parent","version":"1","steps":[{"id":"cells","template":"child","step_budget_seconds":1}]})).unwrap();
+    let mut templates = BTreeMap::from([("child".into(), child), ("parent".into(), parent)]);
+    let plan = template::compile("parent", &templates, BTreeMap::new()).unwrap();
+    assert!(plan.steps[0].step_budget_exempt);
+    assert_eq!(plan.steps[0].step_budget_seconds, None);
+    templates.get_mut("parent").unwrap().steps[0].step_budget_exempt = true;
+    assert!(template::compile("parent", &templates, BTreeMap::new()).is_err());
+    let command: Step =
+        serde_json::from_value(json!({"id":"bench","kind":"command","step_budget_exempt":true}))
+            .unwrap();
+    template::validate(&[command]).unwrap();
+    for value in [
+        json!({"id":"planner","role":"planner","step_budget_exempt":true}),
+        json!({"id":"bench","kind":"command","step_budget_exempt":true,"step_budget_seconds":60}),
+    ] {
+        assert!(template::validate(&[serde_json::from_value(value).unwrap()]).is_err());
+    }
 }
