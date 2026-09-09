@@ -44,7 +44,7 @@ fn plan() -> template::Plan {
     .unwrap()
 }
 #[test]
-fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin() {
+fn selected_skill_is_discovered_once_and_progressive_reads_preserve_its_pin() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     repository(&repo);
@@ -76,17 +76,40 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
         context: json!({}),
     };
     let prompt = invocation.prompt().unwrap();
-    assert!(prompt.contains("Use version one"));
+    let original_body = std::fs::read_to_string(source.join("SKILL.md")).unwrap();
+    let original_hash = skills::packet(&db, &task).unwrap()["writer"].hash.clone();
+    assert!(!prompt.contains(&original_body));
+    assert!(!prompt.contains("Use version one"));
+    assert!(prompt.contains("Selected skill writer"));
+    assert!(prompt.contains(&original_hash));
     assert_eq!(invocation.prompt().unwrap(), prompt);
     assert_eq!(
         db.rows(
-            "SELECT * FROM events WHERE task=? AND kind='skill.loaded'",
+            "SELECT * FROM events WHERE task=? AND kind='skill.selected'",
             &[&task]
         )
         .unwrap()
         .len(),
         1
     );
+    assert!(
+        db.rows(
+            "SELECT * FROM events WHERE task=? AND kind='skill.read'",
+            &[&task]
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let instructions = horde::protocol::dispatch(
+        &db,
+        "read_skill",
+        json!({"name":"writer"}),
+        worker["token"].as_str(),
+    )
+    .unwrap();
+    assert_eq!(instructions["content"], original_body);
+    assert_eq!(instructions["hash"], original_hash);
+    assert!(prompt.contains(instructions["base_directory"].as_str().unwrap()));
     let resource = horde::protocol::dispatch(
         &db,
         "read_skill",
@@ -106,11 +129,13 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
     skill(&source, "two");
     let reopened = Store::open(&root).unwrap();
     assert_eq!(skills::catalog(&reopened, &task).unwrap(), first);
-    assert!(
-        skills::prompt(&reopened, &task, "retry", &step)
-            .unwrap()
-            .contains("Use version one")
-    );
+    let retry = skills::prompt(&reopened, &task, "retry", &step).unwrap();
+    assert!(!retry.contains("Use version one"));
+    assert!(!retry.contains("Use version two"));
+    assert!(retry.contains(&original_hash));
+    let pinned = skills::read(&reopened, &task, &json!({"name":"writer"})).unwrap();
+    assert_eq!(pinned["content"], original_body);
+    assert_eq!(pinned["hash"], original_hash);
     let new_task = reopened
         .submit("new version", &repo, &settings, &plan)
         .unwrap();
@@ -118,6 +143,12 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
         skills::packet(&reopened, &new_task).unwrap()["writer"].hash,
         skills::packet(&reopened, &task).unwrap()["writer"].hash
     );
+    let fresh = skills::read(&reopened, &new_task, &json!({"name":"writer"})).unwrap();
+    assert_eq!(
+        fresh["content"],
+        std::fs::read_to_string(source.join("SKILL.md")).unwrap()
+    );
+    assert_ne!(fresh["hash"], original_hash);
     std::fs::remove_dir_all(source).unwrap();
     let child = horde::delegation::delegate(
         &reopened,
@@ -150,6 +181,11 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
         skills::catalog(&reopened, &grandchild).unwrap(),
         writer_catalog
     );
+    for descendant in [&child, &grandchild] {
+        let read = skills::read(&reopened, descendant, &json!({"name":"writer"})).unwrap();
+        assert_eq!(read["content"], original_body);
+        assert_eq!(read["hash"], original_hash);
+    }
     let narrowed = horde::delegation::delegate(
         &reopened,
         &task,
@@ -174,16 +210,18 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
     assert!(!agent_steps.is_empty());
     for step in agent_steps {
         assert_eq!(step.skills, vec!["writer"]);
-        assert!(
-            skills::prompt(
-                &reopened,
-                &agent_child,
-                &format!("attempt-{}", step.id),
-                &step
-            )
-            .unwrap()
-            .contains("Use version one")
-        );
+        let prompt = skills::prompt(
+            &reopened,
+            &agent_child,
+            &format!("attempt-{}", step.id),
+            &step,
+        )
+        .unwrap();
+        assert!(!prompt.contains("Use version one"));
+        assert!(prompt.contains(&original_hash));
+        let read = skills::read(&reopened, &agent_child, &json!({"name":"writer"})).unwrap();
+        assert_eq!(read["content"], original_body);
+        assert_eq!(read["hash"], original_hash);
     }
     let before = reopened.steps(&task).unwrap();
     assert!(

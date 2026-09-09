@@ -326,6 +326,14 @@ async fn native_run_after_configured(
     planner: bool,
     configure: impl FnOnce(&mut Settings),
 ) -> NativeRun {
+    native_run_after_pinning(turns, planner, configure, |_, _| {}).await
+}
+async fn native_run_after_pinning(
+    turns: Vec<(u16, String)>,
+    planner: bool,
+    configure: impl FnOnce(&mut Settings),
+    after_pin: impl FnOnce(&Store, &str),
+) -> NativeRun {
     let mut responses = vec![(
         200,
         json!({"data":[{"id":"z-ai/glm-5.3-flash"}]}).to_string(),
@@ -350,6 +358,7 @@ async fn native_run_after_configured(
     )
     .unwrap();
     let oid = db.submit("think", dir.path(), &settings, &plan).unwrap();
+    after_pin(&db, &oid);
     let tid = db.steps(&oid).unwrap()[0]["id"]
         .as_str()
         .unwrap()
@@ -952,44 +961,97 @@ fn doctor_probes_a_named_provider_with_auto_model() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn native_worker_receives_selected_skill_and_reads_its_pinned_reference() {
+async fn native_worker_progressively_reads_selected_and_default_pinned_skills() {
     let dir = tempfile::tempdir().unwrap();
+    let instructions = "Follow the report skill. Read references/style.md before writing.";
+    let reference = "Name each metric and its unit.";
     std::fs::create_dir_all(dir.path().join("references")).unwrap();
-    std::fs::write(
-        dir.path().join("SKILL.md"),
-        "Follow the report skill. Read references/style.md before writing.",
+    std::fs::write(dir.path().join("SKILL.md"), instructions).unwrap();
+    std::fs::write(dir.path().join("references/style.md"), reference).unwrap();
+    let reads = [
+        ("report-body", "report", "SKILL.md"),
+        ("report-reference", "report", "references/style.md"),
+        ("default-body", "horde-model-selection", "SKILL.md"),
+    ];
+    let calls = reads.map(|(id, name, path)| {
+        json!({"id":id,"type":"function","function":{
+            "name":"read_skill","arguments":json!({"name":name,"path":path}).to_string()
+        }})
+    });
+    let mut pinned = BTreeMap::new();
+    let run = native_run_after_pinning(
+        vec![
+            (
+                200,
+                json!({"choices":[{"message":{
+                    "role":"assistant","content":"","tool_calls":calls
+                }}]})
+                .to_string(),
+            ),
+            completion_call(json!({"result":"report complete","accepted":true,"artifacts":[]})),
+        ],
+        false,
+        |settings| {
+            settings
+                .skills
+                .insert("report".into(), dir.path().to_owned());
+        },
+        |db, task| {
+            pinned = horde::skills::packet(db, task).unwrap();
+            std::fs::write(
+                dir.path().join("SKILL.md"),
+                "Changed after task submission.",
+            )
+            .unwrap();
+            std::fs::write(dir.path().join("references/style.md"), "Changed reference.").unwrap();
+        },
     )
-    .unwrap();
-    std::fs::write(
-        dir.path().join("references/style.md"),
-        "Name each metric and its unit.",
-    )
-    .unwrap();
-    let (result, sent, events) = native_result_after_configured(vec![
-        (200,json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"read1","type":"function","function":{"name":"read_skill","arguments":json!({"name":"report","path":"references/style.md"}).to_string()}}]}}]}).to_string()),
-        turn(json!(json!({"result":"report complete","accepted":true}).to_string())),
-    ], false, |s| {s.skills.insert("report".into(),dir.path().to_owned());}).await;
-    assert!(result.is_ok(), "{result:?}");
-    assert!(
-        sent[1]["messages"][1]["content"]
-            .as_str()
-            .unwrap()
-            .contains("Follow the report skill.")
+    .await;
+    assert!(run.result.is_ok(), "{:?}", run.result);
+    assert_eq!(
+        run.sent.len(),
+        3,
+        "one discovery request and two model turns"
     );
-    let reply = sent[2]["messages"]
+    let initial = run.sent[1]["messages"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|m| m["role"] == "tool")
-        .unwrap();
-    assert!(
-        reply["content"]
-            .as_str()
+        .filter_map(|message| message["content"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for name in ["report", "horde-model-selection"] {
+        let bundle = &pinned[name];
+        let body = String::from_utf8(hex::decode(&bundle.files["SKILL.md"].hex).unwrap()).unwrap();
+        assert!(initial.contains(&format!("Selected skill {name}")));
+        assert!(initial.contains(&bundle.hash));
+        assert!(!initial.contains(&body));
+    }
+    assert!(initial.contains("SKILL.md"));
+    assert!(!initial.contains(instructions));
+    assert!(!initial.contains(reference));
+    for (id, name, path) in reads {
+        let reply = run.sent[2]["messages"]
+            .as_array()
             .unwrap()
-            .contains("Name each metric and its unit.")
+            .iter()
+            .find(|message| message["role"] == "tool" && message["tool_call_id"] == id)
+            .unwrap();
+        let content: Value = serde_json::from_str(reply["content"].as_str().unwrap()).unwrap();
+        let bundle = &pinned[name];
+        let expected = String::from_utf8(hex::decode(&bundle.files[path].hex).unwrap()).unwrap();
+        assert_eq!(content["content"], expected);
+        assert_eq!(content["hash"], bundle.hash);
+        assert_eq!(content["path"], path);
+        assert_eq!(content["next_offset"], Value::Null);
+        assert!(initial.contains(content["base_directory"].as_str().unwrap()));
+    }
+    assert_eq!(run.events.len(), 4);
+    assert!(
+        run.events[..3]
+            .iter()
+            .all(|event| event["tool"] == "read_skill" && event["success"] == true)
     );
-    assert_eq!(events[0]["tool"], "read_skill");
-    assert_eq!(events[0]["success"], true);
 }
 
 #[test]

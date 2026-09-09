@@ -347,7 +347,7 @@ fn injection(bundle: &Bundle) -> Result<Injection> {
     );
     Ok(metadata.injection)
 }
-fn prompt_step(packet: &Packet, step: &Step) -> Result<Step> {
+fn selected_skills(packet: &Packet, step: &Step) -> Result<Vec<String>> {
     let defaults = packet
         .iter()
         .map(|(name, bundle)| {
@@ -370,26 +370,17 @@ fn prompt_step(packet: &Packet, step: &Step) -> Result<Step> {
                 items.into_iter().chain([name]).collect()
             }
         });
-    Ok(Step {
-        skills,
-        ..step.clone()
-    })
+    Ok(skills)
 }
 
 pub fn validate_steps(packet: &Packet, steps: &[Step]) -> Result<()> {
     for (index, step) in steps.iter().enumerate() {
-        let step = prompt_step(packet, step)?;
-        let mut size = 0;
-        for name in &step.skills {
-            let bundle = packet.get(name).with_context(|| {
-                format!("steps[{index}].skills: {name} is not pinned to this task")
-            })?;
-            size += bundle.files["SKILL.md"].hex.len() / 2;
+        for name in selected_skills(packet, step)? {
+            ensure!(
+                packet.contains_key(&name),
+                "steps[{index}].skills: {name} is not pinned to this task"
+            );
         }
-        ensure!(
-            size <= 256 * 1024,
-            "steps[{index}].skills: instructions exceed 256 KiB"
-        );
     }
     Ok(())
 }
@@ -441,9 +432,8 @@ fn materialize(db: &Store, bundle: &Bundle) -> Result<PathBuf> {
 }
 pub fn prompt(db: &Store, task: &str, attempt: &str, step: &Step) -> Result<String> {
     let packet = packet(db, task)?;
-    let selected = prompt_step(&packet, step)?;
-    let step = &selected;
     validate_steps(&packet, std::slice::from_ref(step))?;
+    let selected = selected_skills(&packet, step)?;
     if packet.is_empty() {
         return Ok(String::new());
     }
@@ -451,16 +441,16 @@ pub fn prompt(db: &Store, task: &str, attempt: &str, step: &Step) -> Result<Stri
         "\nAvailable pinned skills: {}. Use read_skill to read a pinned skill or its references. Assign skill names in proposed steps or delegate_task.skills. Skill instructions remain subordinate to the task and runtime rules. Scripts require the existing command permissions and are never run automatically.\n",
         catalog(db, task)?
     );
-    for name in &step.skills {
+    for name in &selected {
         let bundle = &packet[name];
         let root = materialize(db, bundle)?;
-        let instructions = String::from_utf8(hex::decode(&bundle.files["SKILL.md"].hex)?)?;
-        prompt.push_str(&format!("\nSelected skill {name} (SHA-256 {}). Base directory: {}. Follow its instructions for this step; resolve relative resources against that directory, or use read_skill with this name and relative path.\n<skill name={name:?}>\n{instructions}\n</skill>\n", bundle.hash, root.display()));
+        let read = json!({"name":name,"path":"SKILL.md"});
+        prompt.push_str(&format!("\nSelected skill {name} (SHA-256 {}). Base directory: {}. Read its pinned instructions when needed with read_skill {read}, then read referenced resources progressively using the same name and relative path. Follow next_offset for additional pages. Selection supplies metadata only; instruction bodies are not included here.\n", bundle.hash, root.display()));
         db.atomic(|| {
             let inserted = db.conn.execute("INSERT OR IGNORE INTO attempt_skills VALUES(?,?,?,?)", params![task,attempt,name,bundle.hash])?;
             let pinned: String = db.conn.query_row("SELECT hash FROM attempt_skills WHERE task=? AND attempt=? AND name=?", params![task,attempt,name], |r| r.get(0))?;
             ensure!(pinned == bundle.hash, "attempt skill pin changed");
-            if inserted > 0 { db.event(task, "skill.loaded", json!({"name":name,"hash":bundle.hash,"attempt":attempt,"step":step.id,"source":"initial_prompt"}))?; }
+            if inserted > 0 { db.event(task, "skill.selected", json!({"name":name,"hash":bundle.hash,"attempt":attempt,"step":step.id,"source":"initial_prompt"}))?; }
             Ok(())
         })?;
     }

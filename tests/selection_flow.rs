@@ -172,6 +172,27 @@ fn user_config(dir: &Path, name: &str, config: &str) -> PathBuf {
     user
 }
 
+fn read_selected_skill(daemon: &Daemon, task: &str, prompt: &str, expected: &str) -> Value {
+    assert!(prompt.contains("Selected skill routing"));
+    assert!(!prompt.contains(expected), "skill body was loaded eagerly");
+    let read = daemon.call("read_skill", json!({"task":task,"name":"routing"}));
+    assert_eq!(read["content"], expected);
+    assert_eq!(read["encoding"], "utf8");
+    assert_eq!(read["path"], "SKILL.md");
+    assert_eq!(read["size"], expected.len());
+    assert!(read["next_offset"].is_null());
+    assert!(prompt.contains(read["hash"].as_str().unwrap()));
+    assert!(prompt.contains(read["base_directory"].as_str().unwrap()));
+    assert_eq!(
+        std::fs::read_to_string(
+            Path::new(read["base_directory"].as_str().unwrap()).join("SKILL.md")
+        )
+        .unwrap(),
+        expected
+    );
+    read
+}
+
 #[test]
 fn parent_selects_local_astra_and_delegates_one_narrowed_apollo_glm_child() {
     // Short paths keep both real daemon Unix sockets within macOS's 104-byte limit.
@@ -344,7 +365,12 @@ fn parent_selects_local_astra_and_delegates_one_narrowed_apollo_glm_child() {
             .is_empty()
     );
     let original_prompt = std::fs::read_to_string(dir.path().join("parent-prompt")).unwrap();
-    assert_eq!(original_prompt.matches(original_instruction).count(), 1);
+    let original_read = read_selected_skill(
+        &controller,
+        parent_id,
+        &original_prompt,
+        original_instruction,
+    );
     let second_instruction = "SECOND_ROUTING_POLICY: keep delivery small and inspect its evidence.";
     std::fs::write(skill_dir.join("SKILL.md"), second_instruction).unwrap();
     let second_pack = controller.call("skill_pack_install", json!({"path":pack_dir}));
@@ -396,11 +422,24 @@ fn parent_selects_local_astra_and_delegates_one_narrowed_apollo_glm_child() {
         "glm-5.3\n"
     );
     let child_prompt = std::fs::read_to_string(dir.path().join("child-prompt")).unwrap();
-    assert_eq!(child_prompt.matches(original_instruction).count(), 1);
     assert!(!child_prompt.contains(second_instruction));
     assert!(!child_prompt.contains(latest_instruction));
     let receiver_tasks = worker_db.rows("SELECT id FROM tasks", &[]).unwrap();
     assert_eq!(receiver_tasks.len(), 1);
+    let receiver_id = receiver_tasks[0]["id"].as_str().unwrap();
+    let child_read = read_selected_skill(&worker, receiver_id, &child_prompt, original_instruction);
+    assert_eq!(child_read["hash"], original_read["hash"]);
+    assert_ne!(
+        child_read["base_directory"],
+        original_read["base_directory"]
+    );
+    let retained_parent = read_selected_skill(
+        &controller,
+        parent_id,
+        &original_prompt,
+        original_instruction,
+    );
+    assert_eq!(retained_parent["hash"], original_read["hash"]);
     let receiver_policy =
         horde::execution_selection::policy(&worker_db, receiver_tasks[0]["id"].as_str().unwrap())
             .unwrap()
@@ -458,9 +497,15 @@ fn parent_selects_local_astra_and_delegates_one_narrowed_apollo_glm_child() {
     let fresh = controller.call("submit_task", json!({"request_id":"fresh-skill-policy","objective":"Use the updated delivery policy","repo":repo,"template":"selected","execution":{"allowed":plan["allowed"],"selected":{"runtime":"local","capability":"codex"}}}));
     controller.wait_success(fresh["id"].as_str().unwrap());
     let fresh_prompt = std::fs::read_to_string(dir.path().join("parent-prompt")).unwrap();
-    assert_eq!(fresh_prompt.matches(latest_instruction).count(), 1);
     assert!(!fresh_prompt.contains(original_instruction));
     assert!(!fresh_prompt.contains(second_instruction));
+    let fresh_read = read_selected_skill(
+        &controller,
+        fresh["id"].as_str().unwrap(),
+        &fresh_prompt,
+        latest_instruction,
+    );
+    assert_ne!(fresh_read["hash"], original_read["hash"]);
     println!(
         "{}",
         json!({

@@ -27,7 +27,7 @@ To migrate, move `.horde.toml` to `.horde/horde.toml` after updating Horde.
 
 The merged settings are pinned to the task. Later file changes affect new tasks.
 
-Configure skill directories under `[skills]` and select their names with a step’s `skills` field. Horde loads the selected instructions into the worker prompt, pins referenced files and scripts, and distributes those bundles to child tasks. See [runtime skills](runtime-skills.md) for configuration, worker tools, and remote delivery.
+Configure skill directories under `[skills]` and select their names with a step’s `skills` field. Horde exposes selected names, pinned hashes, and resource locations in the worker prompt. The harness reads instructions and references progressively; child tasks receive the same pinned bundles. See [runtime skills](runtime-skills.md) for configuration, worker tools, and remote delivery.
 
 ```toml
 concurrency = 4

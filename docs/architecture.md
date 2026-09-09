@@ -94,10 +94,11 @@ nothing. Unreachable remote runtimes keep root reservations until reconciled.
 
 ## Pinned worker skills
 
-Schema version 3 adds task-owned skill bindings and attempt load records. Submission
+Schema version 3 adds task-owned skill bindings and per-attempt skill records. Submission
 captures explicitly configured skill directories into the existing artifact store.
 Workflow steps select names from that pinned catalog. The shared invocation prompt
-loads selected instructions once; `read_skill` serves bounded resource pages.
+exposes selected names, hashes, and resource locations; `read_skill` serves pinned
+instructions and resources progressively in bounded pages.
 Materialized bundles live outside Git worktrees and preserve executable flags.
 No script runs as a consequence of loading a skill.
 
@@ -131,7 +132,7 @@ The native loop offers file reads, search, full-file writes, unified patches, co
 - `store.rs`: persistence, mailboxes, claims, artifacts, step completion.
 - `protocol.rs`: shared operation handlers, worker scope checks, MCP schemas.
 - `runtime.rs`: scheduler, context assembly, questions, retries, wakeups, daemon.
-- `skills.rs`: pinned instruction bundles, resource reads, prompt loading and transfer.
+- `skills.rs`: pinned instruction bundles, selection metadata, progressive resource reads and transfer.
 - `executor.rs` / `native.rs`: harness adapters, Tuara loop and probe, process lifecycle, tools.
 - `git.rs`: worktrees, scope inspection, integration evidence.
 - `template.rs`: composition, pinning, output references and contracts.
@@ -153,7 +154,7 @@ provider/model identities and can only narrow through delegation. Receiving
 workers validate their local bindings and apply a task-specific settings copy.
 
 Orchestration skill files are discovered from the installed pack alongside
-configured instructions. Optional per-skill metadata controls automatic injection;
+configured instructions. Optional per-skill metadata controls default selection;
 no skill names or instruction bodies are compiled into the runtime. Immutable
 runtime-local packs activate through an atomic pointer for future submissions.
 Authenticated skill update requests capture and retain a complete pack for safe

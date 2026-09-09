@@ -20,12 +20,13 @@ configure skill directories with their own references, scripts, and assets.
 The caller can use `skill_inspect` with a repository to list the effective
 catalog, or add `name` to read one skill and its baseline. Inside a task,
 `list_skills` and `read_skill` expose only that task's pinned catalog. Every managed
-agent invocation loads the pinned `horde-model-selection` instructions when that
-skill is available, including invocations with an explicit step skill selection.
-Selecting it explicitly does not load a second copy. Agent steps with role
-`planner` and no explicit `skills` also load the pinned `horde-planning`
-instructions automatically when available. An explicitly narrowed child catalog
-never gains a skill from the receiver's local installation, including these defaults.
+agent invocation selects the pinned `horde-model-selection` skill when available,
+including invocations with an explicit step skill selection. Selecting it explicitly
+does not duplicate its entry. Agent steps with role `planner` and no explicit
+`skills` also select the pinned `horde-planning` skill when available. The initial
+prompt exposes these selections through names, hashes, and resource locations;
+the harness reads their instructions progressively with `read_skill`. An explicitly
+narrowed child catalog never gains a skill from the receiver's local installation, including these defaults.
 
 The model selection defaults favor strong reasoning for difficult planning and
 ambiguous investigations, competent mid-tier models for bounded implementation,
@@ -75,7 +76,7 @@ prefers the selected pack to executable-adjacent defaults, including after a bin
 upgrade. Development builds inside this checkout's `target/` directory fall back
 to this repository's `skills/` files when no pack is installed.
 
-## Define automatic injection in files
+## Define default selection in files
 
 A skill can include an optional `horde.toml` sidecar. For guidance needed in every
 agent invocation:
@@ -93,9 +94,10 @@ roles = ["planner"]
 when_no_explicit_skills = true
 ```
 
-These fields control automatic loading from the task's pinned catalog. They do
-not add a skill to a narrowed child's catalog or inject instructions into command
-steps. Explicit selections retain their order and never load a second copy.
+The `[injection]` fields control default selection from the task's pinned catalog.
+They do not load instruction bodies, add skills to a narrowed child's catalog, or
+select defaults for command steps. Explicit selections retain their order, and
+each selected skill appears once.
 The sidecar is pinned with the skill's other files, so its edits follow the same
 version rules as instruction edits. Without a sidecar, a skill remains available
 for explicit selection or `read_skill`.
@@ -171,32 +173,42 @@ tools = ["read_file", "write_file", "command"]
 scope = ["report.md"]
 ```
 
-For agent steps, Horde inserts the selected `SKILL.md` instructions and the
-available automatic defaults described above into the initial prompt used by
-both native and CLI executors. It includes the task's
+For agent steps, Horde includes selected skill names, pinned hashes, and local
+resource directories in the initial prompt shared by native and CLI executors.
+Explicit and default selections use the same discovery contract. No `SKILL.md`
+body is inserted into that prompt. The harness reads selected instructions when
+needed, then follows references progressively. The prompt also lists the task's
 available skill names and hashes, so a planner can select skills in `propose_steps`.
 Unknown names fail workflow validation. Skills selected on a nested template
 invocation propagate to its agent steps. Command and environment steps execute
 their configured commands; a skill does not rewrite those commands.
 
-Workers can call `list_skills` to inspect the pinned catalog. `read_skill` reads
-`SKILL.md` by default, or a resource path inside that bundle:
+Workers can call `list_skills` to inspect the pinned catalog. To read selected
+instructions, call `read_skill` with the skill name; `path` defaults to `SKILL.md`:
+
+```json
+{"name":"report"}
+```
+
+Read a reference only when needed by passing its relative path:
 
 ```json
 {"name":"report","path":"references/format.md"}
 ```
 
-Reads return bounded byte pages, a `next_offset`, the file list, and a local base
-directory. A page is encoded as UTF-8 when possible and as hex otherwise. The
-materialized directory contains the complete pinned files and sits outside the
+Reads return the task's exact pinned content, its hash, bounded byte pages, a
+`next_offset`, the file list, and a local base directory. Continue from
+`next_offset` when a file spans several pages. Source edits and installed pack
+updates do not change these reads for an existing task. A page is encoded as UTF-8
+when possible and as hex otherwise. The materialized directory contains the complete pinned files and sits outside the
 Git checkout. Relative resources in the skill resolve against that directory.
 Scripts retain their executable flag. Loading a skill never runs its scripts;
 execution still requires the existing command permissions and harness restrictions.
 
 ## Distribute to a child
 
-`delegate_task.skills` selects a subset of the parent's pinned catalog and loads
-those skills into the child template's agent steps:
+`delegate_task.skills` narrows the parent's pinned catalog and exposes the chosen
+skills for discovery in the child template's agent steps:
 
 ```json
 {
@@ -223,17 +235,21 @@ attempt skill bindings; an older binary rejects the upgraded database.
 
 ## Evidence and limits
 
-`skill.pinned` records each task binding. `skill.loaded` records a selected skill
-included in an attempt's initial prompt, once per name and attempt. `skill.read`
-records worker resource reads. Events contain the skill name and hash, without
-copying its instructions. These events show what Horde supplied, not proof that
+`skill.pinned` records each task binding. `skill.selected` records a skill
+exposed for discovery in an attempt's initial prompt, once per name and attempt.
+The attempt binding records the selected hash; selection does not imply that
+instructions were read. `skill.read` records requested instruction and resource
+reads. Historical `skill.loaded` events describe the earlier eager prompt loading.
+Events contain the skill name and hash, without copying its instructions. These events show what Horde supplied, not proof that
 a model followed every instruction.
 
 Bundles accept regular files and directories, with no symlinks or escaping paths.
 A task can pin up to 64 skills (up to 32 explicitly configured directories), with at most
 8 MiB of file contents. Each bundle supports
 512 files; a file can be at most 1 MiB. `SKILL.md` must be nonempty UTF-8 and no
-larger than 64 KiB. A step can load at most 256 KiB of skill instructions.
+larger than 64 KiB. Read pages default to 16 KiB and are capped at 64 KiB.
+Selection does not impose an aggregate instruction prompt limit because bodies
+are read on demand.
 Put only intended skill resources in the configured directory. Credentials belong
 in Horde's existing secret and provider configuration, never in a skill bundle.
 
