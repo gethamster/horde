@@ -154,6 +154,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "inspect",
         "Inspect a task including steps, attempts, workers, questions, and integration",
     ),
+    (
+        "summary",
+        "Terminal summary: status, step outcomes, integrated head, delivery outcome",
+    ),
     ("list_tasks", "List submitted tasks and their status"),
     ("events", "Read ordered activity events"),
     ("cancel", "Cancel a task"),

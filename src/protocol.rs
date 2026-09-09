@@ -274,6 +274,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         "inspect" => Ok(
             json!({"task":db.task(oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
         ),
+        "summary" => crate::summary::build(db, oid),
         "events" => {
             let cursor:i64=if let Some(consumer)=args["consumer"].as_str(){db.conn.query_row("SELECT COALESCE((SELECT seq FROM event_receipts WHERE task=? AND consumer=?),0)",rusqlite::params![oid,consumer],|r|r.get(0))?}else{0};
             Ok(json!(db.rows("SELECT * FROM events WHERE task=? AND seq>? ORDER BY seq LIMIT 1000",&[&oid,&args["after"].as_i64().unwrap_or(cursor)])?))

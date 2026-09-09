@@ -173,10 +173,20 @@ and troubleshooting.
 
 ```sh
 horde submit "Add CSV export with tests" --repo /path/to/repository   # -> {"id":"..."}
+horde watch TASK_ID        # NDJSON stream until the task ends; exit 0 succeeded, 1 failed, 2 cancelled
 horde inspect TASK_ID      # tasks, attempts, workers, questions, integration
 horde events TASK_ID       # ordered activity, use --after SEQ to tail
+horde summary TASK_ID      # status, step outcomes, integrated head, pr_url or delivery_skipped
 horde metrics TASK_ID      # tokens, cost, latency, retries, coordination counts
 ```
+
+`horde watch` blocks, so run it when you can wait; `--timeout-secs N` returns
+exit 3 instead of waiting forever, and `--after SEQ` resumes a stream. Its last
+line is the same object `horde summary` prints. Read `delivery` there before
+reporting: `pr_ready` carries a PR URL, and `delivery_skipped` says why no PR
+exists. A `[notify]` table in the configuration pushes the same milestones to a
+webhook or command; `docs/progress.md` in the Horde repository documents the
+stream, the summary object, and the payload.
 
 Rules that matter:
 
