@@ -588,11 +588,41 @@ async fn main() -> Result<()> {
             template,
             repo,
             objective,
-        } => json!(horde::template::compile(
-            &template,
-            &horde::template::load_templates(&horde::branding::templates(&repo))?,
-            std::collections::BTreeMap::from([("task".into(), objective)])
-        )?),
+        } => {
+            let mut plan = json!(horde::template::compile(
+                &template,
+                &horde::template::load_templates(&horde::branding::templates(&repo))?,
+                std::collections::BTreeMap::from([("task".into(), objective)])
+            )?);
+            // Capture the skill catalog as submission would, so a step selecting a
+            // skill the catalog does not hold fails here and not at the first
+            // `submit`. Validation stays structural when no pack resolves: the
+            // catalog error is reported and the selection check is skipped.
+            let settings = horde::config::Settings::load(&repo)?;
+            match horde::skills::baseline_for_root(&root, &repo.canonicalize()?, &settings.skills) {
+                Ok(catalog) => {
+                    for (index, step) in plan["steps"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                        .iter()
+                        .enumerate()
+                    {
+                        for name in step["skills"].as_array().cloned().unwrap_or_default() {
+                            let name = name.as_str().unwrap_or("");
+                            anyhow::ensure!(
+                                catalog.contains_key(name),
+                                "steps[{index}].skills: unknown skill {name:?}; available: {}",
+                                catalog.keys().cloned().collect::<Vec<_>>().join(", ")
+                            );
+                        }
+                    }
+                    plan["skill_catalog"] = horde::skill_catalog::report(&catalog)?;
+                }
+                Err(error) => plan["skill_catalog"] = json!({"error": error.to_string()}),
+            }
+            plan
+        }
         Commands::Doctor {
             repo,
             probe_tuara,

@@ -5,7 +5,7 @@ use horde::{
     store::Store,
     template::{self, Step},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
 fn repository(path: &Path) {
     std::fs::create_dir_all(path).unwrap();
@@ -316,5 +316,56 @@ fn resources_are_paged_and_materialized_edits_are_detected() {
             .unwrap_err()
             .to_string()
             .contains("materialized skill changed")
+    );
+}
+
+#[test]
+fn validate_captures_the_catalog_a_submission_would_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join(".horde").join("templates")).unwrap();
+    let source = repo.join("writer-skill");
+    skill(&source, "one");
+    std::fs::write(
+        repo.join(".horde").join("horde.toml"),
+        "[skills]\nwriter = \"writer-skill\"\n",
+    )
+    .unwrap();
+    for (name, selected) in [("good", "writer"), ("bad", "nope")] {
+        std::fs::write(
+            repo.join(".horde").join("templates").join(format!("{name}.toml")),
+            format!(
+                "name = \"{name}\"\nversion = \"1\"\n[[steps]]\nid = \"a\"\nkind = \"agent\"\nrole = \"worker\"\nskills = [\"{selected}\"]\ninstructions = \"x\"\n"
+            ),
+        )
+        .unwrap();
+    }
+    let validate = |name: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_horde"))
+            .args(["validate", name, "--repo"])
+            .arg(&repo)
+            .arg("--data-dir")
+            .arg(dir.path().join("data"))
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .env("XDG_DATA_HOME", dir.path().join("data"))
+            .output()
+            .unwrap()
+    };
+    let good = validate("good");
+    assert!(
+        good.status.success(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    let good: Value = serde_json::from_slice(&good.stdout).unwrap();
+    let names = good["skill_catalog"]["skills"].as_array().unwrap();
+    assert!(names.iter().any(|s| s == "writer") && names.iter().any(|s| s == "horde-worker"));
+    assert_eq!(good["skill_catalog"]["hash"].as_str().unwrap().len(), 64);
+    let bad = validate("bad");
+    assert!(!bad.status.success());
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        stderr.contains("steps[0].skills") && stderr.contains("\"nope\""),
+        "{stderr}"
     );
 }

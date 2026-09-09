@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `horde validate` captures the skill catalog a submission would pin and fails on an
+  unknown step skill; development binaries resolve the checkout's
+  skills through symlinked paths.
 - Let coding agents discover worker capabilities and resolve separate machine and
   model pools for thinking and delivery. Pin task-specific choices, inherit their
   limits, and reject unavailable or changed bindings without rewriting providers.

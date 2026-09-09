@@ -49,6 +49,15 @@ pool to their delivery choices. Role constraints remain in the task context.
 Use a stable `request_id` for `submit_task` and stable child
 `id` for `delegate_task` so retries do not create duplicate work.
 
+## Validate against the catalog a submission would pin
+
+`horde validate` captures the same catalog `submit` pins, an installed or default
+pack plus the repository's configured directories, adds it to its output as
+`skill_catalog`, and fails on a step selecting a skill the catalog does not hold.
+Validation stays structural when no pack resolves: `skill_catalog` then carries the
+resolver's error instead, and `horde start` or `horde doctor` report the same
+condition.
+
 ## Install and update independently
 
 Edit the canonical `skills/` directory, then install the complete pack:

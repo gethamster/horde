@@ -207,7 +207,9 @@ pub fn builtins() -> Result<Packet> {
     crate::skill_catalog::load_defaults()
 }
 
-pub(crate) fn baseline_for_root(
+/// The catalog a submission against `repo` would pin: installed or default skills plus
+/// the repository's configured directories, validated together.
+pub fn baseline_for_root(
     root: &Path,
     repo: &Path,
     configured: &BTreeMap<String, PathBuf>,
