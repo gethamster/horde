@@ -49,6 +49,21 @@ pool to their delivery choices. Role constraints remain in the task context.
 Use a stable `request_id` for `submit_task` and stable child
 `id` for `delegate_task` so retries do not create duplicate work.
 
+## SDLC workflow guidance
+
+The shipped [`horde-sdlc`](../skills/horde-sdlc/SKILL.md) skill guides work through
+intent, specification, implementation, verification, and review handoffs using
+Horde's existing tools. Ask your agent to use it for an AI-native SDLC workflow,
+or select `skills = ["horde-sdlc"]` on the relevant agent steps. It has no default
+injection sidecar, so unrelated invocations do not select it automatically.
+The skill preserves existing artifact formats and approvals; it does not add
+runtime approval gates or automatically parse Markdown into tasks. It can be
+installed with the complete skill pack without changing the Rust binary.
+
+For example, ask your agent: "Use horde-sdlc to implement the accepted export
+specification and plan. Preserve their source revisions, run the repository
+checks, and return a local branch with review evidence."
+
 ## Validate against the catalog a submission would pin
 
 `horde validate` captures the same catalog `submit` pins, an installed or default

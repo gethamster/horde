@@ -19,6 +19,7 @@ See [repository setup](../docs/installing.md#make-horde-the-default-in-a-reposit
 | `horde-planning` | Bounded tasks and execution choices from permitted models |
 | `horde-delegation` | Execution contracts, retry identities, and pinned skills |
 | `horde-review` | Result checks and persistent guidance review |
+| `horde-sdlc` | Carrying intent, specifications, plans, verification evidence, and review decisions through an AI-native SDLC |
 
 These skills are maintained and distributed from the `skills/` folder in
 [gethamster/horde](https://github.com/gethamster/horde). Install the skills:
@@ -59,7 +60,7 @@ than no skill.
 - After editing frontmatter, confirm discovery still works:
 
 ```sh
-npx skills add ./ --list      # must find all nine skills
+npx skills add ./ --list      # must include the skills listed above
 ```
 
 ## Skills used by workers
