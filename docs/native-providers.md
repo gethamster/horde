@@ -40,10 +40,19 @@ underscore-prefixed arguments are still rejected.
 
 ## Completing a step
 
-The initial step prompt tells the worker to finish with a JSON object containing
-`result`, `accepted`, and `artifacts`, without a tool call. Code changes must be
-committed and required checks must pass before acceptance. A worker that cannot
-finish should explain why with `accepted=false`.
+Native workers can call `complete_step` with `result`, `accepted`, and `artifacts`.
+Declared named outputs are additional top-level arguments. Completion must be the
+only tool call in its turn. Invalid arguments return a tool error so the worker
+can correct them. A valid call ends the model conversation without another request;
+the runtime then applies its existing result and workflow acceptance checks. Plain
+JSON final replies remain supported.
+
+Code changes must be committed and required checks must pass before acceptance.
+A worker that cannot finish should explain why with `accepted=false`; this fails
+the step. A planning-only step completes when its plan is ready. After accepting
+`propose_steps`, Horde reminds the planner to finish its assigned step so the
+runtime can schedule the proposed work. Neither a proposal nor a worker-status
+change counts as completion by itself.
 
 `max_identical_tool_calls` defaults to 3. After that many consecutive calls have
 identical arguments and unchanged results, Horde appends a completion reminder.
