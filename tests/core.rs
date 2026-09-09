@@ -513,7 +513,7 @@ fn worker_tokens_cannot_cross_tasks_or_invoke_admin_operations() {
     assert!(knowledge["id"].is_string());
     assert_eq!(
         f.db.rows(
-            "SELECT verified FROM artifact_links WHERE task=?",
+            "SELECT verified FROM artifact_links WHERE task=? AND name='x'",
             &[&f.oid]
         )
         .unwrap()[0]["verified"],
@@ -1275,7 +1275,7 @@ fn workflow_input_errors_name_the_field_without_mutating_the_plan() {
             json!([{"id":"bad","environment":{"timeout_seconds":"slow"}}]),
             "steps[0].environment.timeout_seconds",
         ),
-        (json!([{"name":"bad"}]), "unknown field `name`"),
+        (json!([{"name":"bad"}]), "missing field `id`"),
         (json!([{"instructions":"missing id"}]), "missing field `id`"),
         (json!([{"id":"bad","attempts":0}]), ".attempts"),
         (json!([{"id":"bad","needs":["missing"]}]), ".needs"),
@@ -1717,4 +1717,278 @@ fn integrated_workspace_without_remote_warns_and_uses_local_head() {
             .contains("no origin remote"),
         "{warnings:?}"
     );
+}
+
+#[test]
+fn integrated_workspace_concurrent_allocation_records_one_fetched_base() {
+    let f = Fixture::with(delivery_base("main"), |_| {});
+    let tip = bare_origin(f.dir.path(), &f.repo());
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(6));
+    let handles: Vec<_> = (0..6)
+        .map(|_| {
+            let root = f.db.root.clone();
+            let task = f.oid.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let db = Store::open(&root).unwrap();
+                barrier.wait();
+                git::task_workspace(&db, &task)
+            })
+        })
+        .collect();
+    let paths: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap().unwrap())
+        .collect();
+    assert!(paths.iter().all(|path| path == &paths[0]));
+    assert_eq!(git::run(&paths[0], &["rev-parse", "HEAD"]).unwrap(), tip);
+    let bases =
+        f.db.rows("SELECT * FROM workspace_bases WHERE task=?", &[&f.oid])
+            .unwrap();
+    assert_eq!(bases.len(), 1);
+    assert_eq!(bases[0]["start"], tip);
+    assert_eq!(bases[0]["source"], "origin/main");
+    assert_eq!(bases[0]["fetched"], 1);
+    let events = f.events("workspace.integrated");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["start"], tip);
+    assert_eq!(events[0]["source"], "origin/main");
+    assert_eq!(events[0]["fetched"], true);
+}
+
+#[test]
+fn integrated_workspace_recovers_missing_provenance_and_preserves_it() {
+    let f = Fixture::with(delivery_base("main"), |_| {});
+    let tip = bare_origin(f.dir.path(), &f.repo());
+    let initial = git::run(&f.repo(), &["rev-parse", "HEAD"]).unwrap();
+    assert_ne!(initial, tip);
+    let path = f.db.root.join("workspaces").join(&f.oid).join("integrated");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // Simulate worktree creation succeeding before its database transaction.
+    git::run(
+        &f.repo(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &format!("horde/{}", f.oid),
+            path.to_str().unwrap(),
+            &initial,
+        ],
+    )
+    .unwrap();
+    assert_eq!(git::task_workspace(&f.db, &f.oid).unwrap(), path);
+    assert_eq!(git::run(&path, &["rev-parse", "HEAD"]).unwrap(), initial);
+    let bases =
+        f.db.rows("SELECT * FROM workspace_bases WHERE task=?", &[&f.oid])
+            .unwrap();
+    assert_eq!(bases.len(), 1);
+    assert_eq!(bases[0]["start"], initial);
+    assert_eq!(bases[0]["source"], "recovered");
+    assert_eq!(bases[0]["fetched"], 0);
+    let events = f.events("workspace.integrated");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["start"], initial);
+    assert_eq!(events[0]["source"], "recovered");
+    git::run(&path, &["commit", "--allow-empty", "-m", "integrated work"]).unwrap();
+    let advanced = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    assert_ne!(advanced, initial);
+    assert_eq!(git::task_workspace(&f.db, &f.oid).unwrap(), path);
+    assert_eq!(git::run(&path, &["rev-parse", "HEAD"]).unwrap(), advanced);
+    assert_eq!(
+        f.db.rows("SELECT * FROM workspace_bases WHERE task=?", &[&f.oid])
+            .unwrap(),
+        bases
+    );
+    assert_eq!(f.events("workspace.integrated"), events);
+}
+
+#[test]
+fn integrated_workspace_recovers_orphan_branch_with_unavailable_origin() {
+    let f = Fixture::with(delivery_base("main"), |_| {});
+    bare_origin(f.dir.path(), &f.repo());
+    let branch = format!("horde/{}", f.oid);
+    let path = f.db.root.join("workspaces").join(&f.oid).join("integrated");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    git::run(
+        &f.repo(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            path.to_str().unwrap(),
+            "HEAD",
+        ],
+    )
+    .unwrap();
+    git::run(&path, &["commit", "--allow-empty", "-m", "preserved work"]).unwrap();
+    let preserved = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    // An interrupted allocation can leave both a branch and stale Git metadata.
+    std::fs::remove_dir_all(&path).unwrap();
+    git::run(
+        &f.repo(),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            f.dir.path().join("unavailable.git").to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(git::task_workspace(&f.db, &f.oid).unwrap(), path);
+    assert_eq!(git::run(&path, &["rev-parse", "HEAD"]).unwrap(), preserved);
+    assert_eq!(
+        git::run(&path, &["branch", "--show-current"]).unwrap(),
+        branch
+    );
+    let bases =
+        f.db.rows("SELECT * FROM workspace_bases WHERE task=?", &[&f.oid])
+            .unwrap();
+    assert_eq!(bases.len(), 1);
+    assert_eq!(bases[0]["start"], preserved);
+    assert_eq!(bases[0]["source"], "recovered");
+    assert_eq!(bases[0]["fetched"], 0);
+    assert_eq!(f.events("workspace.integrated").len(), 1);
+    assert!(f.events("workspace.local_head_fallback").is_empty());
+    assert!(f.events("workspace.fetch_failed").is_empty());
+}
+
+#[test]
+fn integrated_workspace_fetches_default_excluded_by_origin_refspec() {
+    let f = Fixture::new();
+    let tip = bare_origin(f.dir.path(), &f.repo());
+    git::run(&f.repo(), &["push", "-q", "origin", "main:topic"]).unwrap();
+    git::run(
+        &f.repo(),
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/topic:refs/remotes/origin/topic",
+        ],
+    )
+    .unwrap();
+    git::run(&f.repo(), &["update-ref", "-d", "refs/remotes/origin/main"]).unwrap();
+    let local = git::run(&f.repo(), &["rev-parse", "HEAD"]).unwrap();
+    assert_ne!(local, tip);
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    assert_eq!(git::run(&integrated, &["rev-parse", "HEAD"]).unwrap(), tip);
+    assert_eq!(git::run(&f.repo(), &["rev-parse", "HEAD"]).unwrap(), local);
+    assert_eq!(
+        git::run(&f.repo(), &["rev-parse", "refs/remotes/origin/main"]).unwrap(),
+        tip
+    );
+    let events = f.events("workspace.integrated");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["start"], tip);
+    assert_eq!(events[0]["fetched"], true);
+    assert!(f.events("workspace.local_head_fallback").is_empty());
+}
+
+#[test]
+fn integrated_workspace_rejects_wildcard_base_before_fetching() {
+    let f = Fixture::with(delivery_base("main*"), |_| {});
+    let tip = bare_origin(f.dir.path(), &f.repo());
+    let stale = git::run(&f.repo(), &["rev-parse", "refs/remotes/origin/main"]).unwrap();
+    assert_ne!(stale, tip);
+    assert!(git::task_workspace(&f.db, &f.oid).is_err());
+    assert_eq!(
+        git::run(&f.repo(), &["rev-parse", "refs/remotes/origin/main"]).unwrap(),
+        stale,
+        "an invalid branch name must not become a wildcard fetch refspec"
+    );
+    assert!(
+        !f.db
+            .root
+            .join("workspaces")
+            .join(&f.oid)
+            .join("integrated")
+            .exists()
+    );
+    assert!(
+        f.db.rows("SELECT * FROM workspace_bases WHERE task=?", &[&f.oid])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(f.events("workspace.integrated").is_empty());
+}
+
+#[test]
+fn integrated_workspace_rejects_lost_branch_with_saved_provenance() {
+    let f = Fixture::with(delivery_base("main"), |_| {});
+    let initial = bare_origin(f.dir.path(), &f.repo());
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    let branch = format!("horde/{}", f.oid);
+    let bases =
+        f.db.rows("SELECT * FROM workspace_bases WHERE task=?", &[&f.oid])
+            .unwrap();
+    let events = f.events("workspace.integrated");
+    assert_eq!(bases[0]["start"], initial);
+    git::run(&f.repo(), &["worktree", "remove", path.to_str().unwrap()]).unwrap();
+    git::run(&f.repo(), &["branch", "-D", &branch]).unwrap();
+    let scratch = f.dir.path().join("scratch");
+    git::run(
+        &scratch,
+        &["commit", "--allow-empty", "-m", "new remote base"],
+    )
+    .unwrap();
+    git::run(&scratch, &["push", "-q", "origin", "main"]).unwrap();
+    let advanced = git::run(&scratch, &["rev-parse", "HEAD"]).unwrap();
+    assert_ne!(advanced, initial);
+
+    assert!(
+        git::task_workspace(&f.db, &f.oid).is_err(),
+        "a lost task branch must not be recreated from a different remote base"
+    );
+    assert!(!path.exists());
+    assert!(
+        git::run(
+            &f.repo(),
+            &["show-ref", "--verify", &format!("refs/heads/{branch}")]
+        )
+        .is_err()
+    );
+    assert_eq!(
+        f.db.rows("SELECT * FROM workspace_bases WHERE task=?", &[&f.oid])
+            .unwrap(),
+        bases
+    );
+    assert_eq!(f.events("workspace.integrated"), events);
+}
+
+#[test]
+fn workflow_revisions_return_ignored_fields_without_persisting_them_as_instructions() {
+    for operation in ["add_steps", "propose_steps"] {
+        let f = Fixture::new();
+        let row = f.db.steps(&f.oid).unwrap()[0].clone();
+        let mut step = Store::step(&row).unwrap();
+        step.role = "planner".into();
+        let tid = row["id"].as_str().unwrap();
+        f.db.conn
+            .execute(
+                "UPDATE steps SET state='running',spec=? WHERE id=?",
+                rusqlite::params![serde_json::to_string(&step).unwrap(), tid],
+            )
+            .unwrap();
+        let worker = f.db.register(&f.oid, Some(tid)).unwrap();
+        let result = protocol::dispatch(&f.db, operation, json!({"task":f.oid,"worker":worker["id"],"steps":[{"id":"future-compatible","kind":"simulated","guessed_option":{"value":"discard-this-value"}}]}), None).unwrap();
+        assert!(
+            result["warnings"].to_string().contains("guessed_option"),
+            "{result}"
+        );
+        let rows = f.db.steps(&f.oid).unwrap();
+        let saved = rows
+            .iter()
+            .find(|s| s["name"] == "future-compatible")
+            .unwrap()["spec"]
+            .as_str()
+            .unwrap();
+        assert!(!saved.contains("guessed_option"));
+        assert!(
+            !f.db.task(&f.oid).unwrap()["plan"]
+                .as_str()
+                .unwrap()
+                .contains("discard-this-value")
+        );
+    }
 }

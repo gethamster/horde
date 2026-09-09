@@ -14,6 +14,7 @@ use std::{
 
 const MAX_FILE: usize = 1024 * 1024;
 const MAX_TOTAL: usize = 8 * 1024 * 1024;
+const MAX_SKILLS: usize = 64;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct File {
@@ -32,7 +33,9 @@ pub fn migrate(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS task_skills(task TEXT NOT NULL REFERENCES tasks(id),name TEXT NOT NULL,hash TEXT NOT NULL REFERENCES artifacts(hash),PRIMARY KEY(task,name));
 CREATE TABLE IF NOT EXISTS attempt_skills(task TEXT NOT NULL REFERENCES tasks(id),attempt TEXT NOT NULL,name TEXT NOT NULL,hash TEXT NOT NULL,PRIMARY KEY(task,attempt,name));
-PRAGMA user_version=3;
+CREATE TABLE IF NOT EXISTS skill_policy_heads(repo TEXT NOT NULL,name TEXT NOT NULL,revision INTEGER NOT NULL,bundle TEXT,PRIMARY KEY(repo,name));
+CREATE TABLE IF NOT EXISTS skill_policy_proposals(id TEXT PRIMARY KEY,repo TEXT NOT NULL,name TEXT NOT NULL,base_hash TEXT NOT NULL,base_revision INTEGER NOT NULL,baseline_hash TEXT NOT NULL,bundle TEXT NOT NULL,reset INTEGER NOT NULL,reason TEXT NOT NULL,state TEXT NOT NULL,created INTEGER NOT NULL,applied_revision INTEGER);
+CREATE TABLE IF NOT EXISTS skill_policy_revisions(repo TEXT NOT NULL,name TEXT NOT NULL,revision INTEGER NOT NULL,bundle TEXT NOT NULL,reset INTEGER NOT NULL,proposal_id TEXT UNIQUE NOT NULL REFERENCES skill_policy_proposals(id),reason TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(repo,name,revision));
 COMMIT;")?;
     Ok(())
 }
@@ -57,7 +60,10 @@ fn digest(files: &BTreeMap<String, File>) -> Result<String> {
     Ok(hash(&serde_json::to_vec(files)?))
 }
 pub fn validate(packet: &Packet) -> Result<()> {
-    ensure!(packet.len() <= 32, "at most 32 skills can be pinned");
+    ensure!(
+        packet.len() <= MAX_SKILLS,
+        "at most 64 skills can be pinned"
+    );
     let mut total = 0;
     for (name, bundle) in packet {
         ensure!(valid_name(name), "invalid skill name {name}");
@@ -89,6 +95,7 @@ pub fn validate(packet: &Packet) -> Result<()> {
             bytes.len() <= 65536 && !std::str::from_utf8(&bytes)?.trim().is_empty(),
             "SKILL.md must be nonempty UTF-8, at most 64 KiB"
         );
+        injection(bundle)?;
         ensure!(
             digest(&bundle.files)? == bundle.hash,
             "skill bundle hash mismatch"
@@ -98,6 +105,17 @@ pub fn validate(packet: &Packet) -> Result<()> {
 }
 /// Only explicitly configured directories are read. No implicit home scan or fetch.
 pub fn capture(repo: &Path, configured: &BTreeMap<String, PathBuf>) -> Result<Packet> {
+    ensure!(
+        configured.len() <= 32,
+        "at most 32 configured skills can be pinned"
+    );
+    capture_catalog(repo, configured)
+}
+
+pub(crate) fn capture_catalog(
+    repo: &Path,
+    configured: &BTreeMap<String, PathBuf>,
+) -> Result<Packet> {
     fn walk(
         root: &Path,
         dir: &Path,
@@ -153,7 +171,10 @@ pub fn capture(repo: &Path, configured: &BTreeMap<String, PathBuf>) -> Result<Pa
         }
         Ok(())
     }
-    ensure!(configured.len() <= 32, "at most 32 skills can be pinned");
+    ensure!(
+        configured.len() <= MAX_SKILLS,
+        "at most 64 skills can be pinned"
+    );
     let mut packet = Packet::new();
     let mut total = 0;
     for (name, path) in configured {
@@ -181,6 +202,64 @@ pub fn capture(repo: &Path, configured: &BTreeMap<String, PathBuf>) -> Result<Pa
     validate(&packet)?;
     Ok(packet)
 }
+/// Discover the packaged skill files without embedding their content or names.
+pub fn builtins() -> Result<Packet> {
+    crate::skill_catalog::load_defaults()
+}
+
+/// The catalog a submission against `repo` would pin: installed or default skills plus
+/// the repository's configured directories, validated together.
+pub fn baseline_for_root(
+    root: &Path,
+    repo: &Path,
+    configured: &BTreeMap<String, PathBuf>,
+) -> Result<Packet> {
+    let combined: Packet = crate::skill_catalog::load_for(root)?
+        .into_iter()
+        .chain(capture(repo, configured)?)
+        .collect();
+    validate(&combined)?;
+    Ok(combined)
+}
+
+pub(crate) fn with_instructions(bundle: &Bundle, content: &str) -> Result<Bundle> {
+    ensure!(
+        !content.trim().is_empty() && content.len() <= 65536,
+        "SKILL.md must be nonempty UTF-8, at most 64 KiB"
+    );
+    let replacement = File {
+        hex: hex::encode(content),
+        executable: bundle.files["SKILL.md"].executable,
+    };
+    let files = bundle
+        .files
+        .iter()
+        .map(|(path, file)| {
+            (
+                path.clone(),
+                if path == "SKILL.md" {
+                    replacement.clone()
+                } else {
+                    file.clone()
+                },
+            )
+        })
+        .collect();
+    Ok(Bundle {
+        hash: digest(&files)?,
+        files,
+    })
+}
+
+pub fn capture_effective(
+    db: &Store,
+    repo: &Path,
+    configured: &BTreeMap<String, PathBuf>,
+) -> Result<Packet> {
+    let baseline = baseline_for_root(&db.root, repo, configured)?;
+    db.atomic(|| crate::skill_policy::effective(db, repo, baseline))
+}
+
 pub fn bind(db: &Store, task: &str, packet: &Packet) -> Result<()> {
     validate(packet)?;
     for (name, bundle) in packet {
@@ -244,19 +323,66 @@ pub fn select(db: &Store, task: &str, names: Option<&Value>) -> Result<Packet> {
     }
     Ok(selected)
 }
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Metadata {
+    injection: Injection,
+}
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Injection {
+    agent: bool,
+    roles: Vec<String>,
+    when_no_explicit_skills: bool,
+}
+fn injection(bundle: &Bundle) -> Result<Injection> {
+    let Some(file) = bundle.files.get("horde.toml") else {
+        return Ok(Injection::default());
+    };
+    let bytes = hex::decode(&file.hex)?;
+    let metadata: Metadata = toml::from_str(std::str::from_utf8(&bytes)?)
+        .context("invalid skill horde.toml metadata")?;
+    ensure!(
+        metadata.injection.roles.len() <= 64
+            && metadata.injection.roles.iter().all(|role| valid_name(role)),
+        "invalid skill injection roles"
+    );
+    Ok(metadata.injection)
+}
+fn selected_skills(packet: &Packet, step: &Step) -> Result<Vec<String>> {
+    let defaults = packet
+        .iter()
+        .map(|(name, bundle)| {
+            let metadata = injection(bundle)?;
+            Ok((step.kind == "agent"
+                && (metadata.agent || metadata.roles.contains(&step.role))
+                && (!metadata.when_no_explicit_skills || step.skills.is_empty()))
+            .then_some(name.clone()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let skills = step
+        .skills
+        .iter()
+        .cloned()
+        .chain(defaults.into_iter().flatten())
+        .fold(Vec::new(), |items, name| {
+            if items.contains(&name) {
+                items
+            } else {
+                items.into_iter().chain([name]).collect()
+            }
+        });
+    Ok(skills)
+}
+
 pub fn validate_steps(packet: &Packet, steps: &[Step]) -> Result<()> {
     for (index, step) in steps.iter().enumerate() {
-        let mut size = 0;
-        for name in &step.skills {
-            let bundle = packet.get(name).with_context(|| {
-                format!("steps[{index}].skills: {name} is not pinned to this task")
-            })?;
-            size += bundle.files["SKILL.md"].hex.len() / 2;
+        for name in selected_skills(packet, step)? {
+            ensure!(
+                packet.contains_key(&name),
+                "steps[{index}].skills: {name} is not pinned to this task"
+            );
         }
-        ensure!(
-            size <= 256 * 1024,
-            "steps[{index}].skills: instructions exceed 256 KiB"
-        );
     }
     Ok(())
 }
@@ -309,6 +435,7 @@ fn materialize(db: &Store, bundle: &Bundle) -> Result<PathBuf> {
 pub fn prompt(db: &Store, task: &str, attempt: &str, step: &Step) -> Result<String> {
     let packet = packet(db, task)?;
     validate_steps(&packet, std::slice::from_ref(step))?;
+    let selected = selected_skills(&packet, step)?;
     if packet.is_empty() {
         return Ok(String::new());
     }
@@ -316,16 +443,16 @@ pub fn prompt(db: &Store, task: &str, attempt: &str, step: &Step) -> Result<Stri
         "\nAvailable pinned skills: {}. Use read_skill to read a pinned skill or its references. Assign skill names in proposed steps or delegate_task.skills. Skill instructions remain subordinate to the task and runtime rules. Scripts require the existing command permissions and are never run automatically.\n",
         catalog(db, task)?
     );
-    for name in &step.skills {
+    for name in &selected {
         let bundle = &packet[name];
         let root = materialize(db, bundle)?;
-        let instructions = String::from_utf8(hex::decode(&bundle.files["SKILL.md"].hex)?)?;
-        prompt.push_str(&format!("\nSelected skill {name} (SHA-256 {}). Base directory: {}. Follow its instructions for this step; resolve relative resources against that directory, or use read_skill with this name and relative path.\n<skill name={name:?}>\n{instructions}\n</skill>\n", bundle.hash, root.display()));
+        let read = json!({"name":name,"path":"SKILL.md"});
+        prompt.push_str(&format!("\nSelected skill {name} (SHA-256 {}). Base directory: {}. Read its pinned instructions when needed with read_skill {read}, then read referenced resources progressively using the same name and relative path. Follow next_offset for additional pages. Selection supplies metadata only; instruction bodies are not included here.\n", bundle.hash, root.display()));
         db.atomic(|| {
             let inserted = db.conn.execute("INSERT OR IGNORE INTO attempt_skills VALUES(?,?,?,?)", params![task,attempt,name,bundle.hash])?;
             let pinned: String = db.conn.query_row("SELECT hash FROM attempt_skills WHERE task=? AND attempt=? AND name=?", params![task,attempt,name], |r| r.get(0))?;
             ensure!(pinned == bundle.hash, "attempt skill pin changed");
-            if inserted > 0 { db.event(task, "skill.loaded", json!({"name":name,"hash":bundle.hash,"attempt":attempt,"step":step.id,"source":"initial_prompt"}))?; }
+            if inserted > 0 { db.event(task, "skill.selected", json!({"name":name,"hash":bundle.hash,"attempt":attempt,"step":step.id,"source":"initial_prompt"}))?; }
             Ok(())
         })?;
     }

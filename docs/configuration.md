@@ -27,7 +27,7 @@ To migrate, move `.horde.toml` to `.horde/horde.toml` after updating Horde.
 
 The merged settings are pinned to the task. Later file changes affect new tasks.
 
-Configure skill directories under `[skills]` and select their names with a step’s `skills` field. Horde loads the selected instructions into the worker prompt, pins referenced files and scripts, and distributes those bundles to child tasks. See [runtime skills](runtime-skills.md) for configuration, worker tools, and remote delivery.
+Configure skill directories under `[skills]` and select their names with a step’s `skills` field. Horde exposes selected names, pinned hashes, and resource locations in the worker prompt. The harness reads instructions and references progressively; child tasks receive the same pinned bundles. See [runtime skills](runtime-skills.md) for configuration, worker tools, and remote delivery.
 
 ```toml
 concurrency = 4
@@ -105,6 +105,33 @@ Set `autonomy = false` to hold new tasks until the initial question is answered:
 horde answer TASK_ID QUESTION_ID yes
 ```
 
+## Notifications
+
+A `[notify]` table makes the daemon push task milestones to a webhook, a local
+command, or both, so nothing has to poll `inspect`. Set `webhook` to a URL, or
+`webhook_env` to the name of a variable that holds one and is read from the
+daemon environment or `credentials.env` at send time, so a URL with a token
+never enters a task's settings snapshot. `command` runs from the task's
+repository with the JSON payload on stdin and `HORDE_TASK`, `HORDE_HOOK`, and
+`HORDE_EVENT` in its environment.
+
+```toml
+[notify]
+webhook_env = "HORDE_WEBHOOK_URL"
+command = ["/bin/sh", "-c", "cat >> horde-notify.log"]
+events = ["step.finished", "task.finished", "question.asked"] # also task.blocked
+timeout_seconds = 15
+children = false
+```
+
+`events` defaults to `step.finished`, `task.finished`, and `question.asked`;
+`task.blocked` is the fourth hook and any other name fails at load.
+`timeout_seconds` bounds one webhook request or command run and must be
+positive. `children` extends delivery to delegated child tasks, which are silent
+by default. Like every other setting, `[notify]` is pinned at submission. See
+[progress and notifications](progress.md) for the payload, the delivery
+records, and receiver examples.
+
 ## Step progress budgets
 
 The daemon ends an attempt after `step_budget_seconds` without durable progress.
@@ -172,3 +199,18 @@ Omit `step_budget_seconds` on an exempt step; setting both is an error. Set the
 exemption directly on a command step, not on a template inclusion. Cancellation,
 process cleanup, and retry handling still apply. Existing tasks keep their pinned
 settings, so submit a new task after changing the template or command timeout.
+
+## Knowledge topics
+
+Optionally declare a vocabulary for the task family's notebook:
+
+```toml
+knowledge_topics = ["architecture", "testing", "performance"]
+```
+
+The default empty list permits free-form topics. A configured list permits at most
+128 unique, nonempty strings of at most 128 bytes each. The root's pinned vocabulary
+applies throughout its family. Workers see it in their tool schemas; administrative
+clients can retrieve task-specific schemas through `knowledge_options`. See
+[task-family notebooks](coordination.md#task-family-notebooks) for scope, queries,
+claim lifecycle, and export.

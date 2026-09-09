@@ -176,13 +176,7 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         if !i.settings.allow_commands {
             bail!("commands disabled");
         }
-        let result = run_command(
-            &i.spec.command,
-            i.workspace,
-            i.settings.timeout_seconds,
-            Some((i.db, i.attempt)),
-        )
-        .await;
+        let result = run_step_command(i).await;
         let r = match result {
             Ok(r) if r["success"] == true => r,
             result => {
@@ -211,6 +205,34 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         _ => bail!("unknown executor kind {}", config.kind),
     }
 }
+
+async fn run_step_command(i: &Invocation<'_>) -> Result<Value> {
+    let program = i.spec.command.first().context("empty command")?;
+    let mut values = crate::secrets::values(i.db, i.task)?;
+    let mut command = clean_command(program);
+    command
+        .args(&i.spec.command[1..])
+        .current_dir(i.workspace)
+        .envs(&values)
+        .env("HORDE_TASK_ID", i.task)
+        .env("HORDE_STEP_ID", i.step)
+        .env("HORDE_ATTEMPT_ID", i.attempt)
+        .env("HORDE_WORKER_ID", i.worker)
+        .env("HORDE_WORKER_TOKEN", i.token)
+        .env("HORDE_DATA_DIR", &i.db.root)
+        .env("HORDE_BIN", std::env::current_exe()?);
+    let result = run_process(
+        command,
+        None,
+        i.settings.timeout_seconds,
+        Some((i.db, i.attempt)),
+    )
+    .await?;
+    // Keep public identities in evidence, but never persist a dumped credential.
+    values.insert("HORDE_WORKER_TOKEN".into(), i.token.into());
+    Ok(crate::secrets::redact_json(&result, &values))
+}
+
 /// Diagnose literal paths after a failure; never parse or execute shell syntax.
 fn missing_workspace_path_hint(i: &Invocation<'_>) -> String {
     let Ok(task) = i.db.task(i.task) else {
@@ -672,6 +694,15 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         .filter(|v| i.spec.tools.iter().any(|n| v["function"]["name"] == *n))
         .collect();
     definitions.extend(crate::protocol::OPERATIONS.iter().filter(|(n,_)|crate::protocol::worker_allowed(n)).map(|(n,d)|json!({"type":"function","function":{"name":n,"description":d,"parameters":crate::protocol::schema(n)}})));
+    let topics = crate::knowledge::topics(i.db, i.task)?;
+    for definition in &mut definitions {
+        if matches!(
+            definition["function"]["name"].as_str(),
+            Some("add_knowledge" | "knowledge")
+        ) {
+            crate::knowledge::apply_topics(&mut definition["function"]["parameters"], &topics);
+        }
+    }
     definitions.push(crate::native_protocol::completion_tool(i.spec));
     let tool_names: std::collections::BTreeSet<String> = definitions
         .iter()
@@ -909,9 +940,9 @@ pub async fn probe_tools(config: &ExecutorConfig) -> Result<Value> {
     crate::native_protocol::validate_extra_body(&config.extra_body)?;
     let key = crate::config::credential(&config.api_key_env)?;
     let mut body = json!({"model":model,"messages":[{"role":"user","content":"Call ping with value ok."}],"stream":true,"max_tokens":128,"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}}],"tool_choice":{"type":"function","function":{"name":"ping"}}});
-    body.as_object_mut()
-        .expect("request object")
-        .extend(config.extra_body.clone());
+    body.as_object_mut().expect("request object").extend(
+        crate::native_protocol::extra_body_with_usage(&config.extra_body, true),
+    );
     body["tool_choice"] = json!({"type":"function","function":{"name":"ping"}});
     if let Some(price) = &config.max_price {
         body["max_price"] = json!(price);

@@ -55,7 +55,15 @@ fn remote_default(repo: &Path) -> Option<String> {
 fn upstream(repo: &Path) -> Option<String> {
     run(repo, &["rev-parse", "--symbolic-full-name", "@{upstream}"])
         .ok()
-        .filter(|name| name.starts_with("refs/remotes/"))
+        .filter(|name| name.starts_with("refs/remotes/origin/"))
+}
+fn fetch_branch(repo: &Path, base: &str) -> Result<String> {
+    run(repo, &["check-ref-format", &format!("refs/heads/{base}")])
+        .with_context(|| format!("invalid remote branch {base:?}"))?;
+    let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
+    run(repo, &["fetch", "--no-tags", "origin", &refspec])?;
+    remote_ref(repo, &format!("refs/remotes/origin/{base}"))
+        .with_context(|| format!("origin/{base} did not resolve after fetch"))
 }
 /// Resolves the commit a new integrated worktree starts from. Only fetches and
 /// read-only ref lookups run in the operator repository; its checkout is never
@@ -87,12 +95,9 @@ fn resolve_start(db: &Store, oid: &str, repo: &Path) -> Result<StartPoint> {
                  refusing to branch from local HEAD"
             );
         }
-        let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
-        run(repo, &["fetch", "--no-tags", "origin", &refspec]).with_context(|| {
+        let sha = fetch_branch(repo, base).with_context(|| {
             format!("cannot fetch origin/{base}; refusing to branch from local HEAD")
         })?;
-        let sha = remote_ref(repo, &format!("refs/remotes/origin/{base}"))
-            .with_context(|| format!("origin/{base} did not resolve after fetch"))?;
         return Ok(StartPoint {
             sha,
             source: format!("origin/{base}"),
@@ -124,13 +129,37 @@ fn resolve_start(db: &Store, oid: &str, repo: &Path) -> Result<StartPoint> {
         .into_iter()
         .chain(upstream(repo).map(|name| (format!("upstream ({name})"), name)));
     for (source, name) in candidates {
-        if let Some(sha) = remote_ref(repo, &name) {
-            return Ok(StartPoint {
-                sha,
-                source,
-                fetched,
-                warning: stale,
-            });
+        let Some(branch) = name.strip_prefix("refs/remotes/origin/") else {
+            continue;
+        };
+        // A single-branch clone may exclude the default/upstream branch from
+        // origin's configured fetch refspec, even when its cached ref exists.
+        let targeted = if fetched {
+            fetch_branch(repo, branch)
+        } else {
+            Err(anyhow::anyhow!(fetch_note.clone()))
+        };
+        match targeted {
+            Ok(sha) => {
+                return Ok(StartPoint {
+                    sha,
+                    source,
+                    fetched: true,
+                    warning: None,
+                });
+            }
+            Err(error) => {
+                if let Some(sha) = remote_ref(repo, &name) {
+                    return Ok(StartPoint {
+                        sha,
+                        source,
+                        fetched: false,
+                        warning: Some(stale.clone().unwrap_or_else(|| format!(
+                            "fetch of origin/{branch} failed ({error}); used the last known remote tip"
+                        ))),
+                    });
+                }
+            }
         }
     }
     let sha = head(repo)?;
@@ -143,55 +172,103 @@ fn resolve_start(db: &Store, oid: &str, repo: &Path) -> Result<StartPoint> {
         fetched,
     })
 }
-pub fn task_workspace(db: &Store, oid: &str) -> Result<PathBuf> {
-    let o = db.task(oid)?;
-    let repo = Path::new(o["repo"].as_str().context("repo")?);
-    let path = db.root.join("workspaces").join(oid).join("integrated");
-    if !path.exists() {
-        let start = resolve_start(db, oid, repo)?;
-        let branch = format!("horde/{oid}");
-        std::fs::create_dir_all(path.parent().context("parent")?)?;
-        run(
-            repo,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                &branch,
-                path.to_str().context("path")?,
-                &start.sha,
-            ],
+fn record_start(db: &Store, oid: &str, path: &Path, start: &StartPoint) -> Result<()> {
+    // The base and events commit together while the allocation lock is held.
+    db.atomic(|| {
+        db.conn.execute(
+            "INSERT INTO workspace_bases(task,start,source,fetched,created) VALUES(?,?,?,?,?)",
+            rusqlite::params![oid, start.sha, start.source, start.fetched, now()],
         )?;
-        // The start record and its events land together so an operator never
-        // sees an integrated worktree whose origin was only partly recorded.
-        db.atomic(|| {
-            db.conn.execute(
-                "INSERT OR REPLACE INTO workspace_bases(task,start,source,fetched,created) VALUES(?,?,?,?,?)",
-                rusqlite::params![oid, start.sha, start.source, start.fetched, now()],
-            )?;
+        db.event(
+            oid,
+            "workspace.integrated",
+            json!({"path":path,"branch":format!("horde/{oid}"),"start":start.sha,"source":start.source,"fetched":start.fetched}),
+        )?;
+        if let Some(reason) = &start.warning {
+            let kind = if start.source == "local HEAD" {
+                "workspace.local_head_fallback"
+            } else {
+                "workspace.fetch_failed"
+            };
             db.event(
                 oid,
-                "workspace.integrated",
-                json!({"path":path,"branch":branch,"start":start.sha,"source":start.source,"fetched":start.fetched}),
+                kind,
+                json!({"start":start.sha,"source":start.source,"reason":reason}),
             )?;
-            if let Some(reason) = &start.warning {
-                let kind = if start.source == "local HEAD" {
-                    "workspace.local_head_fallback"
-                } else {
-                    "workspace.fetch_failed"
-                };
-                db.event(
-                    oid,
-                    kind,
-                    json!({"start":start.sha,"source":start.source,"reason":reason}),
-                )?;
-            }
-            Ok(())
-        })?;
+        }
+        Ok(())
+    })
+}
+fn create_integrated(
+    db: &Store,
+    oid: &str,
+    repo: &Path,
+    path: &Path,
+) -> Result<Option<StartPoint>> {
+    if path.exists() {
+        return Ok(None);
     }
+    let branch = format!("horde/{oid}");
+    let path_str = path.to_str().context("path")?;
+    if remote_ref(repo, &format!("refs/heads/{branch}")).is_some() {
+        run(repo, &["worktree", "prune"])?;
+        run(repo, &["worktree", "add", path_str, &branch])?;
+        Ok(None)
+    } else {
+        if !db
+            .rows("SELECT task FROM workspace_bases WHERE task=?", &[&oid])?
+            .is_empty()
+        {
+            bail!(
+                "recorded integrated workspace and task branch are missing; reconcile before reallocating"
+            );
+        }
+        let start = resolve_start(db, oid, repo)?;
+        run(
+            repo,
+            &["worktree", "add", "-b", &branch, path_str, &start.sha],
+        )?;
+        Ok(Some(start))
+    }
+}
+pub fn task_workspace(db: &Store, oid: &str) -> Result<PathBuf> {
+    use fs2::FileExt;
+    let o = db.task(oid)?;
+    let repo = Path::new(o["repo"].as_str().context("repo")?);
+    let dir = db.root.join("workspaces").join(oid);
+    let path = dir.join("integrated");
+    std::fs::create_dir_all(&dir)?;
+    // Keep fetching, creation, recovery, and provenance under one task lock.
+    // Parallel callers reuse the worktree and its original start record.
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(".allocate.lock"))?;
+    lock.lock_exclusive()?;
+    let start = create_integrated(db, oid, repo, &path)?;
     if run(&path, &["branch", "--show-current"])? != format!("horde/{oid}") {
         bail!("integrated workspace is on an unexpected branch");
     }
+    if db
+        .rows("SELECT task FROM workspace_bases WHERE task=?", &[&oid])?
+        .is_empty()
+    {
+        // Git may have succeeded before a crash or database failure. Record the
+        // surviving commit without guessing its original remote provenance.
+        let start = match start {
+            Some(start) => start,
+            None => StartPoint {
+                sha: head(&path)?,
+                source: "recovered".into(),
+                fetched: false,
+                warning: None,
+            },
+        };
+        record_start(db, oid, &path, &start)?;
+    }
+    // Dropping the file releases the lock on both success and error paths.
     Ok(path)
 }
 pub fn allocate(db: &Store, oid: &str, wid: &str) -> Result<PathBuf> {

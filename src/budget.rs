@@ -224,7 +224,20 @@ async fn workspace_fingerprint(db: &Store, worker: &str) -> Result<Option<String
     use sha2::{Digest, Sha256};
     use tokio::io::AsyncReadExt;
     let worker = db.worker(worker)?;
-    let root = if let Some(path) = worker["workspace"].as_str() {
+    let checkout = if let Some(step) = worker["step"].as_str() {
+        let rows = db.rows("SELECT spec FROM steps WHERE id=?", &[&step])?;
+        let spec = Store::step(rows.first().context("step")?)?;
+        spec.workspace == Some(crate::template::CommandWorkspace::Checkout)
+    } else {
+        false
+    };
+    let root = if checkout {
+        std::path::PathBuf::from(
+            db.task(worker["task"].as_str().context("task")?)?["repo"]
+                .as_str()
+                .context("repo")?,
+        )
+    } else if let Some(path) = worker["workspace"].as_str() {
         std::path::PathBuf::from(path)
     } else {
         // Command/environment steps execute in the task's integrated worktree.

@@ -107,7 +107,7 @@ pub fn root(db: &Store, oid: &str) -> Result<String> {
 pub fn contract(db: &Store, oid: &str, after: i64, limit: i64) -> Result<Value> {
     let t = tree(db, oid)?;
     let r = t["root"].as_str().context("root")?;
-    let entries=db.rows("SELECT rowid AS cursor,* FROM context_records WHERE root=? AND rowid>? ORDER BY rowid LIMIT ?",&[&r,&after,&limit.clamp(1,100)])?;
+    let entries=db.rows("SELECT rowid AS cursor,* FROM context_records WHERE root=? AND rowid>? AND NOT EXISTS(SELECT 1 FROM knowledge k WHERE k.id=context_records.id AND k.task!=?) ORDER BY rowid LIMIT ?",&[&r,&after,&oid,&limit.clamp(1,100)])?;
     Ok(
         json!({"root":r,"parent":t["parent"],"version":t["version"],"records":entries,"next":entries.last().map(|r|&r["cursor"])}),
     )
@@ -116,7 +116,35 @@ pub fn mandatory(db: &Store, oid: &str) -> Result<Value> {
     let cached = db.rows("SELECT packet FROM remote_context WHERE task=?", &[&oid])?;
     if let Some(c) = cached.first() {
         let packet: Value = serde_json::from_str(c["packet"].as_str().context("remote context")?)?;
-        return Ok(packet["context"].clone());
+        let mut context = packet["context"].clone();
+        // Older authorities included task-private knowledge in supporting-source
+        // catalogs. Do not re-inject those cached entries after upgrading.
+        let origin = db.rows(
+            "SELECT owner_task FROM remote_origins WHERE task=?",
+            &[&oid],
+        )?;
+        let owner = origin
+            .first()
+            .and_then(|r| r["owner_task"].as_str())
+            .unwrap_or(oid);
+        if let Some(sources) = context["supporting_sources"].as_array_mut() {
+            sources.retain(|source| {
+                if !matches!(
+                    source["kind"].as_str(),
+                    Some("supporting_fact" | "supporting_decision" | "supporting_evidence")
+                ) {
+                    return true;
+                }
+                let provenance = source["provenance"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok());
+                provenance
+                    .as_ref()
+                    .and_then(|p| p["source_task"].as_str())
+                    .is_none_or(|task| task == owner)
+            });
+        }
+        return Ok(context);
     }
     let t = tree(db, oid)?;
     let r = t["root"].as_str().context("root")?;
@@ -127,7 +155,7 @@ pub fn mandatory(db: &Store, oid: &str) -> Result<Value> {
         "mandatory context exceeds 256 KiB; caller must consolidate authoritative context before dispatch"
     );
     Ok(
-        json!({"root":r,"parent":t["parent"],"version":t["version"],"records":records,"sources_tool":"read_context","supporting_sources":db.rows("SELECT id,kind,provenance FROM context_records WHERE root=? AND mandatory=0 ORDER BY rowid LIMIT 100",&[&r])?}),
+        json!({"root":r,"parent":t["parent"],"version":t["version"],"records":records,"sources_tool":"read_context","supporting_sources":db.rows("SELECT id,kind,provenance FROM context_records WHERE root=? AND mandatory=0 AND NOT EXISTS(SELECT 1 FROM knowledge k WHERE k.id=context_records.id AND k.task!=?) ORDER BY rowid LIMIT 100",&[&r,&oid])?}),
     )
 }
 pub fn update_context(db: &Store, oid: &str, args: &Value) -> Result<Value> {
@@ -205,6 +233,8 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
         );
         return Ok(json!({"id":old["task"],"duplicate":true}));
     }
+    let normalized = delegation_target(db, args)?;
+    let args = &normalized;
     let parent = db.task(oid)?;
     let source = if let Some(worker) = args["worker"].as_str() {
         db.worker(worker)?["workspace"]
@@ -249,6 +279,8 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
   settings.secret_bundles.clear();
   settings.skills.clear();
   let child=db.submit_pinned(objective,repo,&settings,&plan,&skills)?;
+  crate::execution_selection::inherit(db,oid,&child,args)?;
+  crate::execution_selection::validate_target(db,&child,args["peer"].as_str())?;
   if args["peer"].is_null(){
    let target=db.root.join("delegated-repositories").join(&child);std::fs::create_dir_all(target.parent().context("repository directory")?)?;
    let base=if let Some(snapshot)=args.get("_snapshot"){
@@ -276,6 +308,51 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
   db.event(oid,"child.submitted",json!({"child":child,"id":request,"assignment":objective}))?;
   Ok(json!({"id":child,"root":r,"parent":oid}))
  })
+}
+
+fn delegation_target(db: &Store, args: &Value) -> Result<Value> {
+    let mut normalized = args.clone();
+    let inventory = if args["execution"].is_object() {
+        Some(crate::capabilities::inventory(db)?)
+    } else {
+        None
+    };
+    if let Some(inventory) = inventory {
+        let selected = args["execution"]["selected"]["runtime"]
+            .as_str()
+            .context("execution requires a selected runtime")?;
+        let runtimes = inventory["runtimes"]
+            .as_array()
+            .context("runtime inventory")?;
+        let local = runtimes
+            .iter()
+            .find(|runtime| runtime["local"] == true)
+            .context("local runtime")?;
+        let target =
+            if selected == "local" || local["runtime"] == selected || local["name"] == selected {
+                None
+            } else {
+                Some(crate::runtime_directory::resolve(db, selected)?)
+            };
+        if args["peer"].is_null() {
+            normalized["peer"] = serde_json::to_value(target)?;
+        }
+    }
+    if let Some(peer) = normalized["peer"].as_str() {
+        if peer == "local" {
+            normalized
+                .as_object_mut()
+                .context("arguments")?
+                .remove("peer");
+        } else if !crate::federation::config(db)?
+            .delegate_peers
+            .iter()
+            .any(|id| id == peer)
+        {
+            normalized["peer"] = json!(crate::runtime_directory::resolve(db, peer)?);
+        }
+    }
+    Ok(normalized)
 }
 pub fn ask(db: &Store, oid: &str, args: &Value) -> Result<Value> {
     let q = args["question"].as_str().context("question")?;

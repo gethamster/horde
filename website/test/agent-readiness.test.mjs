@@ -4,7 +4,7 @@
 // agent would receive rather than what the source intends.
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, statSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pages, documents, origin, url } from "../scripts/pages.mjs";
 import { targets, serialize } from "../scripts/generate-vercel-config.mjs";
@@ -467,12 +467,33 @@ test("published documentation uses organization skills links and stable download
   assert.ok(read("llms.txt").includes("npx skills add gethamster/horde"));
 });
 
-test("the main repository owns exactly the three discoverable skills", () => {
+test("the main repository exposes documented entrypoints and discovers additional skill files", () => {
   const skillsRoot = join(root, "..", "skills");
   const names = readdirSync(skillsRoot).filter((name) => existsSync(join(skillsRoot, name, "SKILL.md"))).sort();
-  assert.deepEqual(names, ["horde", "horde-templates", "horde-worker"]);
+  const entrypoints = ["horde", "horde-templates", "horde-worker"];
+  for (const name of entrypoints) assert.ok(names.includes(name), `missing public skill: ${name}`);
+  for (const name of names) {
+    assert.match(name, /^[a-z0-9]+(?:-[a-z0-9]+)*$/, `invalid skill directory: ${name}`);
+    const directory = join(skillsRoot, name);
+    assert.ok(lstatSync(directory).isDirectory(), `skill must be a real directory: ${name}`);
+    const source = readFileSync(join(directory, "SKILL.md"), "utf8");
+    const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source)?.[1];
+    assert.ok(frontmatter, `missing skill metadata: ${name}`);
+    assert.equal(/^name:\s*["']?([a-z0-9-]+)["']?\s*$/m.exec(frontmatter)?.[1], name,
+      `skill metadata must match its directory: ${name}`);
+    assert.match(frontmatter, /^description:[ \t]*\S.*$/m, `missing skill description: ${name}`);
+    for (const resource of readdirSync(directory, { recursive: true })) {
+      const stats = lstatSync(join(directory, resource));
+      assert.ok(stats.isFile() || stats.isDirectory(), `skill resource must be a regular file or directory: ${name}/${resource}`);
+    }
+  }
   const grouping = JSON.parse(readFileSync(join(root, "..", "skills.sh.json"), "utf8"));
-  assert.deepEqual(grouping.groupings.flatMap((group) => group.skills).sort(), names);
+  const grouped = grouping.groupings.flatMap((group) => group.skills);
+  assert.equal(new Set(grouped).size, grouped.length, "skills must not appear in multiple groups");
+  for (const name of grouped) assert.ok(names.includes(name), `group names an absent skill: ${name}`);
+  for (const name of entrypoints) assert.ok(grouped.includes(name), `public skill must be grouped: ${name}`);
+  // New file-based skills remain discoverable without adding a registry entry.
+  assert.equal(grouping.notGrouped, "bottom");
   const readme = readFileSync(join(root, "..", "README.md"), "utf8");
   assert.ok(readme.includes("npx skills add gethamster/horde"));
   assert.equal(readme.split("\n").find((line) => line.startsWith("[![skills.sh]")),

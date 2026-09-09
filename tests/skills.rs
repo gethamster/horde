@@ -5,7 +5,7 @@ use horde::{
     store::Store,
     template::{self, Step},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
 fn repository(path: &Path) {
     std::fs::create_dir_all(path).unwrap();
@@ -44,7 +44,7 @@ fn plan() -> template::Plan {
     .unwrap()
 }
 #[test]
-fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin() {
+fn selected_skill_is_discovered_once_and_progressive_reads_preserve_its_pin() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     repository(&repo);
@@ -76,17 +76,40 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
         context: json!({}),
     };
     let prompt = invocation.prompt().unwrap();
-    assert!(prompt.contains("Use version one"));
+    let original_body = std::fs::read_to_string(source.join("SKILL.md")).unwrap();
+    let original_hash = skills::packet(&db, &task).unwrap()["writer"].hash.clone();
+    assert!(!prompt.contains(&original_body));
+    assert!(!prompt.contains("Use version one"));
+    assert!(prompt.contains("Selected skill writer"));
+    assert!(prompt.contains(&original_hash));
     assert_eq!(invocation.prompt().unwrap(), prompt);
     assert_eq!(
         db.rows(
-            "SELECT * FROM events WHERE task=? AND kind='skill.loaded'",
+            "SELECT * FROM events WHERE task=? AND kind='skill.selected'",
             &[&task]
         )
         .unwrap()
         .len(),
         1
     );
+    assert!(
+        db.rows(
+            "SELECT * FROM events WHERE task=? AND kind='skill.read'",
+            &[&task]
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let instructions = horde::protocol::dispatch(
+        &db,
+        "read_skill",
+        json!({"name":"writer"}),
+        worker["token"].as_str(),
+    )
+    .unwrap();
+    assert_eq!(instructions["content"], original_body);
+    assert_eq!(instructions["hash"], original_hash);
+    assert!(prompt.contains(instructions["base_directory"].as_str().unwrap()));
     let resource = horde::protocol::dispatch(
         &db,
         "read_skill",
@@ -106,18 +129,26 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
     skill(&source, "two");
     let reopened = Store::open(&root).unwrap();
     assert_eq!(skills::catalog(&reopened, &task).unwrap(), first);
-    assert!(
-        skills::prompt(&reopened, &task, "retry", &step)
-            .unwrap()
-            .contains("Use version one")
-    );
+    let retry = skills::prompt(&reopened, &task, "retry", &step).unwrap();
+    assert!(!retry.contains("Use version one"));
+    assert!(!retry.contains("Use version two"));
+    assert!(retry.contains(&original_hash));
+    let pinned = skills::read(&reopened, &task, &json!({"name":"writer"})).unwrap();
+    assert_eq!(pinned["content"], original_body);
+    assert_eq!(pinned["hash"], original_hash);
     let new_task = reopened
         .submit("new version", &repo, &settings, &plan)
         .unwrap();
     assert_ne!(
-        skills::catalog(&reopened, &new_task).unwrap()[0]["hash"],
-        first[0]["hash"]
+        skills::packet(&reopened, &new_task).unwrap()["writer"].hash,
+        skills::packet(&reopened, &task).unwrap()["writer"].hash
     );
+    let fresh = skills::read(&reopened, &new_task, &json!({"name":"writer"})).unwrap();
+    assert_eq!(
+        fresh["content"],
+        std::fs::read_to_string(source.join("SKILL.md")).unwrap()
+    );
+    assert_ne!(fresh["hash"], original_hash);
     std::fs::remove_dir_all(source).unwrap();
     let child = horde::delegation::delegate(
         &reopened,
@@ -128,7 +159,15 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(skills::catalog(&reopened, &child).unwrap(), first);
+    let writer_catalog = json!(
+        first
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["name"] == "writer")
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(skills::catalog(&reopened, &child).unwrap(), writer_catalog);
     let grandchild = horde::delegation::delegate(
         &reopened,
         &child,
@@ -138,7 +177,15 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(skills::catalog(&reopened, &grandchild).unwrap(), first);
+    assert_eq!(
+        skills::catalog(&reopened, &grandchild).unwrap(),
+        writer_catalog
+    );
+    for descendant in [&child, &grandchild] {
+        let read = skills::read(&reopened, descendant, &json!({"name":"writer"})).unwrap();
+        assert_eq!(read["content"], original_body);
+        assert_eq!(read["hash"], original_hash);
+    }
     let narrowed = horde::delegation::delegate(
         &reopened,
         &task,
@@ -163,16 +210,18 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
     assert!(!agent_steps.is_empty());
     for step in agent_steps {
         assert_eq!(step.skills, vec!["writer"]);
-        assert!(
-            skills::prompt(
-                &reopened,
-                &agent_child,
-                &format!("attempt-{}", step.id),
-                &step
-            )
-            .unwrap()
-            .contains("Use version one")
-        );
+        let prompt = skills::prompt(
+            &reopened,
+            &agent_child,
+            &format!("attempt-{}", step.id),
+            &step,
+        )
+        .unwrap();
+        assert!(!prompt.contains("Use version one"));
+        assert!(prompt.contains(&original_hash));
+        let read = skills::read(&reopened, &agent_child, &json!({"name":"writer"})).unwrap();
+        assert_eq!(read["content"], original_body);
+        assert_eq!(read["hash"], original_hash);
     }
     let before = reopened.steps(&task).unwrap();
     assert!(
@@ -268,4 +317,94 @@ fn resources_are_paged_and_materialized_edits_are_detected() {
             .to_string()
             .contains("materialized skill changed")
     );
+}
+
+#[test]
+fn validate_captures_the_catalog_a_submission_would_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join(".horde").join("templates")).unwrap();
+    let source = repo.join("writer-skill");
+    skill(&source, "one");
+    std::fs::write(
+        repo.join(".horde").join("horde.toml"),
+        "[skills]\nwriter = \"writer-skill\"\n",
+    )
+    .unwrap();
+    for (name, selected) in [("good", "writer"), ("bad", "nope")] {
+        std::fs::write(
+            repo.join(".horde").join("templates").join(format!("{name}.toml")),
+            format!(
+                "name = \"{name}\"\nversion = \"1\"\n[[steps]]\nid = \"a\"\nkind = \"agent\"\nrole = \"worker\"\nskills = [\"{selected}\"]\ninstructions = \"x\"\n"
+            ),
+        )
+        .unwrap();
+    }
+    let validate = |name: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_horde"))
+            .args(["validate", name, "--repo"])
+            .arg(&repo)
+            .arg("--data-dir")
+            .arg(dir.path().join("data"))
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .env("XDG_DATA_HOME", dir.path().join("data"))
+            .output()
+            .unwrap()
+    };
+    let good = validate("good");
+    assert!(
+        good.status.success(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    let good: Value = serde_json::from_slice(&good.stdout).unwrap();
+    let names = good["skill_catalog"]["skills"].as_array().unwrap();
+    assert!(names.iter().any(|s| s == "writer") && names.iter().any(|s| s == "horde-worker"));
+    assert_eq!(good["skill_catalog"]["hash"].as_str().unwrap().len(), 64);
+    let bad = validate("bad");
+    assert!(!bad.status.success());
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        stderr.contains("steps[0].skills") && stderr.contains("\"nope\""),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn concurrent_attempts_share_one_integrated_worktree() {
+    // issue #41: parallel agent steps of one task each ran `worktree add -b horde/<task>`
+    // and the loser failed on the existing ref, skipping every dependent step.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    repository(&repo);
+    let root = dir.path().join("db");
+    let task = Store::open(&root)
+        .unwrap()
+        .submit("race", &repo, &Settings::default(), &plan())
+        .unwrap();
+    let handles: Vec<_> = (0..6)
+        .map(|_| {
+            let (root, task) = (root.clone(), task.clone());
+            std::thread::spawn(move || {
+                let db = Store::open(&root).unwrap();
+                horde::git::task_workspace(&db, &task)
+            })
+        })
+        .collect();
+    let paths: Vec<_> = handles
+        .into_iter()
+        .map(|h| {
+            h.join()
+                .unwrap()
+                .expect("every concurrent allocation succeeds")
+        })
+        .collect();
+    assert!(paths.iter().all(|p| p == &paths[0]));
+    assert!(paths[0].join(".git").exists());
+    let branches = std::process::Command::new("git")
+        .args(["branch", "--list", &format!("horde/{task}")])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&branches.stdout).lines().count(), 1);
 }

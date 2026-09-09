@@ -20,8 +20,11 @@ pub struct Template {
     pub steps: Vec<Step>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct Step {
+    /// Unknown input names retained only for diagnostics; their values are discarded.
+    #[serde(flatten, skip_serializing)]
+    #[schemars(skip)]
+    pub ignored_fields: BTreeMap<String, serde::de::IgnoredAny>,
     /// Unique workflow-local name for this step, not a tool/function name.
     #[schemars(length(min = 1))]
     pub id: String,
@@ -64,6 +67,9 @@ pub struct Step {
     #[serde(default)]
     #[schemars(extend("additionalProperties" = {"type":"string","enum":["string","number","integer","boolean","array","object","null"]}))]
     pub output_types: BTreeMap<String, String>,
+    /// Command working directory: isolated integrated worktree by default, or the live checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<CommandWorkspace>,
     /// Command argv for a command step, not a shell string.
     #[serde(default)]
     pub command: Vec<String>,
@@ -84,6 +90,13 @@ pub struct Step {
     #[schemars(range(min = 1, max = 20))]
     pub attempts: u32,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandWorkspace {
+    Worktree,
+    Checkout,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Condition {
@@ -121,11 +134,33 @@ pub fn step_schema() -> Value {
 
 /// Report the nested input path without changing the accepted Step representation.
 pub fn parse_steps(value: &Value) -> Result<Vec<Step>> {
-    serde_path_to_error::deserialize(value.clone()).map_err(|error| {
+    let steps: Vec<Step> = serde_path_to_error::deserialize(value.clone()).map_err(|error| {
         let path = error.path().to_string();
         let suffix = if path == "." { String::new() } else { path };
         anyhow::anyhow!("steps{suffix}: {}", error.inner())
-    })
+    })?;
+    for warning in step_warnings(&steps) {
+        eprintln!("warning: {warning}");
+    }
+    Ok(steps)
+}
+
+pub fn step_warnings(steps: &[Step]) -> Vec<String> {
+    steps
+        .iter()
+        .filter(|s| !s.ignored_fields.is_empty())
+        .map(|s| {
+            format!(
+                "step {}: ignored unknown fields: {}",
+                s.id,
+                s.ignored_fields
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect()
 }
 
 fn worker() -> String {
@@ -139,6 +174,8 @@ fn one() -> u32 {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Plan {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     pub steps: Vec<Step>,
     pub pins: BTreeMap<String, String>,
     pub outputs: BTreeMap<String, String>,
@@ -159,6 +196,9 @@ pub fn load_templates(dir: &Path) -> Result<BTreeMap<String, Template>> {
             let p = entry?.path();
             if p.extension().is_some_and(|x| x == "toml") {
                 let t: Template = toml::from_str(&std::fs::read_to_string(&p)?)?;
+                for warning in step_warnings(&t.steps) {
+                    eprintln!("warning: {}: {warning}", p.display());
+                }
                 result.insert(t.name.clone(), t);
             }
         }
@@ -178,6 +218,7 @@ pub fn compile(
     inputs: BTreeMap<String, String>,
 ) -> Result<Plan> {
     let mut plan = Plan {
+        warnings: vec![],
         steps: vec![],
         pins: BTreeMap::new(),
         outputs: BTreeMap::new(),
@@ -226,6 +267,9 @@ fn expand(
     let mut aliases: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // References may point forward; resolve nested aliases after all expansion.
     let start = plan.steps.len();
+    for warning in step_warnings(&t.steps) {
+        plan.warnings.push(format!("template {name}: {warning}"));
+    }
     for original in &t.steps {
         let mut s = original.clone();
         s.id = format!("{prefix}{}", s.id);
@@ -241,6 +285,12 @@ fn expand(
             .map(|x| render(x, inputs).replace("${", &format!("${{{prefix}")))
             .collect();
         if let Some(nested) = &s.template {
+            if s.workspace.is_some() {
+                bail!(
+                    "step {}.workspace: set workspace on the command inside the nested template",
+                    s.id
+                );
+            }
             if s.step_budget_exempt {
                 bail!(
                     "step {:?}: set step_budget_exempt on command steps, not template inclusions",
@@ -339,6 +389,11 @@ pub fn validate(steps: &[Step]) -> Result<()> {
                 "{path}.kind: unknown kind {}; use agent, command, delivery, simulated, or environment",
                 s.kind
             );
+        }
+        if s.workspace.is_some()
+            && (s.kind != "command" || s.environment.is_some() || s.template.is_some())
+        {
+            bail!("{path}.workspace: only plain command steps can select a workspace");
         }
         if let Some(e) = &s.environment {
             e.validate()

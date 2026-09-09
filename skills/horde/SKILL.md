@@ -14,6 +14,29 @@ exits.
 You keep your own agent. Horde does not replace this session. It is the place you
 put work that should outlive it.
 
+## Workflow guidance and project overrides
+
+Horde ships file-based guidance for setup, discovery, model selection, planning,
+delegation, and review. Use `skill_inspect` with the repository and
+optional skill name to read the effective project guidance. `runtime_capabilities`
+and `plan_execution` resolve the user's requested local or remote model pools;
+the caller chooses which permitted capability each bounded task needs. Do not
+run every listed model merely because it appears in the pool.
+
+Use `request_id` for `submit_task` and a stable `id` for `delegate_task`. Retry the
+original identifier and intent after a timeout so uncertain work is not duplicated.
+For persistent guidance changes, present the `skill_propose` diff and wait for
+explicit acceptance before `skill_apply`. `skill_rollback` also produces a
+proposal for review. Existing tasks and children retain their pinned versions.
+Use `skill_pack_install` with an absolute directory path to install edited skill
+files without changing the binary. `runtime_skills_update` sends that default pack
+to a named worker; `runtime_update` requests a signed binary version. Both remote
+operations take `id` and a stable `request_id`. Inspect `runtime_inspect.operations`
+until the request succeeds and check the reported version or pack hash. Preserve
+running task pins and keep requests within the user's authorized update scope.
+See [runtime skills](https://github.com/gethamster/horde/blob/main/docs/runtime-skills.md)
+for scope and API details.
+
 ## Why it exists
 
 An agent session is ephemeral, single-threaded, and forgetful. That is fine for a
@@ -150,10 +173,20 @@ and troubleshooting.
 
 ```sh
 horde submit "Add CSV export with tests" --repo /path/to/repository   # -> {"id":"..."}
+horde watch TASK_ID        # NDJSON stream until the task ends; exit 0 succeeded, 1 failed, 2 cancelled
 horde inspect TASK_ID      # tasks, attempts, workers, questions, integration
 horde events TASK_ID       # ordered activity, use --after SEQ to tail
+horde summary TASK_ID      # status, step outcomes, integrated head, pr_url or delivery_skipped
 horde metrics TASK_ID      # tokens, cost, latency, retries, coordination counts
 ```
+
+`horde watch` blocks, so run it when you can wait; `--timeout-secs N` returns
+exit 3 instead of waiting forever, and `--after SEQ` resumes a stream. Its last
+line is the same object `horde summary` prints. Read `delivery` there before
+reporting: `pr_ready` carries a PR URL, and `delivery_skipped` says why no PR
+exists. A `[notify]` table in the configuration pushes the same milestones to a
+webhook or command; `docs/progress.md` in the Horde repository documents the
+stream, the summary object, and the payload.
 
 Rules that matter:
 

@@ -84,8 +84,9 @@ GitHub delivery is a separate opt-in step. For non-Next.js projects, include you
 
 Configure named directories under `[skills]` in Horde settings, then select names
 with `skills = ["report"]` on an agent step. Each name must exist in the task's
-pinned catalog. The runtime loads selected instructions into the prompt and makes
-bundled resources available through `read_skill`. A nested template's `skills`
+pinned catalog. The runtime includes selected names, hashes, and resource locations
+in the prompt. The harness reads pinned instructions and resources progressively
+through `read_skill`. A nested template's `skills`
 selection is propagated to its agent steps. See [runtime skills](runtime-skills.md)
 for configuration, inheritance, and file limits.
 
@@ -173,12 +174,21 @@ command = ["bash", "tools/horde/fleet_gate_step.sh"]
 Command steps run in the task's integrated worktree, updated by preceding
 integrations. That worktree starts from a freshly fetched `origin/<base>` when
 `[delivery] base` is set, and Horde refuses to allocate it if that fetch fails.
-Without a base it fetches `origin` and uses the remote default branch. It starts
-from your local `HEAD` only when no remote tip can be resolved, and records a
+Without a base it fetches `origin` and prefers the remote default branch, then
+the current branch's origin upstream. If fetching fails, it can use a cached
+remote tip and records `workspace.fetch_failed`. It starts from your local
+`HEAD` only when no candidate remote tip can be resolved, and records a
 `workspace.local_head_fallback` event when it does. Your own checkout is never
 modified. The worktree does not copy untracked files or uncommitted edits from
 your checkout. Push the scripts a task needs before submitting, or have an
 earlier step create them in that worktree.
+
+Concurrent allocations share one worktree and one durable start record. Existing
+task branches keep their commits during recovery. If a worktree survives without
+its start record, Horde records its current commit with source `recovered`; the
+original remote source is unknown. If a recorded workspace and its branch are
+both missing, allocation fails for operator reconciliation. Delegated and
+remote-accepted tasks retain their pinned starting snapshot.
 
 On a failed command, Horde checks literal relative paths in its arguments,
 including simple shell command strings. If a referenced file is absent from the
@@ -193,3 +203,46 @@ budgets; an exempt child also ignores a template inclusion's inherited budget.
 The separate `timeout_seconds` command limit still applies. See the
 [configuration example](configuration.md#step-progress-budgets) before running a
 long bench. Elapsed time remains visible in inspect, events, and metrics.
+
+### Command workspace
+
+Command steps use the task's integrated worktree by default. That workspace starts
+from the pinned submit commit and includes integrated task changes; it does not
+contain dirty, untracked, or ignored files from the repository checkout.
+
+A command that needs local data can explicitly select the live checkout:
+
+```toml
+[[steps]]
+id = "measure"
+kind = "command"
+workspace = "checkout"
+command = ["sh", "scripts/measure.sh"]
+artifacts = ["results/verdict.json"]
+```
+
+Omit `workspace`, or set it to `"worktree"`, for the default. The `"checkout"`
+option uses the receiving task's repository directory, including local edits and
+ignored files. Artifacts are collected from that same directory. Checkout writes
+are shared with people and other tasks and are not automatically integrated into
+the task branch. Coordinate shared files and resource locks when using it.
+Delegated and remote tasks use their own receiving repository, which may differ
+from the caller's checkout. This setting applies only to plain command steps;
+set it on the command inside a nested template. Each attempt records its selected
+mode and absolute directory in a `step.workspace` event.
+
+### Unknown step fields
+
+Horde warns about unknown fields on a step and ignores their values. This lets a
+template load when it contains a field from a newer version or an unsupported
+field guessed during editing. `horde validate TEMPLATE --repo PATH` includes a
+`warnings` array with the template, step, and ignored field names. Loading a local
+template also prints the warning to stderr. Workflow revision tools return their
+warnings alongside the revision number.
+
+An ignored option has no effect. Correct misspellings or use a Horde version that
+supports the intended option before relying on it. Unknown values are discarded
+before the step is saved, so a later upgrade cannot silently enable them. Known
+fields still require the right types and supported values; for example,
+`kind = "commmand"` and `when.status = "success"` remain errors. Unknown fields in
+the outer template or a structured condition/environment remain errors as well.

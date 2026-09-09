@@ -132,7 +132,7 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
     std::fs::write(
         rootuser.join("horde/config.toml"),
         format!(
-            "secret_bundles = ['app']\n[skills]\nreport = {:?}\n",
+            "secret_bundles = ['app']\nknowledge_topics = ['bench']\n[skills]\nreport = {:?}\n",
             skill_source
         ),
     )
@@ -298,6 +298,79 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
         .unwrap()
         .to_owned();
     let worker = remotedb.register(&remoteid, Some(&step)).unwrap();
+    // Notebook operations use the root authority over the existing mTLS route.
+    let sibling = horde::delegation::delegate(
+        &rootdb,
+        &oid,
+        &json!({"id":"notebook-sibling","objective":"supporting work","template":"simulated"}),
+    )
+    .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let root_claim=horde::protocol::dispatch(&rootdb,"add_knowledge",json!({"task":oid,"scope":"family","topic":"bench","kind":"evidence","content":"root shared measurement","provenance":{}}),None).unwrap();
+    horde::protocol::dispatch(&rootdb,"add_knowledge",json!({"task":sibling,"scope":"family","kind":"fact","content":"sibling shared measurement","provenance":{}}),None).unwrap();
+    horde::protocol::dispatch(&rootdb,"add_knowledge",json!({"task":sibling,"kind":"fact","content":"sibling private measurement","provenance":{}}),None).unwrap();
+    let shared = horde::protocol::dispatch(
+        &remotedb,
+        "knowledge",
+        json!({"scope":"family","query":"measurement"}),
+        worker["token"].as_str(),
+    )
+    .unwrap();
+    assert_eq!(shared["records"].as_array().unwrap().len(), 2, "{shared}");
+    assert!(!shared.to_string().contains("private"));
+    let options = horde::protocol::dispatch(
+        &remotedb,
+        "knowledge_options",
+        json!({}),
+        worker["token"].as_str(),
+    )
+    .unwrap();
+    assert_eq!(
+        options["schemas"]["add_knowledge"]["properties"]["topic"]["enum"],
+        json!(["bench"])
+    );
+    let remote_claim=horde::protocol::dispatch(&remotedb,"add_knowledge",json!({"id":"remote-measurement","scope":"family","kind":"evidence","content":"remote shared measurement","provenance":{"run":"test"},"verified":true}),worker["token"].as_str()).unwrap();
+    let shared = horde::protocol::dispatch(
+        &rootdb,
+        "knowledge",
+        json!({"task":sibling,"scope":"family","query":"remote"}),
+        None,
+    )
+    .unwrap();
+    let record = &shared["records"][0];
+    assert_eq!(record["task"], child);
+    assert_eq!(record["origin"]["step"], step);
+    assert_eq!(record["origin"]["remote_task"], remoteid);
+    assert_eq!(record["verified"], 0);
+    assert!(
+        horde::protocol::dispatch(
+            &remotedb,
+            "retract_knowledge",
+            json!({"id":root_claim["id"],"reason":"not mine","provenance":{}}),
+            worker["token"].as_str()
+        )
+        .is_err()
+    );
+    horde::protocol::dispatch(
+        &remotedb,
+        "retract_knowledge",
+        json!({"id":remote_claim["id"],"reason":"measurement withdrawn","provenance":{}}),
+        worker["token"].as_str(),
+    )
+    .unwrap();
+    assert_eq!(
+        horde::protocol::dispatch(
+            &rootdb,
+            "knowledge",
+            json!({"task":sibling,"scope":"family","query":"remote"}),
+            None
+        )
+        .unwrap()["records"],
+        json!([])
+    );
+
     let resource = horde::protocol::dispatch(
         &remotedb,
         "read_skill",
@@ -493,6 +566,7 @@ fn remote_answer_sync_does_not_reopen_consumed_questions() {
     let dir = tempfile::tempdir().unwrap();
     let db = Store::open(&dir.path().join("data")).unwrap();
     let plan = horde::template::Plan {
+        warnings: vec![],
         steps: vec![],
         pins: Default::default(),
         outputs: Default::default(),

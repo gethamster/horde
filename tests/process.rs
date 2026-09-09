@@ -1005,3 +1005,214 @@ command=["sleep","30"]
         }
     }
 }
+
+#[test]
+fn worker_mcp_lists_pinned_knowledge_topics() {
+    let d = Daemon::new();
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        "knowledge_topics=['performance','correctness']\n",
+    )
+    .unwrap();
+    let task = d.submit("simulated");
+    d.wait(&task, "succeeded");
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        "knowledge_topics=['new-submissions-only']\n",
+    )
+    .unwrap();
+    let worker = d.call("register_worker", json!({"task":task}));
+    let mut process = Command::new(BIN)
+        .arg("--data-dir")
+        .arg(&d.root)
+        .arg("mcp")
+        .env("HORDE_WORKER_TOKEN", worker["token"].as_str().unwrap())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(
+        process.stdin.take().unwrap(),
+        "{}",
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})
+    )
+    .unwrap();
+    let output = process.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    for name in ["add_knowledge", "knowledge"] {
+        let tool = response["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap();
+        assert_eq!(
+            tool["inputSchema"]["properties"]["topic"]["enum"],
+            json!(["performance", "correctness"])
+        );
+        assert!(tool["inputSchema"]["properties"].get("task").is_none());
+    }
+}
+
+#[test]
+fn command_worker_identity_publishes_scoped_evidence_and_redacts_credentials() {
+    let d = Daemon::new();
+    std::fs::write(d.repo.join(".horde.toml"), "knowledge_topics=['testing']\n").unwrap();
+    d.template(
+        "identity",
+        "name='identity'\nversion='1'\n[[steps]]\nid='measure'\nkind='command'\ncommand=['sh','publish.sh']\n",
+    );
+    std::fs::write(d.repo.join("publish.sh"), r#"set -eu
+for name in HORDE_TASK_ID HORDE_STEP_ID HORDE_ATTEMPT_ID HORDE_WORKER_ID HORDE_WORKER_TOKEN HORDE_DATA_DIR HORDE_BIN; do
+  printenv "$name" >/dev/null
+done
+"$HORDE_BIN" call knowledge_options '{}'
+"$HORDE_BIN" call add_knowledge '{"id":"cell-verdict","scope":"family","kind":"evidence","content":"measured verdict","topic":"testing","valid_under":{"co_state":"fixture"},"provenance":{"source":"command"},"verified":true}'
+"$HORDE_BIN" call put_artifact '{"name":"verdict","content":"pass","verified":true}'
+if "$HORDE_BIN" call add_knowledge '{"scope":"family","kind":"evidence","content":"replacement","provenance":{},"supersedes":["parent-observation"]}'; then exit 10; fi
+if "$HORDE_BIN" call retract_knowledge '{"id":"parent-observation","reason":"replacement","provenance":{}}'; then exit 11; fi
+if "$HORDE_BIN" call runtime_drain '{}'; then exit 12; fi
+if "$HORDE_BIN" call put_artifact '{"task":"other-task","name":"bad","content":"bad"}'; then exit 13; fi
+if "$HORDE_BIN" call put_artifact '{"step":"other-step","name":"bad","content":"bad"}'; then exit 14; fi
+printf '%s %s %s %s\n' "$HORDE_TASK_ID" "$HORDE_STEP_ID" "$HORDE_ATTEMPT_ID" "$HORDE_WORKER_ID"
+printf '%s\n' "$HORDE_WORKER_TOKEN"
+printf '%s\n' "$HORDE_WORKER_TOKEN" >&2
+"#).unwrap();
+    horde::git::run(&d.repo, &["add", "."]).unwrap();
+    horde::git::run(&d.repo, &["commit", "-m", "command fixture"]).unwrap();
+    let parent = d.submit("simulated");
+    d.wait(&parent, "succeeded");
+    d.call("add_knowledge", json!({"task":parent,"id":"parent-observation","scope":"family","kind":"evidence","content":"parent measured","provenance":{}}));
+    let child = d.call(
+        "delegate_task",
+        json!({"task":parent,"id":"identity-child","objective":"measure","template":"identity"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let inspect = d.wait(&child, "succeeded");
+    let db = horde::store::Store::open(&d.root).unwrap();
+    let worker = db
+        .rows("SELECT * FROM workers WHERE task=?", &[&child])
+        .unwrap()
+        .remove(0);
+    let serialized = inspect.to_string();
+    assert!(serialized.contains(worker["id"].as_str().unwrap()));
+    assert!(serialized.contains(inspect["attempts"][0]["id"].as_str().unwrap()));
+    assert!(serialized.contains("[REDACTED]"), "{inspect}");
+    let claim = d.call(
+        "knowledge",
+        json!({"task":parent,"scope":"family","topic":"testing"}),
+    )["records"][0]
+        .clone();
+    assert_eq!(claim["task"], child);
+    assert_eq!(claim["step"], inspect["steps"][0]["id"]);
+    assert_eq!(claim["valid_under"]["co_state"], "fixture");
+    assert_eq!(claim["verified"], 0);
+    let artifact = inspect["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "verdict")
+        .unwrap();
+    assert_eq!(artifact["verified"], 0);
+    let claims = d.call("knowledge", json!({"task":parent,"scope":"family"}));
+    assert_eq!(claims["records"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn failing_command_output_redacts_worker_token() {
+    let d = Daemon::new();
+    d.template("identity-failure", "name='identity-failure'\nversion='1'\n[[steps]]\nid='fail'\nkind='command'\nattempts=1\ncommand=['sh','-c','echo $HORDE_WORKER_TOKEN; echo $HORDE_WORKER_TOKEN >&2; exit 3']\n");
+    let task = d.submit("identity-failure");
+    let inspect = d.wait(&task, "failed");
+    let serialized = inspect.to_string();
+    assert!(serialized.contains("[REDACTED]"), "{inspect}");
+}
+
+#[test]
+fn commands_opt_into_checkout_files_and_collect_artifacts_from_that_workspace() {
+    let d = Daemon::new();
+    std::fs::write(d.repo.join(".gitignore"), "data/\n").unwrap();
+    std::fs::write(d.repo.join("tracked.txt"), "committed\n").unwrap();
+    horde::git::run(&d.repo, &["add", "."]).unwrap();
+    horde::git::run(&d.repo, &["commit", "-m", "workspace fixture"]).unwrap();
+    std::fs::write(d.repo.join("queue.txt"), "queue\n").unwrap();
+    std::fs::create_dir(d.repo.join("data")).unwrap();
+    std::fs::write(d.repo.join("data/input.txt"), "ignored data\n").unwrap();
+    std::fs::write(d.repo.join("tracked.txt"), "dirty checkout\n").unwrap();
+    for (name, workspace, command) in [
+        (
+            "isolated",
+            "",
+            "test ! -e queue.txt && test ! -e data/input.txt && test $(cat tracked.txt) = committed",
+        ),
+        (
+            "checkout",
+            "workspace='checkout'\n",
+            "cat queue.txt data/input.txt tracked.txt > verdict.txt",
+        ),
+    ] {
+        d.template(name, &format!("name='{name}'\nversion='1'\n[[steps]]\nid='measure'\nkind='command'\n{workspace}command=['sh','-c','{command}']\n{}", if name == "checkout" { "artifacts=['verdict.txt']" } else { "" }));
+        let task = d.submit(name);
+        let inspect = d.wait(&task, "succeeded");
+        let db = horde::store::Store::open(&d.root).unwrap();
+        let events = db
+            .rows(
+                "SELECT data FROM events WHERE task=? AND kind='step.workspace'",
+                &[&task],
+            )
+            .unwrap();
+        let event: Value = serde_json::from_str(events[0]["data"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            event["mode"],
+            if name == "checkout" {
+                "checkout"
+            } else {
+                "worktree"
+            }
+        );
+        if name == "checkout" {
+            assert_eq!(
+                Path::new(event["path"].as_str().unwrap()),
+                d.repo.canonicalize().unwrap()
+            );
+            assert!(
+                inspect["artifacts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a["name"] == "verdict.txt")
+            );
+            assert_eq!(
+                std::fs::read_to_string(d.repo.join("verdict.txt")).unwrap(),
+                "queue\nignored data\ndirty checkout\n"
+            );
+        } else {
+            assert_ne!(
+                Path::new(event["path"].as_str().unwrap()),
+                d.repo.canonicalize().unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn command_workspace_rejects_invalid_values_and_noncommand_steps() {
+    let d = Daemon::new();
+    for (name, kind, workspace, expected) in [
+        ("bad-value", "command", "checkuot", "checkuot"),
+        ("bad-kind", "agent", "checkout", "only plain command steps"),
+    ] {
+        d.template(name, &format!("name='{name}'\nversion='1'\n[[steps]]\nid='run'\nkind='{kind}'\nworkspace='{workspace}'\n"));
+        let error = d
+            .call_result(
+                "submit_task",
+                json!({"objective":"invalid","repo":d.repo,"template":name}),
+            )
+            .unwrap_err();
+        assert!(error.contains(expected), "{error}");
+        std::fs::remove_file(d.repo.join(format!(".horde/templates/{name}.toml"))).unwrap();
+    }
+}

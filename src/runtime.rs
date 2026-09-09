@@ -48,6 +48,12 @@ pub fn recover(db: &Store) -> Result<usize> {
     Ok(interrupted.len())
 }
 pub fn ready(db: &Store, oid: &str) -> Result<Vec<Value>> {
+    if !db
+        .rows("SELECT task FROM remote_links WHERE task=?", &[&oid])?
+        .is_empty()
+    {
+        return Ok(vec![]);
+    }
     let steps = db.steps(oid)?;
     let states: BTreeMap<_, _> = steps
         .iter()
@@ -187,6 +193,11 @@ async fn execute_step(
     let o = db.task(oid)?;
     let settings: Settings = serde_json::from_str(o["settings"].as_str().context("settings")?)?;
     let mut step = Store::step(row)?;
+    let settings = if step.kind == "agent" {
+        crate::execution_selection::apply(db, oid, &settings)?
+    } else {
+        settings
+    };
     let failures: i64 = db.conn.query_row(
         "SELECT COUNT(*) FROM attempts WHERE step=? AND state='failed'",
         [tid],
@@ -246,10 +257,14 @@ async fn execute_step(
         *arg = template::resolve_refs(arg, &outputs)?;
     }
     let simulated = step.kind == "simulated"
-        || settings
-            .executor(&step.role)
-            .is_some_and(|e| e.kind == "simulated");
-    let workspace = if simulated {
+        || (step.kind == "agent"
+            && settings
+                .executor(&step.role)
+                .is_some_and(|e| e.kind == "simulated"));
+    let checkout = step.workspace == Some(template::CommandWorkspace::Checkout);
+    let workspace = if checkout {
+        PathBuf::from(o["repo"].as_str().context("repo")?).canonicalize()?
+    } else if simulated {
         PathBuf::from(o["repo"].as_str().context("repo")?)
     } else if ["command", "delivery", "environment"].contains(&step.kind.as_str()) {
         let root = db.root.clone();
@@ -270,6 +285,9 @@ async fn execute_step(
             .await?
         }
     };
+    if step.kind == "command" {
+        db.event(oid, "step.workspace", json!({"step":tid,"attempt":attempt,"mode":if checkout {"checkout"} else {"worktree"},"path":workspace}))?;
+    }
     if !simulated && step.kind == "agent" {
         db.claim(oid, wid, &step.scope)?;
     }
@@ -588,7 +606,7 @@ impl Scheduler {
         notify_completed_children(db)?;
         wake_notified(db)?;
         for o in db.rows(
-            "SELECT id,settings FROM tasks WHERE status='running' ORDER BY created",
+            "SELECT id,settings FROM tasks WHERE status='running' AND NOT EXISTS(SELECT 1 FROM remote_links WHERE task=tasks.id) ORDER BY created",
             &[],
         )? {
             let oid = o["id"].as_str().context("task")?;
@@ -601,6 +619,16 @@ impl Scheduler {
             }
             let settings: Settings =
                 serde_json::from_str(o["settings"].as_str().context("settings")?)?;
+            let settings = if db.steps(oid)?.iter().any(|step| Store::step(step).is_ok_and(|step| step.kind == "agent")) {
+                match crate::execution_selection::apply(db, oid, &settings) {
+                    Ok(settings) => settings,
+                    Err(error) => {
+                        db.conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", [oid])?;
+                        db.event(oid, "execution.selection_blocked", json!({"reason":error.to_string()}))?;
+                        continue;
+                    }
+                }
+            } else { settings };
             settle(db, oid)?;
             let mut active = self
                 .running
@@ -693,6 +721,11 @@ impl Scheduler {
 
 pub async fn daemon(root: &Path) -> Result<()> {
     use fs2::FileExt;
+    if let Err(error) = crate::skill_catalog::check(root) {
+        // Keep recovery, management, and signed-pack bootstrap available for
+        // already-pinned tasks, but never imply new submissions are ready.
+        eprintln!("Default skills unavailable for new submissions: {error:#}");
+    }
     anyhow::ensure!(
         crate::branding::var_os("HORDE_BOOTSTRAP_JSON").is_none()
             || (crate::branding::var_os("HORDE_ENROLLMENT_FILE").is_none()
@@ -758,6 +791,14 @@ pub async fn daemon(root: &Path) -> Result<()> {
             .await;
             if let Err(error) = cleanup {
                 eprintln!("Environment maintenance: {error:#}");
+            }
+            let notify = async {
+                let db = Store::open(&maintenance_root)?;
+                crate::notify::tick(&db).await
+            }
+            .await;
+            if let Err(error) = notify {
+                eprintln!("Notify maintenance: {error:#}");
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -849,6 +890,18 @@ pub async fn daemon(root: &Path) -> Result<()> {
     let mut interval = tokio::time::interval(Duration::from_millis(200));
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     crate::update::complete_handoff(&db)?;
+    // Older updaters replace only the executable. Fetch its signed default pack
+    // independently while keeping management and already-pinned work available.
+    let skills_root = root.to_owned();
+    let skills_bootstrap = tokio::task::spawn_local(async move {
+        loop {
+            match crate::update::ensure_default_skills(&skills_root).await {
+                Ok(()) => break,
+                Err(error) => eprintln!("Default skill installation: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
     loop {
         tokio::select! {
             connection=listener.accept()=>{
@@ -860,6 +913,8 @@ pub async fn daemon(root: &Path) -> Result<()> {
             _=terminate.recv()=>{break;},
         }
     }
+    skills_bootstrap.abort();
+    let _ = skills_bootstrap.await;
     if let Some(reverse) = reverse {
         reverse.abort();
         let _ = reverse.await;

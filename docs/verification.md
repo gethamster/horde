@@ -124,8 +124,9 @@ opt-in manual acceptance checks.
 
 ## Pinned skill checks
 
-Tests load selected skill instructions once per attempt, read pinned resources,
-and preserve the original bundle through restart and source-directory changes.
+Tests check that initial native and CLI prompts contain skill selection metadata
+without instruction bodies. Requested reads return exact pinned content, preserving
+the original bundle through restart, source-directory changes, and pack updates.
 Child-task tests cover catalog narrowing and inheritance. Separate runtimes exchange
 bundles over loopback mTLS after the sender's source directory is removed. Corrupt
 hashes, traversal paths, symlinks, and modified materialized files are rejected.

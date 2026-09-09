@@ -11,6 +11,31 @@
   `workspace.local_head_fallback` event. The operator checkout is never
   modified; `workspace.integrated` and `workspace.registered` events record the
   resolved start commit and its source.
+- Serialize a task's integrated worktree allocation per task, so parallel agent steps
+  no longer race on `worktree add -b horde/<task>` and fail their dependents (#41).
+- `horde validate` captures the skill catalog a submission would pin and fails on an
+  unknown step skill; development binaries resolve the checkout's
+  skills through symlinked paths.
+- Let coding agents discover worker capabilities and resolve separate machine and
+  model pools for thinking and delivery. Pin task-specific choices, inherit their
+  limits, and reject unavailable or changed bindings without rewriting providers.
+- Load default skills and injection metadata from files, with independent pack
+  installation and authenticated worker synchronization. Binary updates and
+  restarts accept named fleet-enrolled workers without SSH.
+- Ship setup, discovery, model selection, planning, delegation, and review skills. Agents can
+  propose project overrides, apply accepted changes, and review or restore history;
+  existing tasks retain their captured skill versions.
+- Expose setup actions and missing-access requirements to coding agents, including
+  generic fleet startup through platform-managed secrets.
+- Advance the database to schema 4 so older runtimes cannot ignore pinned
+  execution constraints. Existing tasks and configuration migrate additively.
+- Infer fleet key addresses and certificate names from controller configuration.
+  Joining a named worker starts it and checks the authenticated connection while
+  preserving unrelated existing runtime identities.
+- Submit directly to a named worker with `horde submit --on`, inspect progress
+  through the controller, and retrieve a separate review checkout with `horde result`.
+- Show runtime names in terminal listings and support renaming or forgetting a
+  disconnected entry without provider deletion or manual database edits.
 - Deliver `task` broadcasts to the sender when it is the only worker, so a solo
   planner hears its own coordination messages instead of reaching nobody.
 - Add `horde steer TASK_ID "message"` for operators. It posts as
@@ -18,6 +43,22 @@
   and wakes idle workers unless `--presence` is given. Pass `--worker ID`
   (alias `--to`) after `horde call list_workers` to target one worker instead
   of fan-out.
+- Add `horde watch TASK_ID` and `horde events --follow`, an NDJSON stream of a
+  task's durable events that ends with a `task.summary` line and exits 0, 1, or 2
+  for succeeded, failed, or cancelled, 3 on `--timeout-secs`, and 4 when the
+  daemon goes away. `--after SEQ` resumes a stream and `--interval-ms` sets the
+  poll interval.
+- Add `horde summary TASK_ID`, one JSON object with the status, step outcomes,
+  branch, integrated head, and delivery outcome. Delivery reports `pr_ready` with
+  the PR URL when `merge = false`, `merged`, `failed`, or `skipped` with an
+  explicit reason such as `template has no delivery step` or `delivery disabled
+  in settings`, mirrored in a top-level `delivery_skipped` field.
+- Add an optional `[notify]` table that pushes `step.finished`, `task.finished`,
+  `question.asked`, and `task.blocked` milestones to a webhook (`webhook` or
+  `webhook_env`), a local command reading JSON on stdin, or both. A durable
+  per-task cursor survives restarts, every attempt records `notify.delivered` or
+  `notify.failed`, and a dead endpoint never stalls later events.
+- Document the progress surfaces for scripts and agents in `docs/progress.md`.
 
 ## 0.6.0
 

@@ -66,7 +66,8 @@ task becomes blocked instead: add a fresh verification step with `add_steps` and
 resume, rather than replaying completed implementation or delivery effects.
 
 Supporting facts belong in `add_knowledge` with their own provenance, verification
-status, and input references. A source reference lets you check the original
+status, and input references. Set `scope: "family"` to publish a claim across the
+tree; query it through `knowledge`, not inherited context. A source reference lets you check the original
 evidence; it does not prove a model understood it.
 
 ## Questions travel one caller at a time

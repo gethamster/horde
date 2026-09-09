@@ -19,6 +19,7 @@ pub struct Settings {
     pub max_tool_rounds: usize,
     pub max_identical_tool_calls: usize,
     pub tool_event_bytes: usize,
+    pub knowledge_topics: Vec<String>,
     pub allow_commands: bool,
     pub secret_bundles: Vec<String>,
     pub skills: BTreeMap<String, PathBuf>,
@@ -26,7 +27,76 @@ pub struct Settings {
     pub executors: BTreeMap<String, Executor>,
     pub fallbacks: BTreeMap<String, String>,
     pub delivery: Delivery,
+    pub notify: Notify,
     pub limits: crate::delegation::Limits,
+}
+/// Hook events a `[notify]` table may subscribe to.
+pub const NOTIFY_HOOKS: &[&str] = &[
+    "step.finished",
+    "task.finished",
+    "question.asked",
+    "task.blocked",
+];
+/// Optional push hooks fired by the daemon on task milestones: a webhook URL, a
+/// local command, or both. `webhook_env` names a variable resolved through
+/// `credential` at send time, so a URL carrying a secret never enters the task
+/// settings snapshot or a federation packet.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Notify {
+    pub webhook: Option<String>,
+    pub webhook_env: Option<String>,
+    pub command: Vec<String>,
+    pub events: Vec<String>,
+    pub timeout_seconds: u64,
+    pub children: bool,
+}
+impl Default for Notify {
+    fn default() -> Self {
+        Self {
+            webhook: None,
+            webhook_env: None,
+            command: vec![],
+            events: ["step.finished", "task.finished", "question.asked"]
+                .map(str::to_owned)
+                .to_vec(),
+            timeout_seconds: 15,
+            children: false,
+        }
+    }
+}
+impl Notify {
+    /// True when at least one target is configured.
+    pub fn enabled(&self) -> bool {
+        self.webhook.is_some() || self.webhook_env.is_some() || !self.command.is_empty()
+    }
+    /// Whether deliveries for `hook` are wanted.
+    pub fn wants(&self, hook: &str) -> bool {
+        self.events.iter().any(|e| e == hook)
+    }
+    fn validate(&self) -> Result<()> {
+        if self.timeout_seconds == 0 {
+            bail!("notify.timeout_seconds must be positive");
+        }
+        if self.webhook.as_deref().is_some_and(str::is_empty) {
+            bail!("notify.webhook must not be empty");
+        }
+        if self.webhook_env.as_deref().is_some_and(str::is_empty) {
+            bail!("notify.webhook_env must not be empty");
+        }
+        if self.command.first().is_some_and(String::is_empty) {
+            bail!("notify.command needs a program as its first element");
+        }
+        for event in &self.events {
+            if !NOTIFY_HOOKS.contains(&event.as_str()) {
+                bail!(
+                    "notify.events: unknown hook {event}; use one of {}",
+                    NOTIFY_HOOKS.join(", ")
+                );
+            }
+        }
+        Ok(())
+    }
 }
 /// A named endpoint and credential, declared once and shared by executor roles.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -220,6 +290,7 @@ impl Default for Settings {
             max_tool_rounds: 64,
             max_identical_tool_calls: 3,
             tool_event_bytes: 512,
+            knowledge_topics: vec![],
             allow_commands: true,
             secret_bundles: vec![],
             skills: BTreeMap::new(),
@@ -227,6 +298,7 @@ impl Default for Settings {
             executors,
             fallbacks: BTreeMap::new(),
             delivery: Delivery::default(),
+            notify: Notify::default(),
             limits: Default::default(),
         }
     }
@@ -241,6 +313,7 @@ autonomy = true
 default_template = "local-implementation"
 timeout_seconds = 1800
 step_budget_seconds = 1800 # Time without durable progress, per attempt
+knowledge_topics = [] # Optional vocabulary for knowledge records
 max_tool_rounds = 64
 max_identical_tool_calls = 3 # 0 disables repeated-call detection
 tool_event_bytes = 512 # Per arguments/result field; 0 omits payloads
@@ -314,6 +387,18 @@ provider = "simulated"
 # enabled = true
 # repository = "owner/name"
 # base = "main"
+
+# Push hooks fired by the daemon on task milestones. Set a webhook URL, or the
+# name of a variable holding one (resolved from credentials.env or the daemon
+# environment at send time), or a local command that receives the JSON payload
+# on stdin with HORDE_TASK, HORDE_HOOK and HORDE_EVENT set. Both may be set.
+# [notify]
+# webhook = "https://example.invalid/horde"
+# webhook_env = "HORDE_WEBHOOK_URL"
+# command = ["/bin/sh", "-c", "cat >> horde-notify.log"]
+# events = ["step.finished", "task.finished", "question.asked"] # also task.blocked
+# timeout_seconds = 15
+# children = false # also notify for delegated child tasks
 "#;
 /// Connection settings used to be restated on every executor role. Say where they went,
 /// rather than letting `deny_unknown_fields` report a bare unknown field.
@@ -424,9 +509,27 @@ impl Settings {
         if self.step_budget_seconds == 0 {
             bail!("step_budget_seconds must be positive");
         }
+        if self.knowledge_topics.len() > 128
+            || self
+                .knowledge_topics
+                .iter()
+                .any(|t| t.trim().is_empty() || t.len() > 128)
+        {
+            bail!("knowledge_topics accepts at most 128 nonempty topics of at most 128 bytes");
+        }
+        if self
+            .knowledge_topics
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != self.knowledge_topics.len()
+        {
+            bail!("knowledge_topics contains duplicates");
+        }
         if self.tool_event_bytes > 65536 {
             bail!("tool_event_bytes must be between 0 and 65536");
         }
+        self.notify.validate()?;
         for (slug, provider) in &self.providers {
             crate::native_protocol::validate_extra_body(&provider.extra_body)
                 .map_err(|e| anyhow::anyhow!("provider {slug}: {e}"))?;

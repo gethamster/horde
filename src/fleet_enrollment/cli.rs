@@ -1,3 +1,6 @@
+#[path = "defaults.rs"]
+mod defaults;
+
 use super::{ServerConfig, admin, authority};
 use crate::{network::NetworkConfig, store::Store};
 use anyhow::{Context, Result, ensure};
@@ -13,24 +16,24 @@ pub enum KeyCommands {
     /// Create a fleet credential in a private file for automatic worker startup.
     Create {
         name: String,
-        /// Reachable enrollment address; Horde binds this local address.
+        /// Local enrollment address (default: saved listener or controller address, next port).
         #[arg(long)]
-        listen: SocketAddr,
+        listen: Option<SocketAddr>,
         /// Public enrollment address when different from --listen (for example, NAT).
         #[arg(long)]
         enrollment_address: Option<SocketAddr>,
-        /// Reachable address of the controller's existing runtime listener.
+        /// Reachable runtime address (default: saved settings or configured controller).
         #[arg(long)]
-        controller_address: SocketAddr,
-        /// DNS name in the controller's TLS certificate.
+        controller_address: Option<SocketAddr>,
+        /// Controller TLS DNS name (default: saved settings or unambiguous certificate name).
         #[arg(long)]
-        tls_name: String,
+        tls_name: Option<String>,
         /// CA signing key; defaults to ca.key beside the configured CA certificate.
         #[arg(long)]
         issuer_key: Option<PathBuf>,
-        /// New private credential file; existing files are never overwritten.
+        /// New private credential file (default: NAME.json); never overwrites existing files.
         #[arg(long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
         /// Seconds during which new workers may join (default: 30 days).
         #[arg(long, default_value_t = 2_592_000)]
         expires_in: i64,
@@ -47,7 +50,7 @@ pub enum KeyCommands {
     Revoke { id: String },
 }
 
-pub fn run(root: &Path, file: Option<&Path>, command: &KeyCommands) -> Result<Value> {
+pub async fn run(root: &Path, file: Option<&Path>, command: &KeyCommands) -> Result<Value> {
     admin()?;
     let db = Store::open(root)?;
     match command {
@@ -77,18 +80,30 @@ pub fn run(root: &Path, file: Option<&Path>, command: &KeyCommands) -> Result<Va
                     && network.controller_peer.is_none(),
                 "configure a network controller before creating a fleet credential"
             );
+            let output = defaults::output_path(name, output.as_deref())?;
+            let server_path = root.join("enrollment-server.toml");
+            let existing = if server_path.exists() {
+                Some(toml::from_str::<ServerConfig>(&std::fs::read_to_string(
+                    &server_path,
+                )?)?)
+            } else {
+                None
+            };
+            let server = defaults::resolve(
+                &network,
+                existing.as_ref(),
+                defaults::Overrides {
+                    listen: *listen,
+                    controller_address: *controller_address,
+                    tls_name: tls_name.as_deref(),
+                    issuer_key: issuer_key.as_deref(),
+                },
+            )
+            .await?;
             ensure!(
-                listen.port() != network.port,
+                server.listen.port() != network.port,
                 "enrollment must use a separate port from the runtime listener"
             );
-            let server = ServerConfig {
-                listen: *listen,
-                issuer_key: issuer_key
-                    .clone()
-                    .unwrap_or_else(|| network.ca_cert.with_file_name("ca.key")),
-                controller_address: *controller_address,
-                tls_name: tls_name.clone(),
-            };
             let server = ServerConfig {
                 issuer_key: server
                     .issuer_key
@@ -96,17 +111,14 @@ pub fn run(root: &Path, file: Option<&Path>, command: &KeyCommands) -> Result<Va
                     .context("read controller CA signing key")?,
                 ..server
             };
-            let server_path = root.join("enrollment-server.toml");
-            if server_path.exists() {
-                let existing: ServerConfig =
-                    toml::from_str(&std::fs::read_to_string(&server_path)?)?;
+            if let Some(existing) = existing {
                 ensure!(
                     existing == server,
                     "fleet enrollment already uses different listener or trust settings"
                 );
             }
             ensure!(
-                !output.try_exists()? && std::fs::symlink_metadata(output).is_err(),
+                !output.try_exists()? && std::fs::symlink_metadata(&output).is_err(),
                 "credential output already exists"
             );
             let invitation = db.atomic(|| {
@@ -124,7 +136,7 @@ pub fn run(root: &Path, file: Option<&Path>, command: &KeyCommands) -> Result<Va
                     ..created
                 };
                 invitation.validate()?;
-                crate::secrets::write_private(output, &serde_json::to_vec(&invitation)?)?;
+                crate::secrets::write_private(&output, &serde_json::to_vec(&invitation)?)?;
                 if !server_path.exists() {
                     crate::secrets::write_private(
                         &server_path,

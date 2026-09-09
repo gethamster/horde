@@ -63,13 +63,18 @@ You can also submit and follow tasks directly:
 
 ```sh
 horde submit "Add CSV export with tests" --repo /path/to/repository
+horde watch TASK_ID        # NDJSON events until the task ends; exit 0/1/2 by outcome
 horde inspect TASK_ID
 horde events TASK_ID
 horde metrics TASK_ID
+horde summary TASK_ID      # status, step outcomes, integrated head, PR URL or why delivery was skipped
 horde call list_workers '{"task":"TASK_ID"}'
 horde steer TASK_ID "Prefer the streaming parser; skip the CLI flag"
 horde steer TASK_ID "Only you: re-check the parser" --worker WORKER_ID
 ```
+
+A `[notify]` table in the configuration pushes the same milestones to a webhook
+or local command. See [progress and notifications](docs/progress.md).
 
 </details>
 
@@ -106,12 +111,32 @@ You can also assign your own [runtime skills](docs/runtime-skills.md) to workers
 
 ## Connect worker machines
 
-Create a fleet credential with `horde network key create` and supply it to workers
-through `HORDE_ENROLLMENT_FILE` or `HORDE_ENROLLMENT_JSON`. Each worker generates
-its own key, enrolls without SSH, and renews its certificate automatically. The
-same startup flow works across containers, sandboxes, VMs, and individual machines.
-See [automatic fleet enrollment](docs/networking.md#automatic-fleet-enrollment)
-for controller setup and credential delivery.
+Tell your coding agent how you want to divide the work:
+
+```text
+Use Apollo for delivery with Claude, Codex, and GLM 5.3 available to choose from.
+Keep the thinking on this machine using Codex and Astra. Follow the work through
+implementation and tests, then bring me the result for review.
+```
+
+Horde ships file-based skills for setup, discovery, model selection, planning, delegation, and review. The
+agent reads the workers' reported capabilities, resolves your machine and model
+names, and chooses a model for each task within the pools you specified. The
+names in this example must match models and providers available on your machines.
+
+The agent can arrange enrollment and provider configuration using its available
+machine or platform access. Missing access or credentials are reported directly.
+Workers retain their own provider credentials, and task choices do not rewrite
+their configuration. Containers, sandboxes, and VMs use the same enrollment flow
+through their platform's secret delivery mechanism.
+
+You can install edited skill files with `horde skills install ./skills` and send
+the pack to a worker with `horde runtime update apollo --skills`, without replacing
+the binary. You can discuss changes to those skills with your agent. It proposes a project
+override for review and saves it when you agree; running tasks keep their pinned
+instructions. See [agent-led delegation](docs/delegation.md#let-your-agent-arrange-the-work)
+and [runtime skills](docs/runtime-skills.md). Terminal setup remains documented in
+[fleet enrollment](docs/networking.md#automatic-fleet-enrollment).
 
 ## Documentation
 
