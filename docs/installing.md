@@ -41,6 +41,67 @@ Versioned executables and the `current` link live under
 `~/.local/share/horde-install`. Runtime databases and workspaces remain in the
 configured data directory. Service uninstall retains those files and credentials.
 
+## Make Horde the default in a repository
+
+Run one of these commands from the repository you want to work on:
+
+```sh
+horde init --agent codex --delegate always
+horde init --agent claude --delegate always
+```
+
+Choose the agent you talk to. This choice does not change the providers assigned
+to Horde's workers. Use `--repo /absolute/path` to select another repository, or
+`horde --data-dir /absolute/path init --agent codex --delegate always` to connect
+to a specific Horde instance. An explicit `--data-dir` or `HORDE_DATA_DIR` is
+pinned in the generated MCP arguments.
+
+The repository needs an initial commit and a configured Git author identity.
+The binary bundles the repository skills and their resources, including the
+operator, worker, and template skills plus the workflow guidance for setup,
+discovery, model selection, planning, delegation, and review. Installing these
+repository files does not need npm or a download. The daemon also needs its
+[default runtime skill pack](#skill-files-and-older-updaters), which official
+installers place beside the executable.
+
+| Agent | Instructions | Skills | MCP configuration |
+| --- | --- | --- | --- |
+| Codex | `AGENTS.md` | `.agents/skills/` | `.codex/config.toml` |
+| Claude Code | `CLAUDE.md` | `.claude/skills/` | `.mcp.json` |
+
+The managed instruction block directs the agent to delegate repository changes,
+including small edits, to Horde. The agent keeps responsibility for the user
+conversation and result inspection. Workers already executing Horde assignments
+perform their assigned steps instead of submitting new root tasks. An explicit
+user request can override delegation; instructions do not disable agent tools.
+
+Rerunning `init` updates the managed block and bundled skills. It preserves
+unrelated instructions and MCP settings, and refuses conflicting MCP entries,
+malformed managed blocks, symlink destinations, or locally modified bundled
+skills. Resolve the reported conflict and rerun. Skill ownership hashes are stored
+in the selected agent's configuration directory so upgrades can distinguish
+installed content from local edits. Files are replaced atomically one at a time;
+initialization is not a transaction across the repository.
+
+Initialization checks the configured workflow and required executables and
+credentials locally. It also runs a simulated task in a temporary repository with
+an isolated daemon, without provider calls. That test verifies scheduling and task
+completion; it does not verify model authentication or implementation quality.
+The temporary daemon and its data are removed after the check.
+
+The JSON report includes `runtime_skills`. A missing or invalid default runtime
+pack blocks readiness. If prerequisites are missing, the repository files are
+still installed, and the report has `ready: false` with concrete `next_steps`.
+Complete those steps and rerun the same command. When local checks pass, `init`
+starts or reuses the selected Horde daemon. Authentication remains unprobed.
+The generated MCP entry uses `horde` from PATH; your agent must be able to find
+the same installation. Reload your agent and accept its repository trust or MCP
+prompt if required.
+
+`npx skills add gethamster/horde` is a separate, skills-only installation path.
+It does not run `horde init`, configure MCP, or write the always-delegate policy.
+Use `horde init` alone when you want the complete repository setup.
+
 ## Skill files and older updaters
 
 The signed manifest lists `skills.tar` as an additional artifact. Binary archives

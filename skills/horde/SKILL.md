@@ -69,12 +69,24 @@ Use Horde when the work is long-running, needs more than one agent, needs a
 verification pass by a different model, needs to survive a restart, or needs an
 auditable record of attempts.
 
-Do not use Horde for a change you can make in this session in a couple of edits.
+When the repository has an always-delegate policy installed by `horde init`,
+follow that policy even for small edits. Workers already assigned a Horde step
+use `horde-worker` and perform their assignment without resubmitting it as a root
+task. In repositories without that policy, handle a couple of small edits in the
+current session unless the user asks to use Horde.
 Do not use it as a security sandbox: it is a cooperative, single-user runtime, not
 an isolation boundary against hostile code running as the same user. Do not expect
 a dashboard, a distributed scheduler, a hosted service, or a team-shared instance.
 
 ## Setup
+
+To configure an installed Horde for automatic delegation in a repository, run
+`horde init --agent codex --delegate always` or
+`horde init --agent claude --delegate always`, matching the user's agent.
+Read `references/setup.md` for file ownership, checks, and remaining setup steps.
+The command installs the bundled repository skills, including progressive workflow
+guidance; `npx skills add` does not invoke it. The daemon separately needs its
+default runtime skill pack, which the official installer supplies.
 
 This is the whole path from nothing to a working Horde. Run it end to end; do not
 hand the user a list of commands to run themselves.
@@ -94,11 +106,9 @@ confirm with the user first. Requires macOS or Linux and Git.
 curl -fsSL https://horde.sh/install | bash -s -- --no-service
 ```
 
-`--no-service` matters. Without an explicit `--service` or `--no-service` the
-installer asks whether to start Horde at login, and that prompt falls back to
-reading `/dev/tty` when stdin is not a terminal, which is exactly what
-`curl | bash` is. An agent tool call blocks there with no way to answer. Pass the
-flag and the question never happens.
+Use `--no-service` to keep boot-service installation outside this setup step.
+Interactive installation asks about boot startup; without a terminal, the
+installer skips the service unless `--service` is supplied.
 
 Boot startup stays a separate, reversible step the user opts into later:
 

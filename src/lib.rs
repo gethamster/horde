@@ -34,6 +34,9 @@ pub mod update;
 
 pub mod pairing;
 
+pub mod init;
+pub mod init_smoke;
+pub mod repo_init;
 pub mod skill_catalog;
 pub mod skills;
 
