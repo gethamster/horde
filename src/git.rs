@@ -162,27 +162,32 @@ pub fn task_workspace(db: &Store, oid: &str) -> Result<PathBuf> {
                 &start.sha,
             ],
         )?;
-        db.conn.execute(
-            "INSERT OR REPLACE INTO workspace_bases(task,start,source,fetched,created) VALUES(?,?,?,?,?)",
-            rusqlite::params![oid, start.sha, start.source, start.fetched, now()],
-        )?;
-        db.event(
-            oid,
-            "workspace.integrated",
-            json!({"path":path,"branch":branch,"start":start.sha,"source":start.source,"fetched":start.fetched}),
-        )?;
-        if let Some(reason) = start.warning {
-            let kind = if start.source == "local HEAD" {
-                "workspace.local_head_fallback"
-            } else {
-                "workspace.fetch_failed"
-            };
+        // The start record and its events land together so an operator never
+        // sees an integrated worktree whose origin was only partly recorded.
+        db.atomic(|| {
+            db.conn.execute(
+                "INSERT OR REPLACE INTO workspace_bases(task,start,source,fetched,created) VALUES(?,?,?,?,?)",
+                rusqlite::params![oid, start.sha, start.source, start.fetched, now()],
+            )?;
             db.event(
                 oid,
-                kind,
-                json!({"start":start.sha,"source":start.source,"reason":reason}),
+                "workspace.integrated",
+                json!({"path":path,"branch":branch,"start":start.sha,"source":start.source,"fetched":start.fetched}),
             )?;
-        }
+            if let Some(reason) = &start.warning {
+                let kind = if start.source == "local HEAD" {
+                    "workspace.local_head_fallback"
+                } else {
+                    "workspace.fetch_failed"
+                };
+                db.event(
+                    oid,
+                    kind,
+                    json!({"start":start.sha,"source":start.source,"reason":reason}),
+                )?;
+            }
+            Ok(())
+        })?;
     }
     if run(&path, &["branch", "--show-current"])? != format!("horde/{oid}") {
         bail!("integrated workspace is on an unexpected branch");
