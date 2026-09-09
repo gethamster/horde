@@ -114,6 +114,35 @@ sampling options, and tool-event diagnostics.
 
 ## Connect your agent
 
+### Use with Claude Code
+
+After installing Horde and choosing a worker provider, add Horde to Claude Code:
+
+```sh
+claude mcp add --transport stdio --scope user horde -- horde mcp
+horde start
+cd /path/to/repository
+claude
+```
+
+The user scope makes the connection available across your projects. In Claude
+Code, try a request such as:
+
+> Use Horde to add CSV export with tests in this repository. Submit the task,
+> follow its progress, and show me the result branch and any failing checks.
+
+Claude manages the conversation and calls Horde's tools. Horde runs the worker
+models selected in your configuration. To use Claude Code for the worker roles too:
+
+```sh
+horde config provider add claude --use-for planner,worker,reviewer
+```
+
+This uses the installed Claude CLI and its existing login. You can also keep
+Claude as the caller while using a local model for the workers.
+
+### Other MCP clients
+
 An agent that supports stdio MCP can submit and inspect Horde tasks. Add this
 server to its MCP configuration:
 
@@ -128,6 +157,8 @@ server to its MCP configuration:
 This connection controls the local runtime. Horde gives its own workers a separate,
 scoped connection. See [agent connections and coordination](docs/coordination.md)
 for custom data directories and external worker setup.
+
+### Agent skills
 
 Install the repository's agent skills to teach your agent how to operate Horde:
 
