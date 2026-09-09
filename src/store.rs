@@ -470,7 +470,10 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         let success = result.is_ok();
         let value = match result {
             Ok(v) => v,
-            Err(e) => json!({"error":format!("{e:#}")}),
+            Err(e) => e
+                .downcast_ref::<crate::budget::Exhausted>()
+                .map(|e| e.0.clone())
+                .unwrap_or_else(|| json!({"error":format!("{e:#}")})),
         };
         let value = crate::secrets::redact(self, oid, &value);
         let waiting = crate::delegation::has_question(self, worker)?;
@@ -526,7 +529,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             self.event(
                 oid,
                 "step.finished",
-                json!({"step":step,"attempt":attempt,"state":state,"result":value}),
+                json!({"step":step,"attempt":attempt,"state":state,"result":value,"timing":crate::budget::status(self,attempt)?}),
             )?;
             Ok(())
         })

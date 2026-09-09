@@ -154,7 +154,22 @@ async fn run_step(
 ) -> Result<()> {
     let db = Store::open(&root)?;
     let tid = row["id"].as_str().context("step")?;
-    let result = execute_step(&db, &row, &attempt, &wid, &token).await;
+    let oid = row["task"].as_str().context("task")?;
+    let settings: Settings =
+        serde_json::from_str(db.task(oid)?["settings"].as_str().context("settings")?)?;
+    let step = Store::step(&row)?;
+    let role = row["dispatch_role"].as_str().unwrap_or(&step.role);
+    let seconds = crate::budget::seconds(&settings, &step, role);
+    let result = crate::budget::supervise(
+        &db,
+        oid,
+        tid,
+        &attempt,
+        &wid,
+        seconds,
+        execute_step(&db, &row, &attempt, &wid, &token),
+    )
+    .await;
     db.finish(tid, &attempt, &wid, result)
 }
 async fn execute_step(
@@ -236,13 +251,22 @@ async fn execute_step(
     let workspace = if simulated {
         PathBuf::from(o["repo"].as_str().context("repo")?)
     } else if ["command", "delivery", "environment"].contains(&step.kind.as_str()) {
-        crate::git::task_workspace(db, oid)?
+        let root = db.root.clone();
+        let task = oid.to_owned();
+        crate::budget::blocking(move || crate::git::task_workspace(&Store::open(&root)?, &task))
+            .await?
     } else {
         let w = db.worker(wid)?;
         if let Some(path) = w["workspace"].as_str() {
             PathBuf::from(path)
         } else {
-            crate::git::allocate(db, oid, wid)?
+            let root = db.root.clone();
+            let task = oid.to_owned();
+            let worker = wid.to_owned();
+            crate::budget::blocking(move || {
+                crate::git::allocate(&Store::open(&root)?, &task, &worker)
+            })
+            .await?
         }
     };
     if !simulated && step.kind == "agent" {
@@ -281,8 +305,15 @@ async fn execute_step(
     crate::delegation::check_pin(db, oid, attempt)?;
     template::validate_result(&step, &result)?;
     if !simulated && step.kind == "agent" {
-        crate::git::validate_scope(db, wid)?;
-        result["integration"] = crate::git::integrate(db, oid, wid, &[])?;
+        let root = db.root.clone();
+        let task = oid.to_owned();
+        let worker = wid.to_owned();
+        result["integration"] = crate::budget::blocking(move || {
+            let db = Store::open(&root)?;
+            crate::git::validate_scope(&db, &worker)?;
+            crate::git::integrate(&db, &task, &worker, &[])
+        })
+        .await?;
         let _ = db.send(
             oid,
             wid,
@@ -477,13 +508,17 @@ async fn handle(stream: tokio::net::UnixStream, root: PathBuf) -> Result<()> {
     }
     let result = match serde_json::from_str::<Value>(&line) {
         Ok(v) => {
-            let db = Store::open(&root)?;
-            crate::protocol::dispatch(
-                &db,
-                v["method"].as_str().unwrap_or(""),
-                v.get("args").cloned().unwrap_or(json!({})),
-                v["token"].as_str(),
-            )
+            let root = root.clone();
+            crate::budget::blocking(move || {
+                let db = Store::open(&root)?;
+                crate::protocol::dispatch(
+                    &db,
+                    v["method"].as_str().unwrap_or(""),
+                    v.get("args").cloned().unwrap_or(json!({})),
+                    v["token"].as_str(),
+                )
+            })
+            .await
         }
         Err(e) => Err(e.into()),
     };

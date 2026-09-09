@@ -138,3 +138,16 @@ named step, correct the arguments, and call the same tool again. MCP returns
 validation failures as `isError` tool results; the native executor sends a tool
 error response and records the bounded error in events. Invalid proposals do not
 create a revision or insert partial steps.
+
+A step can override the [progress budget](configuration.md#step-progress-budgets):
+
+```toml
+[[steps]]
+id = "implement"
+role = "worker"
+step_budget_seconds = 2400
+instructions = "Implement and verify the change."
+```
+
+An override on a nested template inclusion supplies the default for its expanded
+steps; a child's explicit value takes precedence. Each retry starts a fresh window.

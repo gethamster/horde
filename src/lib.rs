@@ -32,3 +32,5 @@ pub mod update;
 pub mod pairing;
 
 pub mod skills;
+
+pub mod budget;

@@ -69,7 +69,17 @@ pub async fn call(
             let p = path()?;
             db.check_write(wid, args["path"].as_str().context("path")?)?;
             std::fs::create_dir_all(p.parent().context("parent")?)?;
-            std::fs::write(p, args["content"].as_str().context("content")?)?;
+            let content = args["content"].as_str().context("content")?;
+            let changed = std::fs::read(&p).ok().as_deref() != Some(content.as_bytes());
+            std::fs::write(&p, content)?;
+            if changed {
+                crate::budget::progress(
+                    db,
+                    wid,
+                    "file_write",
+                    &crate::store::hash(json!([args["path"], content]).to_string().as_bytes()),
+                )?;
+            }
             Ok(json!({"written":true}))
         }
         "apply_patch" => {
@@ -77,55 +87,88 @@ pub async fn call(
             if patch.len() > 1024 * 1024 {
                 bail!("patch exceeds 1 MiB");
             }
-            let scratch = db.root.join(format!("patch-{}", crate::store::id()));
-            std::fs::write(&scratch, patch)?;
-            let result = (|| -> Result<Value> {
-                let stats = crate::executor::clean_command("git")
-                    .args(["apply", "--numstat", "-z"])
-                    .arg(&scratch)
-                    .current_dir(root)
-                    .output()?;
-                if !stats.status.success() {
-                    bail!(
-                        "invalid unified diff: {}",
-                        String::from_utf8_lossy(&stats.stderr)
-                    );
-                }
-                for record in stats.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-                    let record = std::str::from_utf8(record)?;
-                    let file = record
-                        .splitn(3, '\t')
-                        .nth(2)
-                        .context("patch contains unsupported rename metadata")?;
-                    db.check_write(wid, file)?;
-                    safe_path(root, file)?;
-                }
-                let check = crate::executor::clean_command("git")
-                    .args(["apply", "--check"])
-                    .arg(&scratch)
-                    .current_dir(root)
-                    .output()?;
-                if !check.status.success() {
-                    bail!(
-                        "patch does not apply: {}",
-                        String::from_utf8_lossy(&check.stderr)
-                    );
-                }
-                let applied = crate::executor::clean_command("git")
-                    .arg("apply")
-                    .arg(&scratch)
-                    .current_dir(root)
-                    .output()?;
-                if !applied.status.success() {
-                    bail!("patch failed: {}", String::from_utf8_lossy(&applied.stderr));
-                }
-                Ok(json!({"applied":true}))
-            })();
-            let _ = std::fs::remove_file(scratch);
-            result
+            let patch = patch.to_owned();
+            let data_root = db.root.clone();
+            let root = root.to_owned();
+            let wid = wid.to_owned();
+            crate::budget::blocking(move || {
+                let db = Store::open(&data_root)?;
+                let root = root.as_path();
+                let wid = wid.as_str();
+                let scratch = db.root.join(format!("patch-{}", crate::store::id()));
+                std::fs::write(&scratch, &patch)?;
+                let result = (|| -> Result<Value> {
+                    let stats = crate::budget::command_output(
+                        crate::executor::clean_command("git")
+                            .args(["apply", "--numstat", "-z"])
+                            .arg(&scratch)
+                            .current_dir(root),
+                    )?;
+                    if !stats.status.success() {
+                        bail!(
+                            "invalid unified diff: {}",
+                            String::from_utf8_lossy(&stats.stderr)
+                        );
+                    }
+                    let mut before = Vec::new();
+                    for record in stats.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+                        let record = std::str::from_utf8(record)?;
+                        let file = record
+                            .splitn(3, '\t')
+                            .nth(2)
+                            .context("patch contains unsupported rename metadata")?;
+                        db.check_write(wid, file)?;
+                        let path = safe_path(root, file)?;
+                        before.push((file.to_owned(), std::fs::read(path).ok()));
+                    }
+                    let check = crate::budget::command_output(
+                        crate::executor::clean_command("git")
+                            .args(["apply", "--check"])
+                            .arg(&scratch)
+                            .current_dir(root),
+                    )?;
+                    if !check.status.success() {
+                        bail!(
+                            "patch does not apply: {}",
+                            String::from_utf8_lossy(&check.stderr)
+                        );
+                    }
+                    let applied = crate::budget::command_output(
+                        crate::executor::clean_command("git")
+                            .arg("apply")
+                            .arg(&scratch)
+                            .current_dir(root),
+                    )?;
+                    if !applied.status.success() {
+                        bail!("patch failed: {}", String::from_utf8_lossy(&applied.stderr));
+                    }
+                    for (file, old) in before {
+                        let current = std::fs::read(safe_path(root, &file)?).ok();
+                        if current != old {
+                            let fingerprint = current
+                                .as_deref()
+                                .map(crate::store::hash)
+                                .unwrap_or_else(|| "deleted".into());
+                            crate::budget::progress(
+                                &db,
+                                wid,
+                                "file_write",
+                                &crate::store::hash(
+                                    json!([file, fingerprint]).to_string().as_bytes(),
+                                ),
+                            )?;
+                        }
+                    }
+                    Ok(json!({"applied":true}))
+                })();
+                let _ = std::fs::remove_file(scratch);
+                result
+            })
+            .await
         }
         "search" => {
-            let out = crate::executor::clean_command("rg")
+            let mut command = crate::executor::clean_command("rg");
+            command
                 .args([
                     "--line-number",
                     "--max-count",
@@ -134,13 +177,14 @@ pub async fn call(
                     args["pattern"].as_str().context("pattern")?,
                     ".",
                 ])
-                .current_dir(root)
-                .output()?;
-            if out.status.code().is_some_and(|c| c > 1) {
-                bail!("search failed: {}", String::from_utf8_lossy(&out.stderr));
+                .current_dir(root);
+            let out =
+                crate::executor::run_process(command, None, settings.timeout_seconds, None).await?;
+            if out["exit_code"].as_i64().is_none_or(|c| c > 1) {
+                bail!("search failed: {}", out["stderr"]);
             }
             Ok(
-                json!({"matches":String::from_utf8_lossy(&out.stdout).chars().take(32000).collect::<String>()}),
+                json!({"matches":out["stdout"].as_str().unwrap_or("").chars().take(32000).collect::<String>()}),
             )
         }
         "command" => {
@@ -159,7 +203,12 @@ pub async fn call(
                 attempt.as_deref().map(|a| (db, a)),
             )
             .await?;
-            crate::git::validate_scope(db, wid)?;
+            let data_root = db.root.clone();
+            let worker = wid.to_owned();
+            crate::budget::blocking(move || {
+                crate::git::validate_scope(&Store::open(&data_root)?, &worker)
+            })
+            .await?;
             Ok(out)
         }
         _ => bail!("unknown native tool {name}"),

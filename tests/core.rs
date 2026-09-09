@@ -1203,3 +1203,31 @@ fn native_tool_events_bound_and_redact_arguments_and_results() {
             && event["result_summary"].is_null()
     );
 }
+
+#[test]
+fn knowledge_kind_choices_match_dispatch_and_rejections_are_clear() {
+    let f = Fixture::new();
+    for kind in ["fact", "decision", "evidence"] {
+        let record = f
+            .call(
+                "add_knowledge",
+                json!({"kind":kind,"content":"observed","provenance":{}}),
+            )
+            .unwrap();
+        assert!(record["id"].is_string());
+    }
+    let error = f
+        .call(
+            "add_knowledge",
+            json!({"kind":"observation","content":"observed","provenance":{}}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("fact, decision, evidence"), "{error}");
+    assert_eq!(
+        f.db.rows("SELECT id FROM knowledge WHERE task=?", &[&f.oid])
+            .unwrap()
+            .len(),
+        3
+    );
+}

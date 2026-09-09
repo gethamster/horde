@@ -15,6 +15,7 @@ pub struct Settings {
     pub autonomy: bool,
     pub default_template: String,
     pub timeout_seconds: u64,
+    pub step_budget_seconds: u64,
     pub max_tool_rounds: usize,
     pub max_identical_tool_calls: usize,
     pub tool_event_bytes: usize,
@@ -95,6 +96,7 @@ impl Provider {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Executor {
+    pub step_budget_seconds: Option<u64>,
     pub provider: Option<String>,
     pub account: Option<String>,
     pub program: Option<String>,
@@ -189,9 +191,21 @@ impl Default for Settings {
             ),
         ]);
         let executors = BTreeMap::from([
-            ("planner".into(), Executor::default()),
+            (
+                "planner".into(),
+                Executor {
+                    step_budget_seconds: Some(600),
+                    ..Default::default()
+                },
+            ),
             ("worker".into(), Executor::default()),
-            ("reviewer".into(), Executor::default()),
+            (
+                "reviewer".into(),
+                Executor {
+                    step_budget_seconds: Some(600),
+                    ..Default::default()
+                },
+            ),
             ("native".into(), Executor::default()),
             ("codex".into(), Executor::using("codex")),
             ("claude".into(), Executor::using("claude")),
@@ -202,6 +216,7 @@ impl Default for Settings {
             autonomy: true,
             default_template: "local-implementation".into(),
             timeout_seconds: 1800,
+            step_budget_seconds: 1800,
             max_tool_rounds: 64,
             max_identical_tool_calls: 3,
             tool_event_bytes: 512,
@@ -225,6 +240,7 @@ concurrency = 4
 autonomy = true
 default_template = "local-implementation"
 timeout_seconds = 1800
+step_budget_seconds = 1800 # Time without durable progress, per attempt
 max_tool_rounds = 64
 max_identical_tool_calls = 3 # 0 disables repeated-call detection
 tool_event_bytes = 512 # Per arguments/result field; 0 omits payloads
@@ -276,8 +292,10 @@ kind = "simulated"
 #   model = "a-stronger-model"
 #
 [executors.planner]
+step_budget_seconds = 600
 [executors.worker]
 [executors.reviewer]
+step_budget_seconds = 600
 [executors.native]
 
 [executors.codex]
@@ -399,6 +417,9 @@ impl Settings {
         {
             bail!("invalid concurrency, timeout, or tool round limit");
         }
+        if self.step_budget_seconds == 0 {
+            bail!("step_budget_seconds must be positive");
+        }
         if self.tool_event_bytes > 65536 {
             bail!("tool_event_bytes must be between 0 and 65536");
         }
@@ -426,6 +447,9 @@ impl Settings {
             }
         }
         for (role, executor) in &self.executors {
+            if executor.step_budget_seconds == Some(0) {
+                bail!("executor role {role}: step_budget_seconds must be positive");
+            }
             crate::native_protocol::validate_extra_body(&executor.extra_body)
                 .map_err(|e| anyhow::anyhow!("executor role {role}: {e}"))?;
             if !executor.extra_body.is_empty()

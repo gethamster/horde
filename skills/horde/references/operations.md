@@ -181,3 +181,5 @@ Additional worker restrictions, enforced at the RPC layer:
 
 These are scope limits at the RPC layer, not process isolation. A worker token
 does not protect against a malicious local process running as the same user.
+
+For `add_knowledge`, `kind` must be `fact`, `decision`, or `evidence`.

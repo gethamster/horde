@@ -56,10 +56,10 @@ fn usage(v: &Value) -> Usage {
 }
 pub fn report(db: &Store, oid: &str) -> Result<Value> {
     let task = db.task(oid)?;
-    let attempts = db.rows(
-        "SELECT a.*,t.spec FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=?",
+    let attempts = crate::budget::annotate(db, db.rows(
+        "SELECT a.*,t.spec FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started,a.rowid",
         &[&oid],
-    )?;
+    )?)?;
     let (
         mut input,
         mut output,
@@ -109,6 +109,37 @@ pub fn report(db: &Store, oid: &str) -> Result<Value> {
     let steps = count("SELECT COUNT(*) FROM steps WHERE task=?")?;
     let mut result = json!({"task":oid,"status":task["status"],"accepted_tasks":i64::from(task["status"]=="succeeded"),"attempts":attempts.len(),"retries":(attempts.len() as i64-steps).max(0),"reported_input_tokens":input,"reported_output_tokens":output,"reported_cached_tokens":cached,"planner_reviewer_reported_tokens":frontier,"reported_api_cost_usd":if unknown_cost==0{json!(cost)}else{Value::Null},"known_api_cost_subtotal_usd":cost,"attempts_without_token_usage":unreported,"attempts_without_cost":unknown_cost,"subscription_capacity":null,"elapsed_seconds":finished-task["created"].as_i64().unwrap_or(0),"coordination_messages":count("SELECT COUNT(*) FROM messages WHERE task=?")?,"coordination_tool_calls":count("SELECT COUNT(*) FROM events WHERE task=? AND kind='coordination.call'")?,"human_answers":count("SELECT COUNT(*) FROM questions WHERE task=? AND answer IS NOT NULL")? });
     result["turns"] = json!(turns);
+    let mut step_metrics = vec![];
+    for step in db.steps(oid)? {
+        let id = step["id"].as_str().unwrap_or("");
+        let runs: Vec<_> = attempts.iter().filter(|a| a["step"] == id).collect();
+        let started = runs.iter().filter_map(|a| a["started"].as_i64()).min();
+        let finished = runs
+            .iter()
+            .map(|a| a["finished"].as_i64().unwrap_or_else(crate::store::now))
+            .max();
+        let mut input = 0;
+        let mut output = 0;
+        let mut cached = 0;
+        for a in &runs {
+            let value = a["usage"]
+                .as_str()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .unwrap_or(Value::Null);
+            let u = usage(&value);
+            input += u.input;
+            output += u.output;
+            cached += u.cached;
+        }
+        let tool_calls: i64 = db.conn.query_row("SELECT COUNT(*) FROM events WHERE task=? AND kind='tool.completed' AND json_extract(data,'$.step')=?",rusqlite::params![oid,id],|r|r.get(0))?;
+        let coordination_calls: i64 = db.conn.query_row("SELECT COUNT(*) FROM events WHERE task=? AND kind='coordination.call' AND json_extract(data,'$.step')=?",rusqlite::params![oid,id],|r|r.get(0))?;
+        step_metrics.push(json!({"step":id,"name":step["name"],"state":step["state"],
+            "elapsed_seconds":started.zip(finished).map(|(s,f)|(f-s).max(0)),
+            "attempt_elapsed_seconds":runs.iter().filter_map(|a|a["timing"]["elapsed_s"].as_f64()).sum::<f64>(),
+            "reported_input_tokens":input,"reported_output_tokens":output,"reported_cached_tokens":cached,"tool_calls":tool_calls,"recorded_coordination_calls":coordination_calls,
+            "attempts":runs.iter().map(|a|json!({"attempt":a["id"],"state":a["state"],"timing":a["timing"]})).collect::<Vec<_>>() }));
+    }
+    result["steps"] = json!(step_metrics);
     if let Some(remote) = db
         .rows(
             "SELECT data FROM external_ops WHERE task=? AND name='federation.metrics'",

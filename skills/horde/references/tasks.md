@@ -196,3 +196,11 @@ loaded, the error is withheld. Successful tool output and arguments are not
 included. Redaction covers known literal secrets, not arbitrary sensitive text.
 These events cover the native executor; external CLI harness internals are not
 captured. Older events may omit the new fields.
+
+Attempts have daemon-enforced progress budgets: planner/reviewer 600 seconds,
+worker 1800 seconds by default. Set `step_budget_seconds` globally, on an executor
+role, or on a step (step wins). Durable changes renew the window; read-only calls,
+status updates, and duplicate writes do not. Exhaustion records
+`step.budget_exhausted` and uses normal retry/fail handling. Inspect attempt `timing`
+for elapsed, idle, budget, and remaining seconds; metrics also includes per-step
+wall time, attempt time, tokens, and coordination calls.

@@ -559,3 +559,180 @@ fn slow_peer_discovery_does_not_block_cli_or_shutdown() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[test]
+fn daemon_enforces_step_budget_and_retries_with_a_fresh_budget() {
+    let d = Daemon::new();
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        "step_budget_seconds = 8\n[executors.worker]\nstep_budget_seconds = 3\n",
+    )
+    .unwrap();
+    d.template(
+        "budgeted",
+        r#"name = "budgeted"
+version = "1"
+[[steps]]
+id = "stall"
+kind = "command"
+attempts = 2
+step_budget_seconds = 1
+command = ["sh", "-c", "sleep 30"]
+"#,
+    );
+    let task = d.submit("budgeted");
+    let started = Instant::now();
+    loop {
+        let inspect = d.inspect(&task);
+        if inspect["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["timing"]["budget_s"] == 1)
+        {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let result = d.wait(&task, "failed");
+    assert_eq!(result["attempts"].as_array().unwrap().len(), 2);
+    for attempt in result["attempts"].as_array().unwrap() {
+        assert_eq!(attempt["state"], "failed");
+        let value: Value = serde_json::from_str(attempt["result"].as_str().unwrap()).unwrap();
+        assert_eq!(value["error"], "step budget exhausted");
+        assert_eq!(value["budget_s"], 1);
+        assert_eq!(attempt["timing"]["remaining_s"], 0.0);
+    }
+    let events = d.call("events", json!({"task":task}));
+    assert_eq!(
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "step.budget_exhausted")
+            .count(),
+        2
+    );
+    let metrics = d.call("metrics", json!({"task":task}));
+    assert_eq!(metrics["steps"][0]["attempts"].as_array().unwrap().len(), 2);
+    assert!(metrics["steps"][0]["elapsed_seconds"].as_i64().unwrap() >= 2);
+}
+
+#[test]
+fn daemon_ends_a_streaming_planner_loop_despite_valid_different_calls() {
+    use std::io::Read;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let d = Daemon::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = stop.clone();
+    let server = std::thread::spawn(move || {
+        let mut turn = 0;
+        while !stopped.load(Ordering::Relaxed) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut header = vec![];
+            let mut byte = [0; 1];
+            while !header.ends_with(b"\r\n\r\n") {
+                if stream.read_exact(&mut byte).is_err() {
+                    return;
+                }
+                header.push(byte[0]);
+            }
+            let header = String::from_utf8(header).unwrap();
+            let length = header
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .and_then(|s| s.parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            let mut request = vec![0; length];
+            if stream.read_exact(&mut request).is_err() {
+                continue;
+            }
+            let body = if header.starts_with("GET ") {
+                json!({"data":[{"id":"test-model"}]}).to_string()
+            } else {
+                turn += 1;
+                std::thread::sleep(Duration::from_millis(120));
+                let call = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":format!("read-{turn}"),"type":"function","function":{"name":"read_context","arguments":json!({"after":turn}).to_string()}}]}}]});
+                let usage =
+                    json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2}});
+                format!("data: {call}\n\ndata: {usage}\n\ndata: [DONE]\n\n")
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                if body.starts_with("data:") {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+                body
+            );
+        }
+    });
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        format!(
+            r#"
+max_tool_rounds = 10000
+[providers.default]
+kind = "tuara"
+auth_mode = "api"
+base_url = "http://{address}/v1"
+api_key_env = "PATH"
+model = "test-model"
+stream = true
+[executors.planner]
+step_budget_seconds = 1
+"#
+        ),
+    )
+    .unwrap();
+    d.template(
+        "loop",
+        "name=\"loop\"\nversion=\"1\"\n[[steps]]\nid=\"plan\"\nrole=\"planner\"\nattempts=1\n",
+    );
+    let task = d.submit("loop");
+    let inspect = d.wait(&task, "failed");
+    stop.store(true, Ordering::Relaxed);
+    server.join().unwrap();
+    let result: Value =
+        serde_json::from_str(inspect["attempts"][0]["result"].as_str().unwrap()).unwrap();
+    assert_eq!(result["error"], "step budget exhausted", "{result}");
+    let events = d.call("events", json!({"task":task}));
+    let calls: Vec<_> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "tool.completed")
+        .collect();
+    assert!(calls.len() >= 2, "{events}");
+    for call in calls {
+        let data: Value = serde_json::from_str(call["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["success"], true, "{data}");
+    }
+    let metrics = d.call("metrics", json!({"task":task}));
+    assert!(
+        metrics["steps"][0]["reported_input_tokens"]
+            .as_u64()
+            .unwrap()
+            > 0,
+        "{metrics}"
+    );
+}

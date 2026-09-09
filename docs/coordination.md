@@ -57,3 +57,7 @@ Git integration is serialized per task. Merge conflicts are aborted without chan
 ## Local service and data
 
 `horde stop` shuts the service down gracefully. `horde daemon` runs in the foreground; `horde start` detaches it and writes `daemon.log`. The default data directory is `~/.local/share/horde`. Set `--data-dir PATH` consistently on every command to use a different instance. Keep this path short enough for a Unix socket (under roughly 90 characters on macOS).
+
+`add_knowledge.kind` accepts exactly `fact`, `decision`, or `evidence`. These values
+are enumerated in both the worker and administrative tool schemas; unsupported
+values return an error listing the valid choices.
