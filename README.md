@@ -13,16 +13,20 @@ model server, including one you run locally.
 
 [Quick start](#quick-start) · [Documentation](docs/README.md) · [Website](https://horde.sh) · [Issues](https://github.com/gethamster/horde/issues) · [Apache-2.0](LICENSE)
 
-## What you can do
+## When to use Horde
 
-- Give a task to a planner and let independent steps run in parallel, with file
-  ownership rules to keep workers from overwriting each other's work.
-- Choose different models for implementation and review, or use one provider for
-  the whole task.
-- Share project instructions and reusable skills with workers, including workers
-  on another enrolled machine.
-- Inspect tool calls, test results, and reported token usage. Failed or interrupted
-  work retains its worktree and evidence for recovery.
+Horde is useful when a change benefits from separate implementation and review,
+or when independent parts can be assigned to different workers. For example:
+
+| Task | How Horde helps |
+| --- | --- |
+| Add a feature across an API and its UI | Give each part a separate worktree, then check the combined result. |
+| Refactor a module with existing tests | Plan the change, implement it, and have a reviewer check behavior. |
+| Fix several unrelated bugs | Propose independent steps with separate file scopes so they can run in parallel. |
+| Use a local model for implementation and Claude for review | Assign different providers to the worker and reviewer roles. |
+
+For a small edit you can finish in your current agent session, the extra workflow
+may be unnecessary.
 
 Horde currently serves one user through the CLI and MCP; it has no web dashboard.
 It is an early release. It coordinates work, but the agents can still make
@@ -35,6 +39,37 @@ provider checks and lists the current limits.
 You need macOS or Linux, Git, and a coding-agent CLI or model server. Native workers
 also use [ripgrep](https://github.com/BurntSushi/ripgrep) for search. The repository
 you give Horde must have an initial commit and a configured Git author identity.
+
+### Let Claude Code set it up
+
+Open Claude Code in your repository and paste this prompt:
+
+```text
+Set up Horde for this repository using the installation guide at
+https://github.com/gethamster/horde/blob/main/docs/installing.md.
+
+Check the Git prerequisites and install the signed release if needed, without
+installing a boot service. Configure the planner, worker, and reviewer roles to
+use my installed Claude Code CLI and its existing login. Add Horde to Claude
+Code as a user-scoped stdio MCP server with the command `horde mcp`.
+
+Start Horde and run a simulated task in this repository to verify scheduling
+without a model call. Show me the result, explain any remaining setup steps,
+and give me a prompt for submitting my first real task through Horde.
+```
+
+Once the MCP connection is available, try:
+
+```text
+Use Horde to add CSV export with tests in this repository. Plan the work,
+implement it, and review the combined result. Follow the task and show me
+its result branch, the checks that ran, and anything that still needs attention.
+```
+
+Replace the CSV example with your task. See [Claude Code setup](#use-with-claude-code)
+for the MCP command and provider options.
+
+### Set it up from your terminal
 
 Install a signed release:
 
