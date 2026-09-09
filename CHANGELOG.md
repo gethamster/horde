@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Add `horde watch TASK_ID` and `horde events --follow`, an NDJSON stream of a
+  task's durable events that ends with a `task.summary` line and exits 0, 1, or 2
+  for succeeded, failed, or cancelled, 3 on `--timeout-secs`, and 4 when the
+  daemon goes away. `--after SEQ` resumes a stream and `--interval-ms` sets the
+  poll interval.
+- Add `horde summary TASK_ID`, one JSON object with the status, step outcomes,
+  branch, integrated head, and delivery outcome. Delivery reports `pr_ready` with
+  the PR URL when `merge = false`, `merged`, `failed`, or `skipped` with an
+  explicit reason such as `template has no delivery step` or `delivery disabled
+  in settings`, mirrored in a top-level `delivery_skipped` field.
+- Add an optional `[notify]` table that pushes `step.finished`, `task.finished`,
+  `question.asked`, and `task.blocked` milestones to a webhook (`webhook` or
+  `webhook_env`), a local command reading JSON on stdin, or both. A durable
+  per-task cursor survives restarts, every attempt records `notify.delivered` or
+  `notify.failed`, and a dead endpoint never stalls later events.
+- Document the progress surfaces for scripts and agents in `docs/progress.md`.
+
 ## 0.6.0
 
 - Mint fleet enrollment credentials with `horde network key create`. Workers
