@@ -216,6 +216,15 @@ fn operator_steer_reaches_every_worker() {
         )
         .is_err()
     );
+    assert!(
+        f.call("reconcile_worker", json!({"worker":operator}))
+            .is_err()
+    );
+    // The operator row keeps its status, so later steers still fan out to every worker.
+    assert_eq!(
+        f.call("steer", json!({"body":"still steering"})).unwrap()["recipients"],
+        2
+    );
     let events =
         f.db.rows(
             "SELECT data FROM events WHERE task=? AND kind='message.sent'",
