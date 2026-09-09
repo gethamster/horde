@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.6.0
+
+- Mint fleet enrollment credentials with `horde network key create`. Workers
+  enroll over TLS from containers, sandboxes, VMs, or individual machines without
+  SSH, generate their own private keys, and renew their certificates automatically.
+- Recover an expired worker certificate with the original valid fleet credential
+  while keeping its identity and quota slot. Admission limits and revocation are
+  enforced by the controller; fleet secrets stay outside saved worker state.
+- List independently enrolled workers alongside managed runtimes, with heartbeat,
+  expiry, and revocation status. Their launching platform retains lifecycle control.
+
 - Add `complete_step` for native workers and remind planners to finish their
   assigned step after proposing work. Runtime acceptance checks still apply.
 

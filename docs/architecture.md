@@ -171,6 +171,29 @@ existing mTLS enrollment and heartbeat path. Exact private bootstrap packets and
 receiver intents are retained for retry recovery; SQLite retains only enrollment
 hashes and authoritative state. Discovery never creates execution grants.
 
+Universal fleet enrollment uses a separate server-authenticated TLS listener.
+Fleet credentials carry controller trust and authorize admission only. The
+controller stores credential hashes, limits, and membership in SQLite. Workers
+persist a local private key and signed request before attempting registration;
+admission deduplicates that public key and checks quota in an immediate transaction.
+Certificate subjects and usages are assigned by the controller, never accepted
+from the requested extensions. Independently enrolled members do not become
+provider-owned resources in `managed_runtimes`.
+
+The existing runtime listener still requires mTLS. Fleet workers receive
+client-authentication certificates valid for 24 hours and renew after 12 hours
+using their existing identity. Previously issued certificates remain valid
+until expiry so a lost renewal reply can be recovered. Revoking a member denies
+both certificate generations and disconnects its control stream. Revoking an
+admission credential only prevents new members. Worker state is committed before
+installing generation-specific certificate paths and replacing network config;
+startup replays that installation without requesting a new identity. After
+certificate expiry, a member can reassert its still-valid admission credential
+and prove possession of the same private key through a signed request. Readmission
+retains its runtime identity and quota slot; revoked members cannot use this path.
+Workers retain a file reference when credentials come from a file, and otherwise
+read the injected credential again. Admission secrets remain outside worker state.
+
 
 Update handoff intent lives in authoritative runtime settings, separate from
 worker conversation. Before switching a running binary, the updater records the

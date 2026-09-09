@@ -72,6 +72,12 @@ pub async fn accept(
         .ok_or_else(|| tonic::Status::unauthenticated("enrolled certificate required"))?
         .0
         .clone();
+    let fingerprint = request
+        .extensions()
+        .get::<crate::federation::PeerCertificate>()
+        .ok_or_else(|| tonic::Status::unauthenticated("worker certificate required"))?
+        .0
+        .clone();
     let mut input = request.into_inner();
     let first = tokio::time::timeout(Duration::from_secs(10), input.message())
         .await
@@ -129,7 +135,7 @@ pub async fn accept(
                 },
                 _=timer.tick()=>{
                     if heartbeat.elapsed()>Duration::from_secs(30){break;}
-                    if managed {let active=crate::store::Store::open(&presence_root).and_then(|db|db.rows("SELECT runtime FROM runtime_enrollments WHERE runtime=? AND state='active'",&[&key.1])).is_ok_and(|rows|!rows.is_empty());if !active{break;}}
+                    if managed {let active=crate::store::Store::open(&presence_root).and_then(|db|Ok(crate::fleet_enrollment::authority::is_active(&db,&key.1)? && crate::enrollment::identity(&db,&fingerprint)?.as_deref()==Some(key.1.as_str()))).unwrap_or(false);if !active{break;}}
                 }
             }
         }
@@ -171,7 +177,13 @@ pub async fn connect(root: PathBuf, config: NetworkConfig) -> Result<()> {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     loop {
         tokio::select! {
-            _=interval.tick()=>{send.send(wire::CallRequest{method:"heartbeat".into(),json:heartbeat_packet(&root).unwrap_or_else(|_|"{}".into())}).await?;},
+            _=interval.tick()=>{
+                if root.join("fleet-worker.json").exists() {
+                    let current = NetworkConfig::load(Some(&root.join("managed-network.toml")))?;
+                    ensure!(current.identity_cert == config.identity_cert, "worker certificate renewed; reconnecting");
+                }
+                send.send(wire::CallRequest{method:"heartbeat".into(),json:heartbeat_packet(&root).unwrap_or_else(|_|"{}".into())}).await?;
+            },
             frame=stream.message()=>{
                 let frame=frame?.context("controller disconnected")?;let packet:Value=serde_json::from_str(&frame.json)?;
                 let root=root.clone();let config=config.clone();let peer=peer.clone();let send=send.clone();

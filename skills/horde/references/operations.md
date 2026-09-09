@@ -138,6 +138,27 @@ None of these are available to a worker token.
 | `management_events` | `after` |
 | `management_ack` | `consumer`*, `seq`* |
 
+Fleet enrollment uses administrative CLI commands:
+
+```sh
+horde network key create workers --listen 192.0.2.10:7444 --controller-address 192.0.2.10:7443 --tls-name controller.example.com --output workers.json
+horde network key list
+horde network key revoke KEY_ID
+horde network join --invitation workers.json
+horde network revoke WORKER_ID
+```
+
+Configure the controller network first and substitute its reachable addresses
+and certificate DNS name. Deploy the private credential through
+`HORDE_ENROLLMENT_FILE` or `HORDE_ENROLLMENT_JSON`, then start `horde daemon` on
+each worker. Workers generate separate identities and renew automatically.
+Expired certificates can recover with the original valid fleet credential;
+revoked workers cannot recover. Admission-key revocation blocks new admissions
+and expired recovery, while valid workers can still renew. Fleet membership
+appears in `runtime_list` and `runtime_inspect`; the launching platform owns the
+resource lifecycle. See [fleet enrollment](../../../docs/networking.md#automatic-fleet-enrollment)
+for limits and secret delivery.
+
 ## Worker token scope
 
 A worker token may call exactly these, and nothing else:

@@ -10,6 +10,11 @@ use serde_json::{Value, json};
 pub fn migrate(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS runtime_presence(runtime TEXT PRIMARY KEY,observed INTEGER NOT NULL,status TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runtime_enrollments(runtime TEXT PRIMARY KEY,fingerprint TEXT UNIQUE NOT NULL,token_hash TEXT NOT NULL,expires INTEGER NOT NULL,state TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS fleet_enrollment_keys(id TEXT PRIMARY KEY,name TEXT NOT NULL,token_hash TEXT NOT NULL,expires INTEGER NOT NULL,max_workers INTEGER NOT NULL,concurrency INTEGER NOT NULL,state TEXT NOT NULL,created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS fleet_enrollment_members(runtime TEXT PRIMARY KEY,key_id TEXT NOT NULL REFERENCES fleet_enrollment_keys(id),public_key_hash TEXT UNIQUE NOT NULL,state TEXT NOT NULL,created INTEGER NOT NULL,current_fingerprint TEXT);
+CREATE TABLE IF NOT EXISTS fleet_enrollment_certificates(fingerprint TEXT PRIMARY KEY,runtime TEXT NOT NULL REFERENCES fleet_enrollment_members(runtime),certificate_pem TEXT NOT NULL,expires INTEGER NOT NULL,renew_after INTEGER NOT NULL,concurrency INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS fleet_member_key ON fleet_enrollment_members(key_id);
+CREATE INDEX IF NOT EXISTS fleet_certificate_runtime ON fleet_enrollment_certificates(runtime);
 CREATE TABLE IF NOT EXISTS runtime_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS account_capacity(account TEXT NOT NULL,window TEXT NOT NULL,provider TEXT NOT NULL,used REAL,reset INTEGER,observed INTEGER NOT NULL,source TEXT NOT NULL,PRIMARY KEY(account,window));
 CREATE TABLE IF NOT EXISTS attempt_accounts(attempt TEXT PRIMARY KEY REFERENCES attempts(id),account TEXT NOT NULL,role TEXT NOT NULL);
