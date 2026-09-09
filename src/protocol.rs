@@ -175,7 +175,22 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "add_knowledge",
         "Store fact, decision or evidence with provenance",
     ),
-    ("knowledge", "Read knowledge for this task"),
+    (
+        "knowledge",
+        "Read task knowledge or query bounded task/family notebook pages",
+    ),
+    (
+        "knowledge_edges",
+        "Read bounded relationship pages for a visible knowledge record",
+    ),
+    (
+        "knowledge_options",
+        "Read the task's knowledge topics, scopes, and task-specific schemas",
+    ),
+    (
+        "retract_knowledge",
+        "Withdraw an owned knowledge claim while retaining its provenance",
+    ),
     (
         "link_knowledge",
         "Link two knowledge records with a relationship",
@@ -308,8 +323,34 @@ pub fn admin_schema(name: &str) -> Value {
         ],
         "get_artifact" => &[("task", "string"), ("hash", "string")],
         "reuse_artifact" => &[("task", "string"), ("name", "string"), ("inputs", "object")],
+        "knowledge" => &[
+            ("task", "string"),
+            ("scope", "string"),
+            ("topic", "string"),
+            ("query", "string"),
+            ("after", "string"),
+            ("limit", "integer"),
+            ("include_inactive", "boolean"),
+        ],
+        "knowledge_edges" => &[
+            ("task", "string"),
+            ("source", "string"),
+            ("after", "string"),
+            ("limit", "integer"),
+        ],
+        "retract_knowledge" => &[
+            ("task", "string"),
+            ("id", "string"),
+            ("reason", "string"),
+            ("provenance", "object"),
+        ],
         "add_knowledge" => &[
             ("task", "string"),
+            ("id", "string"),
+            ("scope", "string"),
+            ("topic", "string"),
+            ("valid_under", "object"),
+            ("supersedes", "array"),
             ("step", "string"),
             ("kind", "string"),
             ("content", "string"),
@@ -418,6 +459,10 @@ pub fn admin_schema(name: &str) -> Value {
                     json!({"type":"string"})
                 };
             }
+            if matches!(name,"add_knowledge"|"knowledge") && *k=="scope" {
+                s["enum"]=json!(crate::knowledge::SCOPES);
+                s["default"]=json!("task");
+            }
             if name == "add_knowledge" && *k == "kind" {
                 s["enum"] = json!(KNOWLEDGE_KINDS);
             }
@@ -465,6 +510,8 @@ pub fn admin_schema(name: &str) -> Value {
         "get_artifact" => &["hash"],
         "reuse_artifact" => &["name", "inputs"],
         "add_knowledge" => &["kind", "content", "provenance"],
+        "retract_knowledge" => &["id", "reason", "provenance"],
+        "knowledge_edges" => &["source"],
         "link_knowledge" => &["source", "target", "relation"],
         "answer_question" => &["question", "answer"],
         _ => &[],
@@ -499,6 +546,9 @@ pub fn worker_allowed(name: &str) -> bool {
         "reuse_artifact",
         "add_knowledge",
         "knowledge",
+        "knowledge_options",
+        "knowledge_edges",
+        "retract_knowledge",
         "link_knowledge",
     ]
     .contains(&name)
@@ -609,6 +659,9 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         "integrate_child",
         "add_knowledge",
         "knowledge",
+        "knowledge_options",
+        "knowledge_edges",
+        "retract_knowledge",
         "link_knowledge",
         "delegate_task",
         "list_children",
@@ -958,60 +1011,21 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             "SELECT * FROM artifact_links WHERE task=? AND name=? AND inputs=? AND verified=1",
             &[&oid, &string(&args, "name")?, &args["inputs"].to_string()]
         )?)),
-        "add_knowledge" => {
-            let kid = id();
-            let kind = string(&args, "kind")?;
-            if !KNOWLEDGE_KINDS.contains(&kind) {
-                bail!("invalid knowledge kind; expected one of: {}", KNOWLEDGE_KINDS.join(", "));
+        "add_knowledge" => crate::knowledge::add(db,oid,&args,token.is_none() && args["_knowledge_remote"]!=true),
+        "knowledge" => crate::knowledge::read(db,oid,&args),
+        "knowledge_edges" => crate::knowledge::edges(db,oid,&args),
+        "knowledge_options" => {
+            let topics=crate::knowledge::topics(db,oid)?;
+            let mut schemas=serde_json::Map::new();
+            for name in ["add_knowledge","knowledge"] {
+                let mut value=if token.is_some() || args["_knowledge_remote"]==true {schema(name)}else{admin_schema(name)};
+                crate::knowledge::apply_topics(&mut value,&topics);
+                schemas.insert(name.into(),value);
             }
-            if args["provenance"].is_null() {
-                bail!("provenance is required");
-            }
-            if let Some(step) = args["step"].as_str()
-                && !db.steps(oid)?.iter().any(|t| t["id"] == step)
-            {
-                bail!("step not in task");
-            }
-            db.conn.execute(
-                "INSERT INTO knowledge VALUES(?,?,?,?,?,?,?,?)",
-                rusqlite::params![
-                    kid,
-                    oid,
-                    args["step"].as_str(),
-                    kind,
-                    string(&args, "content")?,
-                    args["provenance"].to_string(),
-                    args["verified"].as_bool().unwrap_or(false),
-                    args["inputs"].to_string()
-                ],
-            )?;
-            let root=crate::delegation::root(db,oid)?;let version=crate::delegation::tree(db,oid)?["version"].as_i64();
-            db.conn.execute("INSERT INTO context_records VALUES(?,?,?,?,?,?,0)",rusqlite::params![kid,root,version,format!("supporting_{kind}"),string(&args,"content")?,json!({"source_task":oid,"provenance":args["provenance"],"verified":args["verified"].as_bool().unwrap_or(false)}).to_string()])?;
-            Ok(json!({"id":kid}))
-        }
-        "knowledge" => Ok(json!(
-            db.rows("SELECT * FROM knowledge WHERE task=?", &[&oid])?
-        )),
-        "link_knowledge" => {
-            let source = string(&args, "source")?;
-            let target = string(&args, "target")?;
-            for k in [source, target] {
-                if db
-                    .rows(
-                        "SELECT id FROM knowledge WHERE id=? AND task=?",
-                        &[&k, &oid],
-                    )?
-                    .is_empty()
-                {
-                    bail!("knowledge outside task");
-                }
-            }
-            db.conn.execute(
-                "INSERT OR IGNORE INTO knowledge_edges VALUES(?,?,?)",
-                rusqlite::params![source, target, string(&args, "relation")?],
-            )?;
-            Ok(json!({"linked":true}))
-        }
+            Ok(json!({"topics":topics,"scopes":crate::knowledge::SCOPES,"kinds":KNOWLEDGE_KINDS,"schemas":schemas}))
+        },
+        "retract_knowledge" => crate::knowledge::retract(db,oid,&args,token.is_none() && args["_knowledge_remote"]!=true),
+        "link_knowledge" => crate::knowledge::link(db,oid,&args,token.is_none() && args["_knowledge_remote"]!=true),
         "integrate" => crate::git::integrate(
             db,
             oid,

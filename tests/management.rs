@@ -204,14 +204,14 @@ fn signed_release_rejects_tampering_and_incompatibility() {
     let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
     let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
     let manifest =
-        json!({"version":"0.5.0","protocol":1,"schema_min":2,"schema_max":3,"artifacts":[]})
+        json!({"version":"0.5.0","protocol":1,"schema_min":2,"schema_max":4,"artifacts":[]})
             .to_string();
     let sig = key.sign(manifest.as_bytes());
     assert!(
         horde::update::verify(manifest.as_bytes(), sig.as_ref(), key.public_key().as_ref()).is_ok()
     );
     assert!(horde::update::verify(b"changed", sig.as_ref(), key.public_key().as_ref()).is_err());
-    for (minimum, maximum, compatible) in [(2, 3, true), (3, 3, true), (2, 2, false), (4, 4, false)]
+    for (minimum, maximum, compatible) in [(2, 4, true), (4, 4, true), (2, 3, false), (5, 5, false)]
     {
         let mut candidate: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         candidate["schema_min"] = json!(minimum);

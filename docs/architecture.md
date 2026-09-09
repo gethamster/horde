@@ -202,3 +202,17 @@ the replacement daemon atomically checks this identity, clears the drain hold,
 and completes the operation. A mismatch blocks completion; startup cannot replay
 a completed or cancelled handoff. This survives service managers terminating the
 original updater with the old daemon.
+
+## Task-family notebook storage
+
+Schema 4 keeps the original knowledge rows and adds visibility, conditions,
+provenance attribution, lifecycle metadata, idempotent write receipts, and an FTS5
+index. Existing rows retain task scope. Claims never update the task-tree version
+or scheduling state. New claims are pulled through notebook tools rather than
+copied into inherited context.
+
+The existing remote caller route sends notebook operations to the original owning
+runtime, which checks authenticated task ownership before resolving family visibility.
+Scoped reads have bounded pages and revision-bound cursors; index changes require
+restarting pagination. Relationship pages filter out inaccessible targets. Consumers
+own durable exports beyond the task family.

@@ -18,7 +18,7 @@ for archive in sorted(root.glob('horde-*.tar')):
                           url=f'https://horde.sh/releases/v{version}/{archive.name}'))
 assert len(artifacts) == 4, 'All four platform archives are required'
 manifest = root/'manifest.json'
-manifest.write_text(json.dumps(dict(version=version, protocol=1, schema_min=2, schema_max=3, artifacts=artifacts, image=os.environ["HORDE_RELEASE_IMAGE"]), sort_keys=True))
+manifest.write_text(json.dumps(dict(version=version, protocol=1, schema_min=2, schema_max=4, artifacts=artifacts, image=os.environ["HORDE_RELEASE_IMAGE"]), sort_keys=True))
 key = os.environ['HORDE_RELEASE_PRIVATE_KEY_FILE']
 subprocess.run(['openssl','pkeyutl','-sign','-inkey',key,'-rawin','-in',str(manifest),'-out',str(root/'manifest.sig')], check=True)
 pem = subprocess.check_output(['openssl','pkey','-in',key,'-pubout']).decode()

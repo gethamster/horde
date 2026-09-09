@@ -32,7 +32,6 @@ pub fn migrate(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS task_skills(task TEXT NOT NULL REFERENCES tasks(id),name TEXT NOT NULL,hash TEXT NOT NULL REFERENCES artifacts(hash),PRIMARY KEY(task,name));
 CREATE TABLE IF NOT EXISTS attempt_skills(task TEXT NOT NULL REFERENCES tasks(id),attempt TEXT NOT NULL,name TEXT NOT NULL,hash TEXT NOT NULL,PRIMARY KEY(task,attempt,name));
-PRAGMA user_version=3;
 COMMIT;")?;
     Ok(())
 }

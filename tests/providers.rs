@@ -1062,3 +1062,27 @@ async fn streamed_usage_is_recorded_per_response_in_events_and_metrics() {
     assert_eq!(run.metrics["reported_cached_tokens"], 15);
     assert_eq!(run.metrics["reported_api_cost_usd"], Value::Null);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_knowledge_schema_uses_the_pinned_topic_vocabulary() {
+    let (_, sent, _) = native_result_after_configured(
+        vec![completion_call(
+            json!({"result":"done","accepted":true,"artifacts":[]}),
+        )],
+        false,
+        |settings| settings.knowledge_topics = vec!["performance".into(), "correctness".into()],
+    )
+    .await;
+    for name in ["add_knowledge", "knowledge"] {
+        let definition = sent[1]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["function"]["name"] == name)
+            .unwrap();
+        assert_eq!(
+            definition["function"]["parameters"]["properties"]["topic"]["enum"],
+            json!(["performance", "correctness"])
+        );
+    }
+}

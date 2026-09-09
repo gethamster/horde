@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 /// Status of the per-task synthetic worker row that carries operator steering messages.
 /// Operator rows never receive mail, never wake, and are hidden from worker listings.
 pub const OPERATOR_STATUS: &str = "operator";
@@ -116,6 +116,12 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         crate::delegation::migrate(&conn)?;
         crate::management::migrate(&conn)?;
         crate::skills::migrate(&conn)?;
+        if version < 4 {
+            crate::knowledge::migrate(&conn)?;
+        }
+        if version != i64::from(SCHEMA_VERSION) {
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
         Ok(Self {
             conn,
             root: root.to_owned(),

@@ -19,6 +19,7 @@ pub struct Settings {
     pub max_tool_rounds: usize,
     pub max_identical_tool_calls: usize,
     pub tool_event_bytes: usize,
+    pub knowledge_topics: Vec<String>,
     pub allow_commands: bool,
     pub secret_bundles: Vec<String>,
     pub skills: BTreeMap<String, PathBuf>,
@@ -220,6 +221,7 @@ impl Default for Settings {
             max_tool_rounds: 64,
             max_identical_tool_calls: 3,
             tool_event_bytes: 512,
+            knowledge_topics: vec![],
             allow_commands: true,
             secret_bundles: vec![],
             skills: BTreeMap::new(),
@@ -241,6 +243,7 @@ autonomy = true
 default_template = "local-implementation"
 timeout_seconds = 1800
 step_budget_seconds = 1800 # Time without durable progress, per attempt
+knowledge_topics = [] # Optional vocabulary for knowledge records
 max_tool_rounds = 64
 max_identical_tool_calls = 3 # 0 disables repeated-call detection
 tool_event_bytes = 512 # Per arguments/result field; 0 omits payloads
@@ -423,6 +426,23 @@ impl Settings {
         }
         if self.step_budget_seconds == 0 {
             bail!("step_budget_seconds must be positive");
+        }
+        if self.knowledge_topics.len() > 128
+            || self
+                .knowledge_topics
+                .iter()
+                .any(|t| t.trim().is_empty() || t.len() > 128)
+        {
+            bail!("knowledge_topics accepts at most 128 nonempty topics of at most 128 bytes");
+        }
+        if self
+            .knowledge_topics
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != self.knowledge_topics.len()
+        {
+            bail!("knowledge_topics contains duplicates");
         }
         if self.tool_event_bytes > 65536 {
             bail!("tool_event_bytes must be between 0 and 65536");
