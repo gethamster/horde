@@ -791,6 +791,9 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         }
         "reconcile_worker" => {
             let wid = string(&args, "worker")?;
+            if db.worker(wid)?["status"] == OPERATOR_STATUS {
+                bail!("the operator identity has no worker status");
+            }
             let attempts = db.rows(
                 "SELECT id,pid FROM attempts WHERE worker=? AND state='uncertain'",
                 &[&wid],
