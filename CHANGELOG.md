@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `complete_step` for native workers and remind planners to finish their
+  assigned step after proposing work. Runtime acceptance checks still apply.
+
 - Omit runtime identity and verification fields from worker tool schemas. Matching
   identity arguments remain valid; supplied verification flags are dropped with a
   warning, while identity mismatches still fail.

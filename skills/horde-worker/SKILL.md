@@ -178,7 +178,9 @@ A planner-role worker can also reshape its own workflow with `propose_steps`; th
 runtime validates the graph and inserts it before the planning task's pending
 successors. Proposed work waits for the planner to finish; do not wait for its
 implementation or transfer claims to yourself as a completion signal. Return the
-assigned step's result in the format requested by the executor. Worker status and
+assigned step's result in the format requested by the executor. Native workers can
+call `complete_step` alone with `result`, `accepted`, and `artifacts`; include any
+declared named outputs at the top level. Worker status and
 mail acknowledgements do not complete the step.
 
 ## Rules

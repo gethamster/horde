@@ -91,11 +91,16 @@ coordination operations:
 
 | Tool | Arguments | Notes |
 | --- | --- | --- |
+| `complete_step` | `result`, `accepted`, `artifacts[]`, declared named outputs | Finish the assigned step; must be the only tool call in its response |
 | `read_file` | `path` | UTF-8 file in your worktree |
 | `search` | `pattern` | ripgrep over the repository |
 | `write_file` | `path`, `content` | Complete file; requires an exclusive claim |
 | `apply_patch` | `patch` | Unified diff; every changed path is validated against claims |
 | `command` | `argv[]` | Runs in the workspace; environment excludes provider credentials; resulting changes are checked against claims |
+
+`complete_step` returns control to the runtime, which applies its existing
+acceptance checks. Invalid arguments return a tool error for correction;
+`accepted=false` fails the step. Plain JSON final replies remain supported.
 
 File tools reject path traversal and symlink traversal. `command` is removed
 entirely when `allow_commands = false`.
