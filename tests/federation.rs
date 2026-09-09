@@ -566,6 +566,7 @@ fn remote_answer_sync_does_not_reopen_consumed_questions() {
     let dir = tempfile::tempdir().unwrap();
     let db = Store::open(&dir.path().join("data")).unwrap();
     let plan = horde::template::Plan {
+        warnings: vec![],
         steps: vec![],
         pins: Default::default(),
         outputs: Default::default(),

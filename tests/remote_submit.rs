@@ -754,6 +754,7 @@ fn snapshot_import_ignores_host_git_hooks_templates_and_filters() {
             root,
             &horde::config::Settings::default(),
             &horde::template::Plan {
+                warnings: vec![],
                 steps: vec![],
                 pins: Default::default(),
                 outputs: Default::default(),

@@ -479,6 +479,8 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             let mut plan: template::Plan =
                 serde_json::from_str(task["plan"].as_str().context("plan")?)?;
             let mut added = template::parse_steps(&args["steps"])?;
+            let warnings = template::step_warnings(&added);
+            plan.warnings.extend(warnings.clone());
             if added.is_empty() || added.len() > 32 {
                 bail!("propose between 1 and 32 steps");
             }
@@ -546,22 +548,27 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
                 db.event(
                     oid,
                     "workflow.proposed",
-                    json!({"worker":wid,"revision":revision,"steps":new_ids}),
+                    json!({"worker":wid,"revision":revision,"steps":new_ids,"warnings":warnings}),
                 )?;
                 crate::budget::progress(db, wid, "proposal_accepted", &revision.to_string())?;
-                Ok(json!({"revision":revision,"steps":new_ids}))
+                Ok(json!({"revision":revision,"steps":new_ids,"warnings":warnings}))
             })
         }
         "add_steps" => {
             let added = template::parse_steps(&args["steps"])?;
-            if let Some(result)=crate::federation::revise_child(db,oid,&args["steps"])?{return Ok(result);}
+            let warnings = template::step_warnings(&added);
+            if let Some(mut result) = crate::federation::revise_child(db, oid, &serde_json::to_value(&added)?)? {
+                result["warnings"] = json!(warnings);
+                return Ok(result);
+            }
             let task = db.task(oid)?;
             let mut plan: template::Plan =
                 serde_json::from_str(task["plan"].as_str().context("plan")?)?;
+            plan.warnings.extend(warnings.clone());
             plan.steps.extend(added.clone());
             template::validate(&plan.steps)?;
             crate::skills::validate_steps(&crate::skills::packet(db, oid)?, &plan.steps)?;
-            db.atomic(||{crate::delegation::invalidate_acceptance(db,oid)?;for s in &added{db.conn.execute("INSERT INTO steps(id,task,name,spec,state) VALUES(?,?,?,?,'pending')",rusqlite::params![id(),oid,s.id,serde_json::to_string(s)?])?;}let rev:i64=db.conn.query_row("SELECT COALESCE(MAX(revision),0)+1 FROM revisions WHERE task=?",[oid],|r|r.get(0))?;let serialized=serde_json::to_string(&plan)?;db.conn.execute("INSERT INTO revisions VALUES(?,?,?,?)",rusqlite::params![oid,rev,serialized,now()])?;db.conn.execute("UPDATE tasks SET plan=?,status=CASE WHEN status='succeeded' THEN 'running' ELSE status END WHERE id=?",rusqlite::params![serialized,oid])?;db.event(oid,"workflow.revised",json!({"revision":rev}))?;Ok(json!({"revision":rev}))})
+            db.atomic(||{crate::delegation::invalidate_acceptance(db,oid)?;for s in &added{db.conn.execute("INSERT INTO steps(id,task,name,spec,state) VALUES(?,?,?,?,'pending')",rusqlite::params![id(),oid,s.id,serde_json::to_string(s)?])?;}let rev:i64=db.conn.query_row("SELECT COALESCE(MAX(revision),0)+1 FROM revisions WHERE task=?",[oid],|r|r.get(0))?;let serialized=serde_json::to_string(&plan)?;db.conn.execute("INSERT INTO revisions VALUES(?,?,?,?)",rusqlite::params![oid,rev,serialized,now()])?;db.conn.execute("UPDATE tasks SET plan=?,status=CASE WHEN status='succeeded' THEN 'running' ELSE status END WHERE id=?",rusqlite::params![serialized,oid])?;db.event(oid,"workflow.revised",json!({"revision":rev,"warnings":warnings}))?;Ok(json!({"revision":rev,"warnings":warnings}))})
         }
         "put_artifact" => {
             let content = string(&args,"content")?.as_bytes();

@@ -103,7 +103,10 @@ fn workflow_tools_publish_the_rust_step_fields_and_inline_nested_types() {
         let steps = &parameters["properties"]["steps"];
         let item = &steps["items"];
         assert_eq!(item["type"], "object");
-        assert_eq!(item["additionalProperties"], false);
+        assert_ne!(
+            item["additionalProperties"], false,
+            "unknown step fields must remain forward compatible"
+        );
         assert_eq!(item["required"], json!(["id"]));
         let fields = item["properties"].as_object().unwrap();
         assert_eq!(
