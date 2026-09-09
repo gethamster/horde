@@ -192,3 +192,13 @@ These are scope limits at the RPC layer, not process isolation. A worker token
 does not protect against a malicious local process running as the same user.
 
 For `add_knowledge`, `kind` must be `fact`, `decision`, or `evidence`.
+
+Notebook tools are pull-based. `add_knowledge` defaults to private task scope;
+set `scope: "family"` to publish within the task tree. Use `knowledge` with explicit
+scope, optional `topic`/FTS5 `query`, and `limit`; follow `next` with `after`. Restart
+pagination if the notebook revision changes. `knowledge_options` returns the pinned
+topic vocabulary and task-specific schemas. `knowledge_edges` continues a row's
+relationship pages when `edges_next` is present. Conditions in `valid_under` are
+writer assertions, not runtime conclusions. Supersede owned claims through
+`add_knowledge.supersedes` or withdraw them with `retract_knowledge`; use
+`include_inactive: true` to inspect history. Knowledge never unblocks execution.

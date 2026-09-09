@@ -72,3 +72,97 @@ Git integration is serialized per task. Merge conflicts are aborted without chan
 `add_knowledge.kind` accepts exactly `fact`, `decision`, or `evidence`. These values
 are enumerated in both the worker and administrative tool schemas; unsupported
 values return an error listing the valid choices.
+
+## Task-family notebooks
+
+Knowledge records are claims with provenance. They never change the family context
+version, advance execution, satisfy acceptance, or unblock a step. Horde does not
+inject notebook contents into prompts. A task's instructions or harness decides
+when to query them.
+
+`add_knowledge` accepts `scope = "task"` (default) or `scope = "family"`. A task
+owns every record it writes. Family scope publishes it to descendants, ancestors,
+and siblings under the same root, including remote tasks. Another root using the
+same repository cannot read it. Task scope remains private to the originating task.
+
+```json
+{
+  "scope": "family",
+  "kind": "evidence",
+  "topic": "testing",
+  "content": "The migration fails when the source table is empty.",
+  "provenance": {"test": "empty_source", "artifact": "test-report"},
+  "valid_under": {"commit": "abc123", "dataset": "fixture-v2"}
+}
+```
+
+Worker credentials supply task and step attribution. `origin` records that identity;
+remote writes retain the authoritative task ID, sending runtime, remote task ID,
+and source step. Writer-supplied `provenance` and `valid_under` remain separate from
+runtime attribution. Horde stores conditions without interpreting them. Workers
+cannot set `verified`; a claim's verification flag is not an execution result.
+Provide an optional `id` when retrying a write after a lost reply. Repeating that ID
+with the same claim is idempotent; changing its content or supersession list fails.
+
+### Querying and exporting
+
+Pass `scope` to `knowledge` to request a page:
+
+```json
+{"scope":"family","topic":"testing","query":"migration","limit":50}
+```
+
+The response has `records`, `next`, and a notebook `revision`. Pass the returned
+`next` string as `after`, keeping the same scope, query, and filters; null `next`
+means the last page. Pages default to 50 records, allow at most 100, and bound record
+payloads to 256 KiB. Full-text queries use SQLite FTS5 syntax and return ranked
+matches (lower `rank` values rank first); without a query, records follow insertion
+order. Topic filtering uses exact strings.
+
+Cursors bind the task, filters, and notebook revision. A knowledge write or lifecycle
+change invalidates existing cursors, including changes elsewhere in that runtime's
+FTS index. Restart without `after` when told the notebook changed. Horde returns an
+error instead of silently mixing result versions or skipping ranked matches.
+
+`scope = "family"` returns published family rows only. `scope = "task"` returns
+rows owned by the caller's task, including its own family publications. For backward
+compatibility, a `knowledge` call without any scope, query, or paging options retains
+the original task-only array response. Use explicit scope for new consumers.
+
+Each paged row includes visible outgoing `edges`. If `edges_next` is non-null,
+continue with `knowledge_edges`, passing the row ID as `source` and that cursor as
+`after`. Relationship pages retain provenance IDs and hide private targets.
+A final command or agent step can export these pages into the repository's own
+memory files. Horde does not promote that export into a global knowledge store.
+
+### Topics and claim lifecycle
+
+A repository can declare `knowledge_topics` in `.horde/horde.toml`. The vocabulary
+is pinned with the root's settings. It appears as an enum in native and worker MCP
+schemas; an administrative client can call `knowledge_options` for a task's topics,
+scopes, kinds, and specialized schemas. An empty vocabulary permits free-form topics.
+Topic is optional; a supplied topic must match the configured vocabulary.
+
+`add_knowledge.supersedes` lists older IDs. Supersession must preserve scope and
+may target only active claims owned by the caller's task, or visible claims when an
+operator makes the call. A sibling can publish contradictory evidence and link its
+own claim using `link_knowledge`, but cannot supersede or retract another task's claim.
+
+`retract_knowledge` takes `id`, `reason`, and `provenance`, retaining the original
+claim and its withdrawal record. Superseded and retracted rows are excluded by
+default; `include_inactive = true` returns them with explicit markers and
+`superseded_by` or `retraction` details. A relationship label alone does not change
+lifecycle flags; use the explicit supersession or retraction operation. Links never
+confer execution authority.
+
+### Storage and remote access
+
+Schema 5 adds notebook metadata and a local FTS5 index. Existing knowledge rows
+remain task-local and are indexed on upgrade. Earlier versions also copied knowledge
+into supporting context; context reads now hide those legacy copies from other
+tasks. New notebook writes do not create context sources or prompt entries.
+
+Remote notebook operations use the existing authenticated caller route to the
+owning runtime. They require notebook support at that authority and fail explicitly
+if it is unavailable or too old; they do not return a stale local approximation.
+No model provider or embedding service is required.

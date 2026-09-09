@@ -229,7 +229,22 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "add_knowledge",
         "Store fact, decision or evidence with provenance",
     ),
-    ("knowledge", "Read knowledge for this task"),
+    (
+        "knowledge",
+        "Read task knowledge or query bounded task/family notebook pages",
+    ),
+    (
+        "knowledge_edges",
+        "Read bounded relationship pages for a visible knowledge record",
+    ),
+    (
+        "knowledge_options",
+        "Read the task's knowledge topics, scopes, and task-specific schemas",
+    ),
+    (
+        "retract_knowledge",
+        "Withdraw an owned knowledge claim while retaining its provenance",
+    ),
     (
         "link_knowledge",
         "Link two knowledge records with a relationship",

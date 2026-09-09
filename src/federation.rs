@@ -98,6 +98,24 @@ pub fn forward(db: &Store, oid: &str, name: &str, args: &Value) -> Result<Option
     if name == "integrate_child" {
         return Ok(Some(import_foreign_child(db, oid, args, origin)?));
     }
+    if matches!(
+        name,
+        "add_knowledge" | "knowledge" | "knowledge_edges" | "retract_knowledge" | "link_knowledge"
+    ) {
+        // Older authorities ignore unknown add/read fields. Require capability
+        // before a write can silently lose its scope or lifecycle metadata.
+        let options = call_sync(
+            config(db)?,
+            origin["owner_peer"].as_str().context("owner peer")?.into(),
+            "caller_operation".into(),
+            json!({"task":origin["owner_task"],"method":"knowledge_options","args":{}}),
+        )
+        .context("knowledge operations require an updated owning runtime")?;
+        ensure!(
+            options["scopes"] == json!(crate::knowledge::SCOPES),
+            "owning runtime does not support family notebooks"
+        );
+    }
     let caller_snapshot = if name == "delegate_task" {
         let workspace = if let Some(worker) = args["worker"].as_str() {
             let worker = db.worker(worker)?;
@@ -117,6 +135,7 @@ pub fn forward(db: &Store, oid: &str, name: &str, args: &Value) -> Result<Option
         None
     };
     let caller_worker = args["worker"].clone();
+    let origin_step = args["step"].clone();
     let mut args = args.clone();
     if name == "request_question" && args["id"].is_null() {
         args["id"] = json!(crate::store::hash(
@@ -124,8 +143,15 @@ pub fn forward(db: &Store, oid: &str, name: &str, args: &Value) -> Result<Option
         ));
     }
     if name == "add_knowledge" {
-        args["provenance"] =
-            json!({"remote_task":oid,"remote_step":args["step"],"source":args["provenance"]});
+        if args["id"].is_null() {
+            args["id"] = json!(crate::store::id());
+        }
+        if let Some(step) = args["step"].as_str() {
+            ensure!(
+                db.steps(oid)?.iter().any(|s| s["id"] == step),
+                "step not in task"
+            );
+        }
         args.as_object_mut().context("arguments")?.remove("step");
     }
     args.as_object_mut().context("arguments")?.remove("worker");
@@ -134,7 +160,7 @@ pub fn forward(db: &Store, oid: &str, name: &str, args: &Value) -> Result<Option
         config(db)?,
         origin["owner_peer"].as_str().context("owner peer")?.into(),
         "caller_operation".into(),
-        json!({"task":origin["owner_task"],"method":name,"args":args,"snapshot":caller_snapshot}),
+        json!({"task":origin["owner_task"],"method":name,"args":args,"snapshot":caller_snapshot,"origin_step":origin_step}),
     )?;
     if name == "delegate_task" && caller_worker.is_string() {
         let key = format!(
@@ -575,6 +601,9 @@ impl Service {
                         "plan_execution",
                         "add_knowledge",
                         "knowledge",
+                        "knowledge_options",
+                        "knowledge_edges",
+                        "retract_knowledge",
                         "link_knowledge",
                         "list_children",
                         "read_context",
@@ -589,6 +618,27 @@ impl Service {
                 let mut input = args["args"].clone();
                 input["task"] = json!(oid);
                 input.as_object_mut().context("arguments")?.remove("worker");
+                if matches!(
+                    name,
+                    "add_knowledge"
+                        | "knowledge"
+                        | "knowledge_options"
+                        | "knowledge_edges"
+                        | "retract_knowledge"
+                        | "link_knowledge"
+                ) {
+                    input["_knowledge_remote"] = json!(true);
+                    if name == "add_knowledge" {
+                        let remote = db.rows(
+                            "SELECT remote_id FROM remote_links WHERE task=? AND peer=?",
+                            &[&oid, &peer],
+                        )?;
+                        input["_knowledge_origin"] = json!({"task":oid,"runtime":peer,"remote_task":remote[0]["remote_id"],"step":args["origin_step"]});
+                        input["verified"] = json!(false);
+                        input.as_object_mut().context("arguments")?.remove("step");
+                    }
+                }
+
                 if name == "delegate_task" && args["snapshot"].is_object() {
                     input["_snapshot"] = args["snapshot"].clone();
                 }

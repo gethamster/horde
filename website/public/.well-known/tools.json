@@ -1,5 +1,5 @@
 {
-  "count": 77,
+  "count": 80,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -2236,6 +2236,9 @@
           "content": {
             "type": "string"
           },
+          "id": {
+            "type": "string"
+          },
           "inputs": {
             "type": "object"
           },
@@ -2249,6 +2252,26 @@
           },
           "provenance": {
             "type": "object"
+          },
+          "scope": {
+            "default": "task",
+            "enum": [
+              "task",
+              "family"
+            ],
+            "type": "string"
+          },
+          "supersedes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "topic": {
+            "type": "string"
+          },
+          "valid_under": {
+            "type": "object"
           }
         },
         "required": [
@@ -2261,12 +2284,95 @@
       "scope": "worker"
     },
     {
-      "description": "Read knowledge for this task",
+      "description": "Read task knowledge or query bounded task/family notebook pages",
       "name": "knowledge",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "string"
+          },
+          "include_inactive": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          },
+          "scope": {
+            "default": "task",
+            "enum": [
+              "task",
+              "family"
+            ],
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Read bounded relationship pages for a visible knowledge record",
+      "name": "knowledge_edges",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Read the task's knowledge topics, scopes, and task-specific schemas",
+      "name": "knowledge_options",
       "parameters": {
         "additionalProperties": false,
         "properties": {},
         "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Withdraw an owned knowledge claim while retaining its provenance",
+      "name": "retract_knowledge",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason",
+          "provenance"
+        ],
         "type": "object"
       },
       "scope": "worker"

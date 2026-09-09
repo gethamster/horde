@@ -4,6 +4,7 @@ pub mod credentials;
 pub mod delivery;
 pub mod executor;
 pub mod git;
+pub mod knowledge;
 pub mod metrics;
 pub mod native;
 mod native_protocol;

@@ -171,7 +171,7 @@ Schema version 4 records execution policies, submission receipts, and project
 skill revisions. The version advances only after all additive migrations finish;
 reopening never lowers it. Older runtimes reject this database instead of running
 tasks without their saved execution constraints. Release manifests accept upgrades
-from schema 2 and advertise schema 4 support.
+from schema 2 and advertise schema 5 support.
 
 Administrative runtime settings, capacity snapshots, enrollment fingerprints,
 management receipts, provider resources, and operation intents are stored separately
@@ -244,3 +244,17 @@ the replacement daemon atomically checks this identity, clears the drain hold,
 and completes the operation. A mismatch blocks completion; startup cannot replay
 a completed or cancelled handoff. This survives service managers terminating the
 original updater with the old daemon.
+
+## Task-family notebook storage
+
+Schema 5 follows the execution-policy migration in schema 4. It keeps the original knowledge rows and adds visibility, conditions,
+provenance attribution, lifecycle metadata, idempotent write receipts, and an FTS5
+index. Existing rows retain task scope. Claims never update the task-tree version
+or scheduling state. New claims are pulled through notebook tools rather than
+copied into inherited context.
+
+The existing remote caller route sends notebook operations to the original owning
+runtime, which checks authenticated task ownership before resolving family visibility.
+Scoped reads have bounded pages and revision-bound cursors; index changes require
+restarting pagination. Relationship pages filter out inaccessible targets. Consumers
+own durable exports beyond the task family.

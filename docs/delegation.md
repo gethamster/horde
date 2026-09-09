@@ -118,7 +118,9 @@ Use the returned `next` cursor to retrieve another page. Mandatory sources have 
 large, the root caller can append a consolidated source with `supersedes` listing
 old source IDs. Old sources remain retrievable, and the original objective cannot
 be superseded. Supporting knowledge is recorded with `add_knowledge`, including
-provenance, verification status, and input references.
+provenance, verification status, and input references. Use `scope = "family"` to
+publish it across the tree, and query it with `knowledge`; it is not injected into
+inherited context. See [task-family notebooks](coordination.md#task-family-notebooks).
 
 Authoritative updates and answers advance the family version. An attempt that
 started with an older version cannot have its result accepted. Completed tasks

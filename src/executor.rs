@@ -672,6 +672,15 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         .filter(|v| i.spec.tools.iter().any(|n| v["function"]["name"] == *n))
         .collect();
     definitions.extend(crate::protocol::OPERATIONS.iter().filter(|(n,_)|crate::protocol::worker_allowed(n)).map(|(n,d)|json!({"type":"function","function":{"name":n,"description":d,"parameters":crate::protocol::schema(n)}})));
+    let topics = crate::knowledge::topics(i.db, i.task)?;
+    for definition in &mut definitions {
+        if matches!(
+            definition["function"]["name"].as_str(),
+            Some("add_knowledge" | "knowledge")
+        ) {
+            crate::knowledge::apply_topics(&mut definition["function"]["parameters"], &topics);
+        }
+    }
     definitions.push(crate::native_protocol::completion_tool(i.spec));
     let tool_names: std::collections::BTreeSet<String> = definitions
         .iter()

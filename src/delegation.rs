@@ -107,7 +107,7 @@ pub fn root(db: &Store, oid: &str) -> Result<String> {
 pub fn contract(db: &Store, oid: &str, after: i64, limit: i64) -> Result<Value> {
     let t = tree(db, oid)?;
     let r = t["root"].as_str().context("root")?;
-    let entries=db.rows("SELECT rowid AS cursor,* FROM context_records WHERE root=? AND rowid>? ORDER BY rowid LIMIT ?",&[&r,&after,&limit.clamp(1,100)])?;
+    let entries=db.rows("SELECT rowid AS cursor,* FROM context_records WHERE root=? AND rowid>? AND NOT EXISTS(SELECT 1 FROM knowledge k WHERE k.id=context_records.id AND k.task!=?) ORDER BY rowid LIMIT ?",&[&r,&after,&oid,&limit.clamp(1,100)])?;
     Ok(
         json!({"root":r,"parent":t["parent"],"version":t["version"],"records":entries,"next":entries.last().map(|r|&r["cursor"])}),
     )
@@ -116,7 +116,35 @@ pub fn mandatory(db: &Store, oid: &str) -> Result<Value> {
     let cached = db.rows("SELECT packet FROM remote_context WHERE task=?", &[&oid])?;
     if let Some(c) = cached.first() {
         let packet: Value = serde_json::from_str(c["packet"].as_str().context("remote context")?)?;
-        return Ok(packet["context"].clone());
+        let mut context = packet["context"].clone();
+        // Older authorities included task-private knowledge in supporting-source
+        // catalogs. Do not re-inject those cached entries after upgrading.
+        let origin = db.rows(
+            "SELECT owner_task FROM remote_origins WHERE task=?",
+            &[&oid],
+        )?;
+        let owner = origin
+            .first()
+            .and_then(|r| r["owner_task"].as_str())
+            .unwrap_or(oid);
+        if let Some(sources) = context["supporting_sources"].as_array_mut() {
+            sources.retain(|source| {
+                if !matches!(
+                    source["kind"].as_str(),
+                    Some("supporting_fact" | "supporting_decision" | "supporting_evidence")
+                ) {
+                    return true;
+                }
+                let provenance = source["provenance"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok());
+                provenance
+                    .as_ref()
+                    .and_then(|p| p["source_task"].as_str())
+                    .is_none_or(|task| task == owner)
+            });
+        }
+        return Ok(context);
     }
     let t = tree(db, oid)?;
     let r = t["root"].as_str().context("root")?;
@@ -127,7 +155,7 @@ pub fn mandatory(db: &Store, oid: &str) -> Result<Value> {
         "mandatory context exceeds 256 KiB; caller must consolidate authoritative context before dispatch"
     );
     Ok(
-        json!({"root":r,"parent":t["parent"],"version":t["version"],"records":records,"sources_tool":"read_context","supporting_sources":db.rows("SELECT id,kind,provenance FROM context_records WHERE root=? AND mandatory=0 ORDER BY rowid LIMIT 100",&[&r])?}),
+        json!({"root":r,"parent":t["parent"],"version":t["version"],"records":records,"sources_tool":"read_context","supporting_sources":db.rows("SELECT id,kind,provenance FROM context_records WHERE root=? AND mandatory=0 AND NOT EXISTS(SELECT 1 FROM knowledge k WHERE k.id=context_records.id AND k.task!=?) ORDER BY rowid LIMIT 100",&[&r,&oid])?}),
     )
 }
 pub fn update_context(db: &Store, oid: &str, args: &Value) -> Result<Value> {

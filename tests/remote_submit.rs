@@ -163,6 +163,9 @@ async fn remote_root_flow(scoped: bool) {
         time::{Duration, Instant},
     };
     let (dir, db, repo) = fixture();
+    std::fs::write(repo.join(".horde.toml"), "knowledge_topics = ['bench']\n").unwrap();
+    horde::git::run(&repo, &["add", "."]).unwrap();
+    horde::git::run(&repo, &["commit", "-m", "pin notebook topics"]).unwrap();
     let remote = dir.path().join("remote");
     Store::open(&remote).unwrap();
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -398,6 +401,82 @@ async fn remote_root_flow(scoped: bool) {
             id
         );
     }
+    // A remotely submitted root uses the same notebook authority as remote
+    // descendants, even though its controller-side task has no parent.
+    let shared = horde::protocol::dispatch(&db, "add_knowledge", json!({"task":id,"scope":"family","topic":"bench","kind":"evidence","content":"controller measurement","provenance":{}}), None).unwrap();
+    let unrelated = horde::protocol::dispatch(
+        &db,
+        "submit_task",
+        json!({"repo":repo,"objective":"unrelated task","template":"simulated"}),
+        None,
+    )
+    .unwrap();
+    horde::protocol::dispatch(&db, "add_knowledge", json!({"task":unrelated["id"],"scope":"family","topic":"bench","kind":"fact","content":"unrelated measurement","provenance":{}}), None).unwrap();
+    let context_version = horde::delegation::tree(&db, id).unwrap()["version"].clone();
+    let remote_root = remote.clone();
+    let owner = id.to_owned();
+    let shared_id = shared["id"].clone();
+    let (token, remote_id, claim) = tokio::task::spawn_blocking(move || {
+        let remote_db = Store::open(&remote_root).unwrap();
+        let remote_id = remote_db.rows("SELECT task FROM remote_origins WHERE owner_task=?", &[&owner]).unwrap()[0]["task"].as_str().unwrap().to_owned();
+        let step = remote_db.steps(&remote_id).unwrap()[0]["id"].as_str().unwrap().to_owned();
+        let worker = remote_db.register(&remote_id, Some(&step)).unwrap();
+        let token = worker["token"].as_str().unwrap().to_owned();
+        let call = |name, args| horde::protocol::dispatch(&remote_db, name, args, Some(&token)).unwrap();
+        let options = call("knowledge_options", json!({}));
+        assert_eq!(options["schemas"]["add_knowledge"]["properties"]["topic"]["enum"], json!(["bench"]));
+        let page = call("knowledge", json!({"scope":"family","topic":"bench","query":"measurement"}));
+        assert_eq!(page["root"], owner);
+        assert_eq!(page["records"].as_array().unwrap().len(), 1);
+        assert_eq!(page["records"][0]["id"], shared_id);
+        let args = json!({"id":"remote-root-claim","scope":"family","topic":"bench","kind":"evidence","content":"remote root measurement","provenance":{"run":"fixture"},"verified":true});
+        let claim = call("add_knowledge", args.clone());
+        assert_eq!(call("add_knowledge", args)["id"], claim["id"]);
+        call("link_knowledge", json!({"source":claim["id"],"target":shared_id,"relation":"supports"}));
+        let edges = call("knowledge_edges", json!({"source":claim["id"]}));
+        assert!(edges.to_string().contains(shared_id.as_str().unwrap()));
+        (token, remote_id, claim)
+    }).await.unwrap();
+    let published = horde::protocol::dispatch(
+        &db,
+        "knowledge",
+        json!({"task":id,"scope":"family","query":"remote"}),
+        None,
+    )
+    .unwrap();
+    assert_eq!(published["records"].as_array().unwrap().len(), 1);
+    let record = &published["records"][0];
+    assert_eq!(record["id"], claim["id"]);
+    assert_eq!(record["task"], id);
+    assert_eq!(record["origin"]["remote_task"], remote_id);
+    assert_eq!(record["verified"], 0);
+    tokio::task::spawn_blocking(move || {
+        let remote_db = Store::open(&remote).unwrap();
+        horde::protocol::dispatch(
+            &remote_db,
+            "retract_knowledge",
+            json!({"id":claim["id"],"reason":"withdrawn","provenance":{}}),
+            Some(&token),
+        )
+        .unwrap();
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        horde::protocol::dispatch(
+            &db,
+            "knowledge",
+            json!({"task":id,"scope":"family","query":"remote"}),
+            None
+        )
+        .unwrap()["records"],
+        json!([])
+    );
+    assert_eq!(
+        horde::delegation::tree(&db, id).unwrap()["version"],
+        context_version
+    );
+    assert_eq!(db.task(id).unwrap()["status"], "succeeded");
     listener_task.abort();
 }
 

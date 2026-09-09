@@ -174,8 +174,34 @@ pub fn admin_schema(name: &str) -> Value {
         ],
         "get_artifact" => &[("task", "string"), ("hash", "string")],
         "reuse_artifact" => &[("task", "string"), ("name", "string"), ("inputs", "object")],
+        "knowledge" => &[
+            ("task", "string"),
+            ("scope", "string"),
+            ("topic", "string"),
+            ("query", "string"),
+            ("after", "string"),
+            ("limit", "integer"),
+            ("include_inactive", "boolean"),
+        ],
+        "knowledge_edges" => &[
+            ("task", "string"),
+            ("source", "string"),
+            ("after", "string"),
+            ("limit", "integer"),
+        ],
+        "retract_knowledge" => &[
+            ("task", "string"),
+            ("id", "string"),
+            ("reason", "string"),
+            ("provenance", "object"),
+        ],
         "add_knowledge" => &[
             ("task", "string"),
+            ("id", "string"),
+            ("scope", "string"),
+            ("topic", "string"),
+            ("valid_under", "object"),
+            ("supersedes", "array"),
             ("step", "string"),
             ("kind", "string"),
             ("content", "string"),
@@ -301,6 +327,10 @@ pub fn admin_schema(name: &str) -> Value {
                     json!({"type":"string"})
                 };
             }
+            if matches!(name, "add_knowledge" | "knowledge") && *k == "scope" {
+                s["enum"] = json!(crate::knowledge::SCOPES);
+                s["default"] = json!("task");
+            }
             if name == "add_knowledge" && *k == "kind" {
                 s["enum"] = json!(KNOWLEDGE_KINDS);
             }
@@ -359,6 +389,8 @@ pub fn admin_schema(name: &str) -> Value {
         "get_artifact" => &["hash"],
         "reuse_artifact" => &["name", "inputs"],
         "add_knowledge" => &["kind", "content", "provenance"],
+        "retract_knowledge" => &["id", "reason", "provenance"],
+        "knowledge_edges" => &["source"],
         "link_knowledge" => &["source", "target", "relation"],
         "answer_question" => &["question", "answer"],
         _ => &[],

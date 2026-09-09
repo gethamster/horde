@@ -1004,3 +1004,52 @@ command=["sleep","30"]
         }
     }
 }
+
+#[test]
+fn worker_mcp_lists_pinned_knowledge_topics() {
+    let d = Daemon::new();
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        "knowledge_topics=['performance','correctness']\n",
+    )
+    .unwrap();
+    let task = d.submit("simulated");
+    d.wait(&task, "succeeded");
+    std::fs::write(
+        d.repo.join(".horde.toml"),
+        "knowledge_topics=['new-submissions-only']\n",
+    )
+    .unwrap();
+    let worker = d.call("register_worker", json!({"task":task}));
+    let mut process = Command::new(BIN)
+        .arg("--data-dir")
+        .arg(&d.root)
+        .arg("mcp")
+        .env("HORDE_WORKER_TOKEN", worker["token"].as_str().unwrap())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(
+        process.stdin.take().unwrap(),
+        "{}",
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})
+    )
+    .unwrap();
+    let output = process.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    for name in ["add_knowledge", "knowledge"] {
+        let tool = response["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap();
+        assert_eq!(
+            tool["inputSchema"]["properties"]["topic"]["enum"],
+            json!(["performance", "correctness"])
+        );
+        assert!(tool["inputSchema"]["properties"].get("task").is_none());
+    }
+}

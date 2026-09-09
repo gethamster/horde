@@ -387,9 +387,14 @@ fn mcp(root: &std::path::Path) -> Result<()> {
                 && let Some(tools) = response["result"]["tools"].as_array_mut()
             {
                 tools.retain(|t| horde::protocol::worker_allowed(t["name"].as_str().unwrap_or("")));
+                let options = request(root, "knowledge_options", json!({}))?;
+                let topics: Vec<String> = serde_json::from_value(options["topics"].clone())?;
                 for tool in tools {
                     tool["inputSchema"] =
                         horde::protocol::schema(tool["name"].as_str().unwrap_or(""));
+                    if matches!(tool["name"].as_str(), Some("add_knowledge" | "knowledge")) {
+                        horde::knowledge::apply_topics(&mut tool["inputSchema"], &topics);
+                    }
                 }
             }
             writeln!(out, "{response}")?;

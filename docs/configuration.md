@@ -199,3 +199,18 @@ Omit `step_budget_seconds` on an exempt step; setting both is an error. Set the
 exemption directly on a command step, not on a template inclusion. Cancellation,
 process cleanup, and retry handling still apply. Existing tasks keep their pinned
 settings, so submit a new task after changing the template or command timeout.
+
+## Knowledge topics
+
+Optionally declare a vocabulary for the task family's notebook:
+
+```toml
+knowledge_topics = ["architecture", "testing", "performance"]
+```
+
+The default empty list permits free-form topics. A configured list permits at most
+128 unique, nonempty strings of at most 128 bytes each. The root's pinned vocabulary
+applies throughout its family. Workers see it in their tool schemas; administrative
+clients can retrieve task-specific schemas through `knowledge_options`. See
+[task-family notebooks](coordination.md#task-family-notebooks) for scope, queries,
+claim lifecycle, and export.
