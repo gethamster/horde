@@ -147,11 +147,18 @@ Some servers only emit streaming usage when requested. If supported, set
 `extra_body.stream_options = { include_usage = true }`. Horde does not send this
 field automatically because some compatible servers reject it.
 
-`tool.completed` includes `result_summary` and `result_truncated` for successful
-calls, alongside the existing error fields. The summary is limited to 2,048 UTF-8
-bytes. A successful call means the tool returned normally; a command's nonzero exit
-code may still appear in its result. These summaries do not shorten the result
-sent back to the model. Telemetry strings are redacted before encoding; unavailable
-application secrets cause diagnostic content to be withheld. Usage and extra-field
-objects each have a 64 KiB diagnostic limit. No assistant transcript is copied into
-the usage record.
+`tool.completed` includes redacted `arguments` and `result` strings with separate
+`arguments_truncated` and `result_truncated` flags. Each defaults to a 512-byte
+UTF-8-safe limit, configured by the top-level `tool_event_bytes` setting (0 through
+65,536). Zero omits both payloads. `result_summary` remains an alias of `result`.
+Errors retain their separate 2,048-byte summary and truncation flag.
+
+Arguments record what the model supplied, before runtime injection or dispatch.
+Malformed arguments are retained as a bounded string. A failed call has a null
+result and a populated error. A successful call means the tool returned normally;
+a command's nonzero exit code may still appear in its result. These summaries do
+not shorten the result sent back to the model. Strings are redacted before JSON
+encoding and truncation, including secrets containing quotes or newlines.
+Unavailable application secrets cause diagnostic content to be withheld. Usage
+and extra-field objects each have a 64 KiB diagnostic limit. No assistant
+transcript is copied into the usage record.

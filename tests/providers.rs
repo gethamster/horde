@@ -477,7 +477,8 @@ async fn native_tool_errors_are_visible_in_events_and_the_worker_can_continue() 
     assert!(events[2]["error"].as_str().unwrap().contains("JSON string"));
     assert_eq!(events[3]["success"], true);
     assert!(events[3]["error"].is_null());
-    assert!(events[3].get("result").is_none());
+    assert_eq!(events[3]["result"], "[]");
+    assert_eq!(events[3]["arguments"], "{}");
     let messages = sent[2]["messages"].as_array().unwrap();
     let replies: Vec<_> = messages.iter().filter(|m| m["role"] == "tool").collect();
     assert_eq!(replies.len(), 4);

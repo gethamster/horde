@@ -1122,3 +1122,84 @@ fn native_extra_body_cannot_replace_workflow_fields() {
         );
     }
 }
+
+#[test]
+fn native_tool_events_bound_and_redact_arguments_and_results() {
+    use horde::executor::{Invocation, record_tool_completed};
+    let f = Fixture::new();
+    let worker = f.worker();
+    let row = f.db.steps(&f.oid).unwrap()[0].clone();
+    let step = Store::step(&row).unwrap();
+    let settings = Settings {
+        tool_event_bytes: 80,
+        ..Default::default()
+    };
+    let secret = "synthetic-\n\"provider-secret";
+    f.db.conn
+        .execute(
+            "INSERT INTO task_bundles VALUES(?,?,?)",
+            rusqlite::params![f.oid, "event-app", "v1"],
+        )
+        .unwrap();
+    let bundles = f.db.root.join("remote-secrets").join(&f.oid);
+    std::fs::create_dir_all(&bundles).unwrap();
+    std::fs::write(
+        bundles.join(horde::store::hash(b"event-app")),
+        json!({"version":"v1","values":{"APP_SECRET":"synthetic-app-secret"}}).to_string(),
+    )
+    .unwrap();
+    let payload = json!({"a_key":secret,"b_key":"synthetic-app-secret","z_text":"界".repeat(100)});
+    let i = Invocation {
+        db: &f.db,
+        task: &f.oid,
+        step: row["id"].as_str().unwrap(),
+        attempt: "test",
+        worker: worker["id"].as_str().unwrap(),
+        token: worker["token"].as_str().unwrap(),
+        workspace: f.dir.path(),
+        spec: &step,
+        settings: &settings,
+        context: json!({}),
+    };
+    record_tool_completed(&i, "read_file", &payload, &Ok(payload.clone()), 7, secret).unwrap();
+    let rows =
+        f.db.rows(
+            "SELECT data FROM events WHERE kind='tool.completed' AND task=?",
+            &[&f.oid],
+        )
+        .unwrap();
+    let event: Value = serde_json::from_str(rows[0]["data"].as_str().unwrap()).unwrap();
+    for (field, flag) in [
+        ("arguments", "arguments_truncated"),
+        ("result", "result_truncated"),
+    ] {
+        let text = event[field].as_str().unwrap();
+        assert!(text.len() <= 80);
+        assert!(text.contains("[REDACTED]"));
+        assert!(!text.contains("synthetic"));
+        assert_eq!(event[flag], true);
+    }
+    assert_eq!(event["duration_ms"], 7);
+    assert_eq!(event["success"], true);
+    let disabled = Settings {
+        tool_event_bytes: 0,
+        ..settings.clone()
+    };
+    let i = Invocation {
+        settings: &disabled,
+        ..i
+    };
+    record_tool_completed(&i, "read_file", &payload, &Ok(payload.clone()), 8, secret).unwrap();
+    let rows =
+        f.db.rows(
+            "SELECT data FROM events WHERE kind='tool.completed' AND task=? ORDER BY seq DESC",
+            &[&f.oid],
+        )
+        .unwrap();
+    let event: Value = serde_json::from_str(rows[0]["data"].as_str().unwrap()).unwrap();
+    assert!(
+        event["arguments"].is_null()
+            && event["result"].is_null()
+            && event["result_summary"].is_null()
+    );
+}

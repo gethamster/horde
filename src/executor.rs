@@ -521,11 +521,12 @@ fn tool_error_summary(db: &Store, task: &str, error: &str, provider_key: &str) -
     };
     // Redact all known values together, longest first, including overlapping keys.
     values.insert("HORDE_ACTIVE_PROVIDER_KEY".into(), provider_key.into());
-    let mut text = crate::secrets::redact_values(error, &values);
-    const LIMIT: usize = 2048;
-    let truncated = text.len() > LIMIT;
+    truncate_text(crate::secrets::redact_values(error, &values), 2048)
+}
+fn truncate_text(mut text: String, limit: usize) -> (String, bool) {
+    let truncated = text.len() > limit;
     if truncated {
-        let mut end = LIMIT;
+        let mut end = limit;
         while !text.is_char_boundary(end) {
             end -= 1;
         }
@@ -561,6 +562,42 @@ fn bounded_diagnostic(db: &Store, task: &str, value: &Value, key: &str) -> Value
     } else {
         value
     }
+}
+
+/// Record the same bounded diagnostics used by native execution.
+pub fn record_tool_completed(
+    i: &Invocation<'_>,
+    name: &str,
+    arguments: &Value,
+    result: &Result<Value>,
+    duration_ms: u64,
+    provider_key: &str,
+) -> Result<()> {
+    let limit = i.settings.tool_event_bytes.min(65536);
+    let summarize = |value: &Value| {
+        if limit == 0 {
+            return (None, false);
+        }
+        let text = diagnostic_value(i.db, i.task, value, provider_key).to_string();
+        let (text, truncated) = truncate_text(text, limit);
+        (Some(text), truncated)
+    };
+    let (arguments, arguments_truncated) = summarize(arguments);
+    let (result_text, result_truncated) = match result {
+        Ok(value) => summarize(value),
+        Err(_) => (None, false),
+    };
+    let (error, error_truncated) = match result {
+        Ok(_) => (None, false),
+        Err(error) => {
+            let (text, truncated) =
+                tool_error_summary(i.db, i.task, &format!("{error:#}"), provider_key);
+            (Some(text), truncated)
+        }
+    };
+    i.db.event(i.task, "tool.completed", json!({"step":i.step,"attempt":i.attempt,"worker":i.worker,"tool":name,"time":now(),
+        "success":result.is_ok(),"duration_ms":duration_ms,"arguments":arguments,"arguments_truncated":arguments_truncated,
+        "result":result_text,"result_summary":result_text,"result_truncated":result_truncated,"error":error,"error_truncated":error_truncated}))
 }
 
 async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
@@ -721,6 +758,11 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                     }
                     .into());
                 }
+                let event_arguments = args
+                    .as_ref()
+                    .ok()
+                    .cloned()
+                    .unwrap_or_else(|| call["function"]["arguments"].clone());
                 let result = match args {
                     Err(e) => Err(e),
                     Ok(args) => {
@@ -745,31 +787,9 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                 };
                 completion_reminder |=
                     loop_guard.record(signature, &outcome, i.settings.max_identical_tool_calls);
-                let duration_ms = tool_started.elapsed().as_millis();
-                let (error, error_truncated) = match &result {
-                    Ok(_) => (None, false),
-                    Err(e) => {
-                        let (text, truncated) =
-                            tool_error_summary(i.db, i.task, &format!("{e:#}"), &key);
-                        (Some(text), truncated)
-                    }
-                };
-                let (result_summary, result_truncated) = match &result {
-                    Ok(value) => {
-                        let redacted = diagnostic_value(i.db, i.task, value, &key).to_string();
-                        let (summary, truncated) =
-                            tool_error_summary(i.db, i.task, &redacted, &key);
-                        (Some(summary), truncated)
-                    }
-                    Err(_) => (None, false),
-                };
+                let duration_ms = tool_started.elapsed().as_millis() as u64;
                 messages.push(json!({"role":"tool","tool_call_id":call["id"],"content":match &result {Ok(v)=>crate::secrets::redact(i.db,i.task,v).to_string(),Err(e)=>crate::secrets::redact(i.db,i.task,&json!({"error":e.to_string()})).to_string()}}))?;
-                i.db.event(
-                    i.task,
-                    "tool.completed",
-                    json!({"step":i.step,"attempt":i.attempt,"worker":i.worker,"tool":name,"time":now(),
-                        "success":result.is_ok(),"duration_ms":duration_ms,"error":error,"error_truncated":error_truncated,"result_summary":result_summary,"result_truncated":result_truncated}),
-                )?;
+                record_tool_completed(i, name, &event_arguments, &result, duration_ms, &key)?;
             }
             if completion_reminder {
                 messages.push(json!({"role":"user","content":"Repeated identical tool calls returned unchanged results. If this step is complete and its checks passed, reply now with the final JSON result and no tool call. Otherwise report the blocker with accepted=false. Repeating the same call again will hold the task for inspection."}))?;
