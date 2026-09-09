@@ -58,6 +58,34 @@ error for inspection instead of being silently replaced.
 Later skill edits use `horde skills install DIRECTORY` and worker synchronization;
 they do not require another executable release. See [runtime skills](runtime-skills.md).
 
+## Building from source
+
+A source build needs the repository's `skills` directory beside the executable.
+For a release build run:
+
+```sh
+cargo build --release
+cp -R skills target/release/
+./target/release/horde doctor
+./target/release/horde start
+```
+
+When copying the binary elsewhere, copy `skills` to the same destination directory.
+An explicitly installed runtime pack takes precedence over the adjacent directory.
+Development binaries running under the checkout's `target` directory can use the
+repository files directly; copied binaries and release builds cannot rely on that.
+
+`start` and every `doctor` mode check the default pack with the same resolver used
+by submission. Their JSON output includes its hash, names, selected path, and lookup
+locations. A missing or invalid pack fails these commands with the lookup locations
+before starting a new daemon or probing a provider. An invalid installed pack never
+falls back silently to adjacent files. Template validation checks structure only;
+it does not establish that a runtime has a usable pack.
+
+The foreground `daemon` command prints a startup warning when its pack is unavailable
+and keeps management, recovery of pinned work, and signed-release bootstrap available.
+Source builds without a release verification key need the local files above.
+
 ## Recovering an older database
 
 Some older installations stored workflow steps in `tasks` and their objectives

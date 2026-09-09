@@ -30,8 +30,9 @@ pub fn request(root: &Path, method: &str, args: Value) -> Result<Value> {
 }
 
 pub async fn start(root: &Path) -> Result<Value> {
+    let skill_pack = crate::skill_catalog::check(root)?;
     if running(root) {
-        return Ok(json!({"running":true}));
+        return Ok(json!({"running":true,"skill_pack":skill_pack}));
     }
     std::fs::create_dir_all(root)?;
     let log = std::fs::OpenOptions::new()
@@ -58,7 +59,7 @@ pub async fn start(root: &Path) -> Result<Value> {
     let mut child = command.spawn()?;
     for _ in 0..50 {
         if running(root) {
-            return Ok(json!({"pid":child.id(),"running":true}));
+            return Ok(json!({"pid":child.id(),"running":true,"skill_pack":skill_pack}));
         }
         if child.try_wait()?.is_some() {
             break;

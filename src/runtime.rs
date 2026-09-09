@@ -714,6 +714,11 @@ impl Scheduler {
 
 pub async fn daemon(root: &Path) -> Result<()> {
     use fs2::FileExt;
+    if let Err(error) = crate::skill_catalog::check(root) {
+        // Keep recovery, management, and signed-pack bootstrap available for
+        // already-pinned tasks, but never imply new submissions are ready.
+        eprintln!("Default skills unavailable for new submissions: {error:#}");
+    }
     anyhow::ensure!(
         crate::branding::var_os("HORDE_BOOTSTRAP_JSON").is_none()
             || (crate::branding::var_os("HORDE_ENROLLMENT_FILE").is_none()

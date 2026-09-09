@@ -599,8 +599,9 @@ async fn main() -> Result<()> {
             probe,
             provider,
         } => {
+            let skill_pack = horde::skill_catalog::check(&root)?;
             let settings = horde::config::Settings::load(&repo)?;
-            if probe || probe_tuara {
+            let mut result = if probe || probe_tuara {
                 let config = if probe_tuara {
                     settings
                         .executor("native")
@@ -638,7 +639,9 @@ async fn main() -> Result<()> {
                     }
                 }
                 json!({"settings":settings,"resolved_models":resolved_models,"data_dir":root,"daemon":root.join("daemon.sock").exists()})
-            }
+            };
+            result["skill_pack"] = skill_pack;
+            result
         }
         Commands::Update {
             check,
