@@ -71,6 +71,136 @@ fn provider(url: String) -> horde::config::Provider {
         ..Default::default()
     }
 }
+fn completion_call(args: Value) -> (u16, String) {
+    (200, json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[
+        {"id":"finish","type":"function","function":{"name":"complete_step","arguments":args.to_string()}}
+    ]}}],"usage":{"completion_tokens":12}}).to_string())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_completion_tool_returns_without_another_model_request() {
+    let (result, sent, events) = native_result_after(vec![completion_call(json!({
+        "result":"implemented and checked", "accepted":true, "artifacts":["cli.py"]
+    }))])
+    .await;
+    let result = result.unwrap();
+    assert_eq!(result["result"], "implemented and checked");
+    assert_eq!(result["artifacts"], json!(["cli.py"]));
+    assert_eq!(result["usage"]["requests"].as_array().unwrap().len(), 1);
+    assert_eq!(sent.len(), 2);
+    let tool = sent[1]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["function"]["name"] == "complete_step")
+        .unwrap();
+    assert_eq!(
+        tool["function"]["parameters"]["properties"]["accepted"]["type"],
+        "boolean"
+    );
+    assert_eq!(events[0]["tool"], "complete_step");
+    assert_eq!(events[0]["success"], true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_completion_reports_blockers_and_allows_shape_correction() {
+    let (result, sent, _) = native_result_after(vec![completion_call(json!({
+        "result":"tests failed", "accepted":false, "artifacts":[]
+    }))])
+    .await;
+    assert!(result.unwrap_err().contains("tests failed"));
+    assert_eq!(sent.len(), 2);
+    let (result, sent, events) = native_result_after(vec![
+        completion_call(json!({"result":"done", "accepted":"true", "artifacts":[]})),
+        completion_call(json!({"result":"done", "accepted":true, "artifacts":[]})),
+    ])
+    .await;
+    assert!(result.is_ok());
+    assert_eq!(events[0]["success"], false);
+    assert!(
+        sent[2]["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("boolean accepted")
+    );
+    assert_eq!(events[1]["success"], true);
+    assert_eq!(sent[1]["tools"], sent[2]["tools"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_planner_can_complete_after_accepted_proposal() {
+    let proposal = (200, json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[
+        {"id":"proposal","type":"function","function":{"name":"propose_steps","arguments":json!({"steps":[{"id":"implement_json","instructions":"Add JSON output","scope":["cli.py"]}]}).to_string()}}
+    ]}}]}).to_string());
+    let (result, sent, events) = native_result_after_as(vec![proposal, completion_call(json!({"result":"Add JSON flag, test it, and commit", "accepted":true, "artifacts":[]}))], true).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| e["tool"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["propose_steps", "complete_step"]
+    );
+    assert!(events.iter().all(|e| e["success"] == true));
+    let last = sent[2]["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["role"], "user");
+    assert!(
+        last["content"]
+            .as_str()
+            .unwrap()
+            .contains("cannot run until this assigned step completes")
+    );
+    assert_eq!(sent[1]["tools"], sent[2]["tools"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_completion_mixed_with_other_calls_does_not_skip_them() {
+    let mixed = (200, json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[
+        {"id":"finish","type":"function","function":{"name":"complete_step","arguments":json!({"result":"done","accepted":true,"artifacts":[]}).to_string()}},
+        {"id":"questions","type":"function","function":{"name":"pending_questions","arguments":"{}"}}
+    ]}}]}).to_string());
+    let (result, _, events) = native_result_after(vec![
+        mixed,
+        completion_call(json!({"result":"done", "accepted":true, "artifacts":[]})),
+    ])
+    .await;
+    assert!(result.is_ok());
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0]["success"], false);
+    assert!(
+        events[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("only tool call")
+    );
+    assert_eq!(events[1]["tool"], "pending_questions");
+    assert_eq!(events[1]["success"], true);
+    assert_eq!(events[2]["success"], true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_streamed_completion_returns_through_the_shared_parser() {
+    let sse = [
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"done","type":"function","function":{"name":"complete_","arguments":""}}]}}]}),
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"step","arguments":json!({"result":"done","accepted":true,"artifacts":[]}).to_string()}}]}}]}),
+        json!({"choices":[],"usage":{"completion_tokens":17}}),
+    ].into_iter().map(|v| format!("data: {v}\n\n")).collect::<String>() + "data: [DONE]\n\n";
+    let (result, sent, events) =
+        native_result_after_configured(vec![(200, sse)], false, |settings| {
+            settings.providers.get_mut("default").unwrap().stream = true;
+        })
+        .await;
+    let result = result.unwrap();
+    assert_eq!(
+        result["usage"]["requests"][0]["provider"]["completion_tokens"],
+        17
+    );
+    assert_eq!(sent.len(), 2);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["tool"], "complete_step");
+    assert_eq!(events[0]["success"], true);
+}
+
 #[tokio::test]
 async fn exact_model_and_streaming_tool_fragments_are_validated() {
     let sse = concat!(
@@ -516,7 +646,13 @@ async fn native_planner_corrects_a_nested_step_after_receiving_its_field_error()
             .contains("steps[0].needs")
     );
     let accepted_reply: Value = serde_json::from_str(
-        sent[3]["messages"].as_array().unwrap().last().unwrap()["content"]
+        sent[3]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|m| m["role"] == "tool")
+            .unwrap()["content"]
             .as_str()
             .unwrap(),
     )
