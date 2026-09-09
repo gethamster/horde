@@ -42,11 +42,30 @@ fn server(replies: Vec<(u16, String)>) -> (String, Arc<Mutex<Vec<Value>>>, threa
                 .unwrap_or(0);
             let mut data = vec![0; length];
             stream.read_exact(&mut data).unwrap();
-            recorded.lock().unwrap().push(if data.is_empty() {
+            let request = if data.is_empty() {
                 json!({"method":"GET"})
             } else {
                 serde_json::from_slice(&data).unwrap()
-            });
+            };
+            // Model the OpenAI contract: usage-only SSE chunks require an opt-in.
+            let body = if body.starts_with("data:")
+                && request["stream_options"]["include_usage"] != true
+            {
+                body.split("\n\n")
+                    .filter(|event| {
+                        let Some(data) = event.strip_prefix("data: ") else {
+                            return true;
+                        };
+                        serde_json::from_str::<Value>(data)
+                            .ok()
+                            .is_none_or(|v| v["usage"].is_null())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            } else {
+                body
+            };
+            recorded.lock().unwrap().push(request);
             write!(stream,"HTTP/1.1 {status} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",if body.starts_with("data:"){"text/event-stream"}else{"application/json"},body.len(),body).unwrap();
         }
     });
@@ -219,6 +238,10 @@ async fn exact_model_and_streaming_tool_fragments_are_validated() {
     assert_eq!(result["streaming_tool_calls_verified"], true);
     handle.join().unwrap();
     assert_eq!(requests.lock().unwrap()[1]["stream"], true);
+    assert_eq!(
+        requests.lock().unwrap()[1]["stream_options"]["include_usage"],
+        true
+    );
 }
 #[tokio::test]
 async fn unavailable_model_fails_without_substitution() {
@@ -1097,7 +1120,7 @@ async fn streamed_usage_is_recorded_per_response_in_events_and_metrics() {
     ], false, |s| {
         let p = s.providers.get_mut("default").unwrap();
         p.stream = true;
-        p.extra_body.insert("stream_options".into(),json!({"include_usage":true}));
+
     }).await;
     assert!(run.result.is_ok(), "{:?}", run.result);
     let responses: Vec<_> = run

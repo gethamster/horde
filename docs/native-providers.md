@@ -152,9 +152,13 @@ token totals. Unknown usage fields, including prefix reuse and speculation count
 are retained without assuming their names or units. Standard prompt, completion,
 and cached-token fields contribute to existing totals. Missing costs remain unknown.
 
-Some servers only emit streaming usage when requested. If supported, set
-`extra_body.stream_options = { include_usage = true }`. Horde does not send this
-field automatically because some compatible servers reject it.
+For streamed requests, Horde sends `stream_options.include_usage = true` by
+default, as described in the [OpenAI Chat Completions contract](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+The same defaults apply to native execution and provider probes.
+Other configured `extra_body.stream_options` fields are preserved. An explicit
+`include_usage = false` or `stream_options = null` keeps the provider override;
+usage metrics then depend on what the server returns. Non-streamed requests do
+not gain a default `stream_options` field.
 
 `tool.completed` includes redacted `arguments` and `result` strings with separate
 `arguments_truncated` and `result_truncated` flags. Each defaults to a 512-byte
