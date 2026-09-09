@@ -176,13 +176,7 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         if !i.settings.allow_commands {
             bail!("commands disabled");
         }
-        let result = run_command(
-            &i.spec.command,
-            i.workspace,
-            i.settings.timeout_seconds,
-            Some((i.db, i.attempt)),
-        )
-        .await;
+        let result = run_step_command(i).await;
         let r = match result {
             Ok(r) if r["success"] == true => r,
             result => {
@@ -211,6 +205,34 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         _ => bail!("unknown executor kind {}", config.kind),
     }
 }
+
+async fn run_step_command(i: &Invocation<'_>) -> Result<Value> {
+    let program = i.spec.command.first().context("empty command")?;
+    let mut values = crate::secrets::values(i.db, i.task)?;
+    let mut command = clean_command(program);
+    command
+        .args(&i.spec.command[1..])
+        .current_dir(i.workspace)
+        .envs(&values)
+        .env("HORDE_TASK_ID", i.task)
+        .env("HORDE_STEP_ID", i.step)
+        .env("HORDE_ATTEMPT_ID", i.attempt)
+        .env("HORDE_WORKER_ID", i.worker)
+        .env("HORDE_WORKER_TOKEN", i.token)
+        .env("HORDE_DATA_DIR", &i.db.root)
+        .env("HORDE_BIN", std::env::current_exe()?);
+    let result = run_process(
+        command,
+        None,
+        i.settings.timeout_seconds,
+        Some((i.db, i.attempt)),
+    )
+    .await?;
+    // Keep public identities in evidence, but never persist a dumped credential.
+    values.insert("HORDE_WORKER_TOKEN".into(), i.token.into());
+    Ok(crate::secrets::redact_json(&result, &values))
+}
+
 /// Diagnose literal paths after a failure; never parse or execute shell syntax.
 fn missing_workspace_path_hint(i: &Invocation<'_>) -> String {
     let Ok(task) = i.db.task(i.task) else {

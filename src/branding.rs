@@ -19,7 +19,12 @@ pub fn config_dir() -> PathBuf {
         .join("horde")
 }
 pub fn data_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share/horde")
+    std::env::var_os("HORDE_DATA_DIR")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share/horde")
+        })
 }
 pub fn project_config(project: &Path) -> PathBuf {
     project.join(".horde/horde.toml")

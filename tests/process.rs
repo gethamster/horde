@@ -1053,3 +1053,79 @@ fn worker_mcp_lists_pinned_knowledge_topics() {
         assert!(tool["inputSchema"]["properties"].get("task").is_none());
     }
 }
+
+#[test]
+fn command_worker_identity_publishes_scoped_evidence_and_redacts_credentials() {
+    let d = Daemon::new();
+    std::fs::write(d.repo.join(".horde.toml"), "knowledge_topics=['testing']\n").unwrap();
+    d.template(
+        "identity",
+        "name='identity'\nversion='1'\n[[steps]]\nid='measure'\nkind='command'\ncommand=['sh','publish.sh']\n",
+    );
+    std::fs::write(d.repo.join("publish.sh"), r#"set -eu
+for name in HORDE_TASK_ID HORDE_STEP_ID HORDE_ATTEMPT_ID HORDE_WORKER_ID HORDE_WORKER_TOKEN HORDE_DATA_DIR HORDE_BIN; do
+  printenv "$name" >/dev/null
+done
+"$HORDE_BIN" call knowledge_options '{}'
+"$HORDE_BIN" call add_knowledge '{"id":"cell-verdict","scope":"family","kind":"evidence","content":"measured verdict","topic":"testing","valid_under":{"co_state":"fixture"},"provenance":{"source":"command"},"verified":true}'
+"$HORDE_BIN" call put_artifact '{"name":"verdict","content":"pass","verified":true}'
+if "$HORDE_BIN" call add_knowledge '{"scope":"family","kind":"evidence","content":"replacement","provenance":{},"supersedes":["parent-observation"]}'; then exit 10; fi
+if "$HORDE_BIN" call retract_knowledge '{"id":"parent-observation","reason":"replacement","provenance":{}}'; then exit 11; fi
+if "$HORDE_BIN" call runtime_drain '{}'; then exit 12; fi
+if "$HORDE_BIN" call put_artifact '{"task":"other-task","name":"bad","content":"bad"}'; then exit 13; fi
+if "$HORDE_BIN" call put_artifact '{"step":"other-step","name":"bad","content":"bad"}'; then exit 14; fi
+printf '%s %s %s %s\n' "$HORDE_TASK_ID" "$HORDE_STEP_ID" "$HORDE_ATTEMPT_ID" "$HORDE_WORKER_ID"
+printf '%s\n' "$HORDE_WORKER_TOKEN"
+printf '%s\n' "$HORDE_WORKER_TOKEN" >&2
+"#).unwrap();
+    horde::git::run(&d.repo, &["add", "."]).unwrap();
+    horde::git::run(&d.repo, &["commit", "-m", "command fixture"]).unwrap();
+    let parent = d.submit("simulated");
+    d.wait(&parent, "succeeded");
+    d.call("add_knowledge", json!({"task":parent,"id":"parent-observation","scope":"family","kind":"evidence","content":"parent measured","provenance":{}}));
+    let child = d.call(
+        "delegate_task",
+        json!({"task":parent,"id":"identity-child","objective":"measure","template":"identity"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let inspect = d.wait(&child, "succeeded");
+    let db = horde::store::Store::open(&d.root).unwrap();
+    let worker = db
+        .rows("SELECT * FROM workers WHERE task=?", &[&child])
+        .unwrap()
+        .remove(0);
+    let serialized = inspect.to_string();
+    assert!(serialized.contains(worker["id"].as_str().unwrap()));
+    assert!(serialized.contains(inspect["attempts"][0]["id"].as_str().unwrap()));
+    assert!(serialized.contains("[REDACTED]"), "{inspect}");
+    let claim = d.call(
+        "knowledge",
+        json!({"task":parent,"scope":"family","topic":"testing"}),
+    )["records"][0]
+        .clone();
+    assert_eq!(claim["task"], child);
+    assert_eq!(claim["step"], inspect["steps"][0]["id"]);
+    assert_eq!(claim["valid_under"]["co_state"], "fixture");
+    assert_eq!(claim["verified"], 0);
+    let artifact = inspect["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "verdict")
+        .unwrap();
+    assert_eq!(artifact["verified"], 0);
+    let claims = d.call("knowledge", json!({"task":parent,"scope":"family"}));
+    assert_eq!(claims["records"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn failing_command_output_redacts_worker_token() {
+    let d = Daemon::new();
+    d.template("identity-failure", "name='identity-failure'\nversion='1'\n[[steps]]\nid='fail'\nkind='command'\nattempts=1\ncommand=['sh','-c','echo $HORDE_WORKER_TOKEN; echo $HORDE_WORKER_TOKEN >&2; exit 3']\n");
+    let task = d.submit("identity-failure");
+    let inspect = d.wait(&task, "failed");
+    let serialized = inspect.to_string();
+    assert!(serialized.contains("[REDACTED]"), "{inspect}");
+}

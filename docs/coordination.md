@@ -19,6 +19,31 @@ supplied `verified` flag with a warning; workers cannot certify their own eviden
 
 For a script or independent harness, create a worker with `register_worker`, then register its separate worktree using `register_workspace` (`path`, `branch`, `base`). Set the returned token as `HORDE_WORKER_TOKEN` in its MCP bridge environment. Acquire claims before editing. Never share the personal-agent bridge with an untrusted worker.
 
+### Command-step identity
+
+Every ordinary `kind = "command"` step receives its task, step, attempt, and worker
+UUIDs as `HORDE_TASK_ID`, `HORDE_STEP_ID`, `HORDE_ATTEMPT_ID`, and `HORDE_WORKER_ID`.
+`HORDE_WORKER_TOKEN` authenticates calls with the same scope as an agent worker.
+`HORDE_BIN` names the executing Horde binary, and `HORDE_DATA_DIR` selects its daemon
+for CLI calls; an explicit `--data-dir` still takes precedence.
+
+For example, a command can publish its measurement directly:
+
+```sh
+"$HORDE_BIN" call add_knowledge '{"id":"cell-verdict","scope":"family","topic":"testing","kind":"evidence","content":"The fixture passed","provenance":{"source":"cell"},"valid_under":{"dataset":"fixture-v2"}}'
+"$HORDE_BIN" call put_artifact '{"name":"verdict","content":"The fixture passed"}'
+```
+
+Choose IDs appropriate for the claim and retry; a changed claim cannot reuse an ID.
+If the task declares `knowledge_topics`, the topic must be in that vocabulary.
+Calls supply task/step attribution automatically. Workers cannot self-verify,
+impersonate another task or step, revise another task's claims, or use administrative
+operations. Question answering keeps the existing caller and human-only rules.
+The token rotates on retry and is redacted from captured stdout/stderr. It is not
+a provider API key. Other application environment values retain their existing
+bundle checks and redaction. Nested native commands and environment lifecycle
+commands do not gain these credentials merely by using the command runner.
+
 ## Messages and ownership
 
 Every operation is available as `horde call OPERATION 'JSON'`. Examples:
