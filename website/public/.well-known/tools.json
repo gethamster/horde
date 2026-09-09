@@ -1,5 +1,5 @@
 {
-  "count": 65,
+  "count": 79,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -7,6 +7,323 @@
   },
   "specVersion": "1.0",
   "tools": [
+    {
+      "description": "Inspect this runtime's file-based default skill pack and content hash",
+      "name": "skill_pack_list",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Install a local directory of skills for new tasks, independently of the runtime binary",
+      "name": "skill_pack_install",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Send this controller's current default skill pack to a worker by name or ID; request_id makes retries safe and running tasks retain their pins",
+      "name": "runtime_skills_update",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Discover local and connected worker executors, models, capacity, and authentication evidence before choosing delegation",
+      "name": "runtime_capabilities",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Resolve work roles into allowed machine/model pools; reports blockers and leaves task choices to the parent agent",
+      "name": "plan_execution",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "roles": {
+            "additionalProperties": {
+              "additionalProperties": false,
+              "properties": {
+                "models": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "maxItems": 64,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "runtime": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "runtime",
+                "models"
+              ],
+              "type": "object"
+            },
+            "description": "Named work roles, each with a machine and an allowed model/executor pool; the parent chooses which member to use.",
+            "maxProperties": 32,
+            "minProperties": 1,
+            "type": "object"
+          }
+        },
+        "required": [
+          "roles"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Inspect or arrange Horde setup using available access; report missing credentials or access without exposing secrets",
+      "name": "agent_setup",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "inspect",
+              "verify",
+              "configure_provider",
+              "configure_controller",
+              "create_fleet_key",
+              "join_worker",
+              "restart_local"
+            ],
+            "type": "string"
+          },
+          "api_key_env": {
+            "type": "string"
+          },
+          "auth_mode": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "concurrency": {
+            "type": "integer"
+          },
+          "credential_env": {
+            "type": "string"
+          },
+          "credential_file": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer"
+          },
+          "explicit_root": {
+            "type": "boolean"
+          },
+          "invitation_file": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "max_workers": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "no_start": {
+            "type": "boolean"
+          },
+          "output_file": {
+            "type": "string"
+          },
+          "program": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Read shipped skills and effective project instructions, including content and version hashes",
+      "name": "skill_inspect",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Draft a project skill change for discussion; does not activate it",
+      "name": "skill_propose",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "expected_hash": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "name",
+          "content"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Apply an explicitly accepted project skill proposal; running tasks keep their pinned versions",
+      "name": "skill_apply",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "const": true,
+            "description": "Set only after the user agrees to this proposed persistent skill change.",
+            "type": "boolean"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "proposal_id",
+          "accepted"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Inspect the project's saved skill revisions",
+      "name": "skill_history",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "before_revision": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "name"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Propose restoring a previous project skill revision for acceptance",
+      "name": "skill_rollback",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repo",
+          "name",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
     {
       "description": "Resume queued fleet updates after inspecting a failed rollout",
       "name": "runtime_updates_resume",
@@ -44,12 +361,50 @@
       "scope": "admin"
     },
     {
-      "description": "List managed runtime",
+      "description": "List workers and managed runtimes by name and status",
       "name": "runtime_list",
       "parameters": {
         "additionalProperties": false,
         "properties": {},
         "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Assign a memorable name to a runtime",
+      "name": "runtime_rename",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Remove a disconnected runtime entry without deleting its host",
+      "name": "runtime_forget",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
         "type": "object"
       },
       "scope": "admin"
@@ -154,7 +509,7 @@
       "scope": "admin"
     },
     {
-      "description": "Update managed runtime",
+      "description": "Request a signed runtime update on a connected worker by name or ID; inspect the operation until completion",
       "name": "runtime_update",
       "parameters": {
         "additionalProperties": false,
@@ -443,6 +798,57 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "execution": {
+            "additionalProperties": false,
+            "description": "Parent-selected capability and allowed runtime/capability pairs from discovery. Children may narrow this pool; no credentials or global configuration changes.",
+            "properties": {
+              "allowed": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "capabilities": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "runtime": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "runtime",
+                    "capabilities"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "selected": {
+                "additionalProperties": false,
+                "properties": {
+                  "capability": {
+                    "type": "string"
+                  },
+                  "runtime": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "runtime",
+                  "capability"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "allowed",
+              "selected"
+            ],
+            "type": "object"
           },
           "id": {
             "type": "string"
@@ -972,7 +1378,7 @@
       "scope": "admin"
     },
     {
-      "description": "Submit objective, repo, and optional template; returns durable task id",
+      "description": "Submit work with a stable request_id for safe retries, optional runtime and execution pool; returns durable task id",
       "name": "submit_task",
       "parameters": {
         "additionalProperties": false,
@@ -983,10 +1389,67 @@
             },
             "type": "array"
           },
+          "execution": {
+            "additionalProperties": false,
+            "description": "Parent-selected capability and allowed runtime/capability pairs from discovery. Children may narrow this pool; no credentials or global configuration changes.",
+            "properties": {
+              "allowed": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "capabilities": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "runtime": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "runtime",
+                    "capabilities"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "selected": {
+                "additionalProperties": false,
+                "properties": {
+                  "capability": {
+                    "type": "string"
+                  },
+                  "runtime": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "runtime",
+                  "capability"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "allowed",
+              "selected"
+            ],
+            "type": "object"
+          },
           "objective": {
             "type": "string"
           },
+          "on": {
+            "type": "string"
+          },
           "repo": {
+            "type": "string"
+          },
+          "request_id": {
             "type": "string"
           },
           "template": {
@@ -996,6 +1459,23 @@
         "required": [
           "objective",
           "repo"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Get a local checkout of completed remote work for review",
+      "name": "remote_result",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
         ],
         "type": "object"
       },

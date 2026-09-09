@@ -241,3 +241,34 @@ release that hold. A caller should wait for an update to reach
 command is shown as waiting until the remote reports completion. Events can be
 consumed by an existing Slack bot or personal agent through MCP; no separate
 Slack application or credentials are installed.
+
+## Update a named worker
+
+The calling agent can request a binary update or synchronize its current default
+skill pack with a connected worker:
+
+```sh
+horde runtime update apollo --version 0.7.0
+horde runtime update apollo --skills
+horde runtime inspect apollo
+```
+
+Choose an available signed release version for the binary command. The CLI
+returns a request ID; supply it through `--request-id` when reconciling a retry.
+MCP calls use `runtime_update` with `id`, `version`, and `request_id`, or
+`runtime_skills_update` with `id` and `request_id`. These operations also work for
+independently enrolled fleet members, without an SSH connection or provisioning
+profile. Names resolve to authenticated identities when the request is accepted.
+
+Acceptance queues the request. Inspect that request's operation until it reports
+`succeeded`, `failed`, or a condition requiring intervention. A binary update uses
+the existing signed installer and drain procedure. Package-manager installations
+and externally owned containers still require their installation or deployment
+owner to replace the binary; enrollment alone does not grant that authority.
+
+Skill synchronization activates a complete captured default pack without draining
+or restarting. New tasks use it; running tasks, retries, and descendants retain
+pinned instructions. Results and capability inventory report its content hash and
+skill names. A worker must advertise `runtime_skills_update` support; older workers
+need the runtime upgrade first. See [runtime skills](runtime-skills.md) for file
+editing, metadata, installation, and project overrides.

@@ -14,6 +14,7 @@ use std::{
 
 const MAX_FILE: usize = 1024 * 1024;
 const MAX_TOTAL: usize = 8 * 1024 * 1024;
+const MAX_SKILLS: usize = 64;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct File {
@@ -32,6 +33,9 @@ pub fn migrate(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS task_skills(task TEXT NOT NULL REFERENCES tasks(id),name TEXT NOT NULL,hash TEXT NOT NULL REFERENCES artifacts(hash),PRIMARY KEY(task,name));
 CREATE TABLE IF NOT EXISTS attempt_skills(task TEXT NOT NULL REFERENCES tasks(id),attempt TEXT NOT NULL,name TEXT NOT NULL,hash TEXT NOT NULL,PRIMARY KEY(task,attempt,name));
+CREATE TABLE IF NOT EXISTS skill_policy_heads(repo TEXT NOT NULL,name TEXT NOT NULL,revision INTEGER NOT NULL,bundle TEXT,PRIMARY KEY(repo,name));
+CREATE TABLE IF NOT EXISTS skill_policy_proposals(id TEXT PRIMARY KEY,repo TEXT NOT NULL,name TEXT NOT NULL,base_hash TEXT NOT NULL,base_revision INTEGER NOT NULL,baseline_hash TEXT NOT NULL,bundle TEXT NOT NULL,reset INTEGER NOT NULL,reason TEXT NOT NULL,state TEXT NOT NULL,created INTEGER NOT NULL,applied_revision INTEGER);
+CREATE TABLE IF NOT EXISTS skill_policy_revisions(repo TEXT NOT NULL,name TEXT NOT NULL,revision INTEGER NOT NULL,bundle TEXT NOT NULL,reset INTEGER NOT NULL,proposal_id TEXT UNIQUE NOT NULL REFERENCES skill_policy_proposals(id),reason TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(repo,name,revision));
 COMMIT;")?;
     Ok(())
 }
@@ -56,7 +60,10 @@ fn digest(files: &BTreeMap<String, File>) -> Result<String> {
     Ok(hash(&serde_json::to_vec(files)?))
 }
 pub fn validate(packet: &Packet) -> Result<()> {
-    ensure!(packet.len() <= 32, "at most 32 skills can be pinned");
+    ensure!(
+        packet.len() <= MAX_SKILLS,
+        "at most 64 skills can be pinned"
+    );
     let mut total = 0;
     for (name, bundle) in packet {
         ensure!(valid_name(name), "invalid skill name {name}");
@@ -88,6 +95,7 @@ pub fn validate(packet: &Packet) -> Result<()> {
             bytes.len() <= 65536 && !std::str::from_utf8(&bytes)?.trim().is_empty(),
             "SKILL.md must be nonempty UTF-8, at most 64 KiB"
         );
+        injection(bundle)?;
         ensure!(
             digest(&bundle.files)? == bundle.hash,
             "skill bundle hash mismatch"
@@ -97,6 +105,17 @@ pub fn validate(packet: &Packet) -> Result<()> {
 }
 /// Only explicitly configured directories are read. No implicit home scan or fetch.
 pub fn capture(repo: &Path, configured: &BTreeMap<String, PathBuf>) -> Result<Packet> {
+    ensure!(
+        configured.len() <= 32,
+        "at most 32 configured skills can be pinned"
+    );
+    capture_catalog(repo, configured)
+}
+
+pub(crate) fn capture_catalog(
+    repo: &Path,
+    configured: &BTreeMap<String, PathBuf>,
+) -> Result<Packet> {
     fn walk(
         root: &Path,
         dir: &Path,
@@ -152,7 +171,10 @@ pub fn capture(repo: &Path, configured: &BTreeMap<String, PathBuf>) -> Result<Pa
         }
         Ok(())
     }
-    ensure!(configured.len() <= 32, "at most 32 skills can be pinned");
+    ensure!(
+        configured.len() <= MAX_SKILLS,
+        "at most 64 skills can be pinned"
+    );
     let mut packet = Packet::new();
     let mut total = 0;
     for (name, path) in configured {
@@ -180,6 +202,62 @@ pub fn capture(repo: &Path, configured: &BTreeMap<String, PathBuf>) -> Result<Pa
     validate(&packet)?;
     Ok(packet)
 }
+/// Discover the packaged skill files without embedding their content or names.
+pub fn builtins() -> Result<Packet> {
+    crate::skill_catalog::load_defaults()
+}
+
+pub(crate) fn baseline_for_root(
+    root: &Path,
+    repo: &Path,
+    configured: &BTreeMap<String, PathBuf>,
+) -> Result<Packet> {
+    let combined: Packet = crate::skill_catalog::load_for(root)?
+        .into_iter()
+        .chain(capture(repo, configured)?)
+        .collect();
+    validate(&combined)?;
+    Ok(combined)
+}
+
+pub(crate) fn with_instructions(bundle: &Bundle, content: &str) -> Result<Bundle> {
+    ensure!(
+        !content.trim().is_empty() && content.len() <= 65536,
+        "SKILL.md must be nonempty UTF-8, at most 64 KiB"
+    );
+    let replacement = File {
+        hex: hex::encode(content),
+        executable: bundle.files["SKILL.md"].executable,
+    };
+    let files = bundle
+        .files
+        .iter()
+        .map(|(path, file)| {
+            (
+                path.clone(),
+                if path == "SKILL.md" {
+                    replacement.clone()
+                } else {
+                    file.clone()
+                },
+            )
+        })
+        .collect();
+    Ok(Bundle {
+        hash: digest(&files)?,
+        files,
+    })
+}
+
+pub fn capture_effective(
+    db: &Store,
+    repo: &Path,
+    configured: &BTreeMap<String, PathBuf>,
+) -> Result<Packet> {
+    let baseline = baseline_for_root(&db.root, repo, configured)?;
+    db.atomic(|| crate::skill_policy::effective(db, repo, baseline))
+}
+
 pub fn bind(db: &Store, task: &str, packet: &Packet) -> Result<()> {
     validate(packet)?;
     for (name, bundle) in packet {
@@ -243,8 +321,64 @@ pub fn select(db: &Store, task: &str, names: Option<&Value>) -> Result<Packet> {
     }
     Ok(selected)
 }
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Metadata {
+    injection: Injection,
+}
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Injection {
+    agent: bool,
+    roles: Vec<String>,
+    when_no_explicit_skills: bool,
+}
+fn injection(bundle: &Bundle) -> Result<Injection> {
+    let Some(file) = bundle.files.get("horde.toml") else {
+        return Ok(Injection::default());
+    };
+    let bytes = hex::decode(&file.hex)?;
+    let metadata: Metadata = toml::from_str(std::str::from_utf8(&bytes)?)
+        .context("invalid skill horde.toml metadata")?;
+    ensure!(
+        metadata.injection.roles.len() <= 64
+            && metadata.injection.roles.iter().all(|role| valid_name(role)),
+        "invalid skill injection roles"
+    );
+    Ok(metadata.injection)
+}
+fn prompt_step(packet: &Packet, step: &Step) -> Result<Step> {
+    let defaults = packet
+        .iter()
+        .map(|(name, bundle)| {
+            let metadata = injection(bundle)?;
+            Ok((step.kind == "agent"
+                && (metadata.agent || metadata.roles.contains(&step.role))
+                && (!metadata.when_no_explicit_skills || step.skills.is_empty()))
+            .then_some(name.clone()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let skills = step
+        .skills
+        .iter()
+        .cloned()
+        .chain(defaults.into_iter().flatten())
+        .fold(Vec::new(), |items, name| {
+            if items.contains(&name) {
+                items
+            } else {
+                items.into_iter().chain([name]).collect()
+            }
+        });
+    Ok(Step {
+        skills,
+        ..step.clone()
+    })
+}
+
 pub fn validate_steps(packet: &Packet, steps: &[Step]) -> Result<()> {
     for (index, step) in steps.iter().enumerate() {
+        let step = prompt_step(packet, step)?;
         let mut size = 0;
         for name in &step.skills {
             let bundle = packet.get(name).with_context(|| {
@@ -307,6 +441,8 @@ fn materialize(db: &Store, bundle: &Bundle) -> Result<PathBuf> {
 }
 pub fn prompt(db: &Store, task: &str, attempt: &str, step: &Step) -> Result<String> {
     let packet = packet(db, task)?;
+    let selected = prompt_step(&packet, step)?;
+    let step = &selected;
     validate_steps(&packet, std::slice::from_ref(step))?;
     if packet.is_empty() {
         return Ok(String::new());

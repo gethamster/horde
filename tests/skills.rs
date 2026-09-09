@@ -115,8 +115,8 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
         .submit("new version", &repo, &settings, &plan)
         .unwrap();
     assert_ne!(
-        skills::catalog(&reopened, &new_task).unwrap()[0]["hash"],
-        first[0]["hash"]
+        skills::packet(&reopened, &new_task).unwrap()["writer"].hash,
+        skills::packet(&reopened, &task).unwrap()["writer"].hash
     );
     std::fs::remove_dir_all(source).unwrap();
     let child = horde::delegation::delegate(
@@ -128,7 +128,15 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(skills::catalog(&reopened, &child).unwrap(), first);
+    let writer_catalog = json!(
+        first
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["name"] == "writer")
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(skills::catalog(&reopened, &child).unwrap(), writer_catalog);
     let grandchild = horde::delegation::delegate(
         &reopened,
         &child,
@@ -138,7 +146,10 @@ fn selected_skill_is_loaded_once_and_restart_and_source_edits_preserve_its_pin()
         .as_str()
         .unwrap()
         .to_owned();
-    assert_eq!(skills::catalog(&reopened, &grandchild).unwrap(), first);
+    assert_eq!(
+        skills::catalog(&reopened, &grandchild).unwrap(),
+        writer_catalog
+    );
     let narrowed = horde::delegation::delegate(
         &reopened,
         &task,

@@ -157,7 +157,7 @@ confer execution authority.
 
 ### Storage and remote access
 
-Schema 4 adds notebook metadata and a local FTS5 index. Existing knowledge rows
+Schema 5 adds notebook metadata and a local FTS5 index. Existing knowledge rows
 remain task-local and are indexed on upgrade. Earlier versions also copied knowledge
 into supporting context; context reads now hide those legacy copies from other
 tasks. New notebook writes do not create context sources or prompt entries.

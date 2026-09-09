@@ -6,6 +6,7 @@ ARG CLAUDE_VERSION=2.1.118
 RUN npm install -g @openai/codex@${CODEX_VERSION} @anthropic-ai/claude-code@${CLAUDE_VERSION}
 ARG TARGETARCH
 COPY dist/${TARGETARCH}/horde /usr/local/bin/horde
+COPY skills /usr/local/bin/skills
 USER horde
 ENV HOME=/home/horde
 ENV XDG_CONFIG_HOME=/data/config

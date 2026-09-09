@@ -32,6 +32,17 @@ pub mod update;
 
 pub mod pairing;
 
+pub mod skill_catalog;
 pub mod skills;
 
+pub mod agent_setup;
 pub mod budget;
+pub mod capabilities;
+pub mod daemon_client;
+pub mod execution_selection;
+pub mod orchestration;
+pub mod remote_submit;
+pub mod runtime_directory;
+pub mod skill_policy;
+pub mod submission;
+pub mod worker_join;

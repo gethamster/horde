@@ -431,6 +431,113 @@ fn migration_indexes_old_rows_without_publishing_them() {
 }
 
 #[test]
+fn schema_four_upgrade_preserves_execution_receipts_and_skill_revisions() {
+    // The relevant v4 layout predates notebook metadata and its FTS index.
+    let dir = tempfile::tempdir().unwrap();
+    let connection = rusqlite::Connection::open(dir.path().join("state.sqlite3")).unwrap();
+    connection.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY,objective TEXT NOT NULL,repo TEXT NOT NULL,status TEXT NOT NULL,settings TEXT NOT NULL,plan TEXT NOT NULL,created INTEGER NOT NULL); CREATE TABLE knowledge(id TEXT PRIMARY KEY,task TEXT NOT NULL,step TEXT,kind TEXT NOT NULL,content TEXT NOT NULL,provenance TEXT NOT NULL,verified INTEGER NOT NULL,inputs TEXT NOT NULL);").unwrap();
+    connection.execute("INSERT INTO tasks VALUES('v4-task','keep execution constraints','.','succeeded',?,'{}',0)", [serde_json::to_string(&Settings::default()).unwrap()]).unwrap();
+    connection.execute_batch("INSERT INTO knowledge VALUES('v4-claim','v4-task',NULL,'evidence','searchable v4 evidence','{}',1,'{}')").unwrap();
+    horde::skills::migrate(&connection).unwrap();
+    horde::execution_selection::migrate(&connection).unwrap();
+    horde::submission::migrate(&connection).unwrap();
+    let old = Store {
+        conn: connection,
+        root: dir.path().to_owned(),
+    };
+    let binding = json!({"runtime":"local","capability":"fixture","provider":"fixture","kind":"simulated","model":null,"configuration_hash":"a".repeat(64)});
+    let policy = json!({"version":1,"allowed":[{"runtime":"local","capabilities":["fixture"]}],"bindings":[binding.clone()],"selected":binding});
+    horde::execution_selection::pin(&old, "v4-task", &policy).unwrap();
+    old.conn
+        .execute(
+            "INSERT INTO submission_receipts VALUES('submission-v4','pinned-request','v4-task',?)",
+            [json!({"id":"v4-task"}).to_string()],
+        )
+        .unwrap();
+    let skill_dir = dir.path().join("skill");
+    std::fs::create_dir(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "Preserve this accepted skill revision.",
+    )
+    .unwrap();
+    let packet =
+        horde::skills::capture(dir.path(), &BTreeMap::from([("review".into(), skill_dir)]))
+            .unwrap();
+    let bundle = serde_json::to_string(&packet["review"]).unwrap();
+    old.conn.execute("INSERT INTO skill_policy_proposals VALUES('proposal-v4','project','review','base',0,'baseline',?,0,'reviewed','accepted',0,1)", [&bundle]).unwrap();
+    old.conn.execute("INSERT INTO skill_policy_revisions VALUES('project','review',1,?,0,'proposal-v4','reviewed',0)", [&bundle]).unwrap();
+    old.conn
+        .execute(
+            "INSERT INTO skill_policy_heads VALUES('project','review',1,?)",
+            [&bundle],
+        )
+        .unwrap();
+    let tables = [
+        "task_execution_policy",
+        "submission_receipts",
+        "skill_policy_proposals",
+        "skill_policy_revisions",
+        "skill_policy_heads",
+    ];
+    let before: Vec<_> = tables
+        .iter()
+        .map(|table| old.rows(&format!("SELECT * FROM {table}"), &[]).unwrap())
+        .collect();
+    old.conn.pragma_update(None, "user_version", 4).unwrap();
+    assert!(
+        old.rows(
+            "SELECT name FROM sqlite_master WHERE name='knowledge_meta'",
+            &[]
+        )
+        .unwrap()
+        .is_empty()
+    );
+    drop(old);
+
+    for _ in 0..2 {
+        let db = Store::open(dir.path()).unwrap();
+        assert_eq!(
+            db.conn
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            horde::execution_selection::policy(&db, "v4-task").unwrap(),
+            Some(policy.clone())
+        );
+        for (table, expected) in tables.iter().zip(&before) {
+            assert_eq!(
+                &db.rows(&format!("SELECT * FROM {table}"), &[]).unwrap(),
+                expected,
+                "{table}"
+            );
+        }
+        let page = protocol::dispatch(
+            &db,
+            "knowledge",
+            json!({"task":"v4-task","scope":"task","query":"searchable"}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(page["records"].as_array().unwrap().len(), 1);
+        assert_eq!(page["records"][0]["id"], "v4-claim");
+        assert_eq!(page["records"][0]["scope"], "task");
+        assert_eq!(
+            protocol::dispatch(
+                &db,
+                "knowledge",
+                json!({"task":"v4-task","scope":"family"}),
+                None
+            )
+            .unwrap()["records"],
+            json!([])
+        );
+    }
+}
+
+#[test]
 fn relationship_pages_export_all_visible_edges_without_private_targets() {
     let f = Fixture::new();
     let child = f.child(&f.root, "reader");

@@ -162,7 +162,7 @@ fn command(root: &Path) -> tokio::process::Command {
 
 async fn join(root: &Path, invitation: &Path) -> Certificate {
     let output = command(root)
-        .args(["network", "join", "--invitation"])
+        .args(["network", "join", "--no-start", "--invitation"])
         .arg(invitation)
         .output()
         .await
@@ -229,7 +229,11 @@ async fn shared_invitation_creates_distinct_durable_worker_identities_and_renews
     let pending = std::fs::read_to_string(first.join("fleet-worker-pending.json")).unwrap();
     assert!(!pending.contains(&invitation.token));
     std::fs::remove_file(path).unwrap();
-    let again = join(&first, &f.dir.path().join("missing-invitation")).await;
+    // A saved identity can restart without its original admission file. The
+    // interactive join command validates a supplied file instead of ignoring it.
+    let again = worker::join(&first, &f.dir.path().join("missing-invitation"))
+        .await
+        .unwrap();
     assert_eq!(again.runtime_id, a.runtime_id);
     assert_eq!(again.certificate_pem, a.certificate_pem);
     assert_eq!(std::fs::read(first.join("fleet-worker.key")).unwrap(), key);
@@ -564,7 +568,7 @@ async fn worker_rejects_controller_signed_by_another_ca_before_enrollment() {
     let path = f.write_invitation(&invitation);
     let root = f.dir.path().join("untrusted-controller-worker");
     let output = command(&root)
-        .args(["network", "join", "--invitation"])
+        .args(["network", "join", "--no-start", "--invitation"])
         .arg(path)
         .output()
         .await

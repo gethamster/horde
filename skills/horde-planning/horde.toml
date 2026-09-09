@@ -1,0 +1,3 @@
+[injection]
+roles = ["planner"]
+when_no_explicit_skills = true
