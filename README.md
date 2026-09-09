@@ -63,13 +63,18 @@ You can also submit and follow tasks directly:
 
 ```sh
 horde submit "Add CSV export with tests" --repo /path/to/repository
+horde watch TASK_ID        # NDJSON events until the task ends; exit 0/1/2 by outcome
 horde inspect TASK_ID
 horde events TASK_ID
 horde metrics TASK_ID
+horde summary TASK_ID      # status, step outcomes, integrated head, PR URL or why delivery was skipped
 horde call list_workers '{"task":"TASK_ID"}'
 horde steer TASK_ID "Prefer the streaming parser; skip the CLI flag"
 horde steer TASK_ID "Only you: re-check the parser" --worker WORKER_ID
 ```
+
+A `[notify]` table in the configuration pushes the same milestones to a webhook
+or local command. See [progress and notifications](docs/progress.md).
 
 </details>
 

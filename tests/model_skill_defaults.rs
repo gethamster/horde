@@ -32,7 +32,7 @@ fn fixture() -> (tempfile::TempDir, Store, String) {
     (dir, db, task)
 }
 
-fn assert_loaded(db: &Store, task: &str, role: &str, attempt: &str, explicit: Vec<String>) {
+fn assert_selected(db: &Store, task: &str, role: &str, attempt: &str, explicit: Vec<String>) {
     let spec: Step =
         serde_json::from_value(json!({"id":"work","kind":"agent","role":role,"skills":explicit}))
             .unwrap();
@@ -40,19 +40,33 @@ fn assert_loaded(db: &Store, task: &str, role: &str, attempt: &str, explicit: Ve
     let bundle = &packet["horde-model-selection"];
     let body = String::from_utf8(hex::decode(&bundle.files["SKILL.md"].hex).unwrap()).unwrap();
     let prompt = skills::prompt(db, task, attempt, &spec).unwrap();
-    assert_eq!(
-        prompt.matches(&body).count(),
-        1,
-        "full pinned instructions must appear once"
-    );
+    for selected in packet.values() {
+        let instructions =
+            String::from_utf8(hex::decode(&selected.files["SKILL.md"].hex).unwrap()).unwrap();
+        assert!(
+            !prompt.contains(&instructions),
+            "skill instructions must be read progressively"
+        );
+    }
+    assert!(prompt.contains("Selected skill horde-model-selection"));
+    assert!(prompt.contains(&bundle.hash));
+    let resource = skills::read(
+        db,
+        task,
+        &json!({"name":"horde-model-selection", "limit":65536}),
+    )
+    .unwrap();
+    assert_eq!(resource["content"], body);
+    assert_eq!(resource["hash"], bundle.hash);
+    assert!(prompt.contains(resource["base_directory"].as_str().unwrap()));
     assert_eq!(skills::prompt(db, task, attempt, &spec).unwrap(), prompt);
-    let loaded = db.rows("SELECT hash FROM attempt_skills WHERE task=? AND attempt=? AND name='horde-model-selection'", &[&task,&attempt]).unwrap();
-    assert_eq!(loaded.len(), 1);
-    assert_eq!(loaded[0]["hash"], bundle.hash);
+    let selected = db.rows("SELECT hash FROM attempt_skills WHERE task=? AND attempt=? AND name='horde-model-selection'", &[&task,&attempt]).unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0]["hash"], bundle.hash);
 }
 
 #[test]
-fn model_guidance_is_injected_into_each_agent_role_and_retry_without_step_configuration() {
+fn model_guidance_is_discoverable_for_each_agent_role_and_retry_without_loading_instructions() {
     let (_dir, db, task) = fixture();
     assert!(
         skills::packet(&db, &task)
@@ -60,13 +74,20 @@ fn model_guidance_is_injected_into_each_agent_role_and_retry_without_step_config
             .contains_key("horde-model-selection")
     );
     for role in ["planner", "worker", "reviewer", "custom-role"] {
-        assert_loaded(&db, &task, role, role, vec![]);
-        assert_loaded(
+        assert_selected(&db, &task, role, role, vec![]);
+        assert_selected(
             &db,
             &task,
             role,
             &format!("{role}-retry"),
             vec!["horde-model-selection".into()],
+        );
+        assert_selected(
+            &db,
+            &task,
+            role,
+            &format!("{role}-unrelated"),
+            vec!["horde-review".into()],
         );
     }
 }
@@ -101,7 +122,7 @@ fn descendants_keep_pinned_model_guidance_and_explicit_catalog_narrowing_is_resp
             skills::packet(&reopened, id).unwrap()["horde-model-selection"].hash,
             original["horde-model-selection"].hash
         );
-        assert_loaded(&reopened, id, "worker", "after-policy-edit", vec![]);
+        assert_selected(&reopened, id, "worker", "after-policy-edit", vec![]);
     }
     let narrowed = horde::delegation::delegate(
         &db,
@@ -170,19 +191,36 @@ fn directory_skills_can_be_added_edited_removed_and_installed_without_rebuilding
         .unwrap();
     let step: Step =
         serde_json::from_value(json!({"id":"work","kind":"agent","role":"invented-role"})).unwrap();
-    assert!(
-        skills::prompt(&db, &task, "first", &step)
-            .unwrap()
-            .contains("First file policy")
+    let initial = skills::prompt(&db, &task, "first", &step).unwrap();
+    assert!(!initial.contains("First file policy"));
+    assert!(initial.contains(&first["new-guidance"].hash));
+    assert_eq!(
+        skills::read(&db, &task, &json!({"name":"new-guidance"})).unwrap()["content"],
+        "First file policy"
     );
     std::fs::write(skill.join("SKILL.md"), "Second file policy").unwrap();
     let second = skill_catalog::load_from(&source).unwrap();
     assert_ne!(first["new-guidance"].hash, second["new-guidance"].hash);
     skill_catalog::install(&db.root, &second).unwrap();
-    assert!(
-        skills::prompt(&db, &task, "retry", &step)
-            .unwrap()
-            .contains("First file policy")
+    assert_eq!(skills::prompt(&db, &task, "retry", &step).unwrap(), initial);
+    assert_eq!(
+        skills::read(&db, &task, &json!({"name":"new-guidance"})).unwrap()["content"],
+        "First file policy"
+    );
+    let new_task = db
+        .submit(
+            "updated work",
+            &dir.path().join("repo"),
+            &Settings::default(),
+            &plan,
+        )
+        .unwrap();
+    let updated = skills::prompt(&db, &new_task, "first", &step).unwrap();
+    assert!(updated.contains(&second["new-guidance"].hash));
+    assert!(!updated.contains("Second file policy"));
+    assert_eq!(
+        skills::read(&db, &new_task, &json!({"name":"new-guidance"})).unwrap()["content"],
+        "Second file policy"
     );
     assert!(
         skills::packet(&db, &old_task)
@@ -233,11 +271,28 @@ fn injection_metadata_is_pinned_generic_and_preserves_explicit_order() {
     let step:Step=serde_json::from_value(json!({"id":"work","kind":"agent","role":"invented-role","skills":["z-explicit","a-explicit","z-explicit"]})).unwrap();
     let prompt = skills::prompt(&db, &task, "custom", &step).unwrap();
     assert!(
-        prompt.find("Body for z-explicit").unwrap() < prompt.find("Body for a-explicit").unwrap()
+        prompt.find("Selected skill z-explicit").unwrap()
+            < prompt.find("Selected skill a-explicit").unwrap()
     );
-    assert_eq!(prompt.matches("Body for z-explicit").count(), 1);
-    assert!(prompt.contains("Body for role-guidance"));
-    assert!(!prompt.contains("Body for only-empty"));
+    assert_eq!(prompt.matches("Selected skill z-explicit").count(), 1);
+    assert!(prompt.contains("Selected skill role-guidance"));
+    assert!(!prompt.contains("Selected skill only-empty"));
+    for (name, bundle) in &packet {
+        assert!(!prompt.contains(&format!("Body for {name}")));
+        assert!(prompt.contains(&bundle.hash));
+        let resource = skills::read(&db, &task, &json!({"name":name})).unwrap();
+        assert_eq!(resource["content"], format!("Body for {name}"));
+        assert_eq!(resource["hash"], bundle.hash);
+    }
+    let implicit: Step =
+        serde_json::from_value(json!({"id":"work", "kind":"agent", "role":"invented-role"}))
+            .unwrap();
+    let defaults = skills::prompt(&db, &task, "defaults", &implicit).unwrap();
+    assert!(defaults.contains("Selected skill only-empty"));
+    assert!(defaults.contains("Selected skill role-guidance"));
+    assert!(!defaults.contains("Selected skill z-explicit"));
+    assert!(!defaults.contains("Selected skill a-explicit"));
+    assert!(!defaults.contains("Body for"));
     std::fs::write(
         source.join("role-guidance/horde.toml"),
         "[injection]\nunknown=true\n",
@@ -277,7 +332,7 @@ fn invalid_catalogs_and_corrupt_installed_packs_fail_without_fallback() {
 }
 
 #[test]
-fn automatic_metadata_obeys_the_combined_instruction_budget() {
+fn large_default_skills_are_discovered_without_loading_their_combined_instructions() {
     let dir = tempfile::tempdir().unwrap();
     for index in 0..5 {
         let skill = dir.path().join(format!("guidance-{index}"));
@@ -288,10 +343,20 @@ fn automatic_metadata_obeys_the_combined_instruction_budget() {
     let packet = horde::skill_catalog::load_from(dir.path()).unwrap();
     let step: Step =
         serde_json::from_value(json!({"id":"work","kind":"agent","role":"worker"})).unwrap();
+    skills::validate_steps(&packet, std::slice::from_ref(&step)).unwrap();
+    let (_fixture, db, task) = fixture();
+    skills::bind(&db, &task, &packet).unwrap();
+    let prompt = skills::prompt(&db, &task, "large-defaults", &step).unwrap();
     assert!(
-        skills::validate_steps(&packet, &[step])
-            .unwrap_err()
-            .to_string()
-            .contains("256 KiB")
+        prompt.len() < 16384,
+        "discovery must not grow with skill body sizes"
     );
+    assert!(!prompt.contains(&"x".repeat(65536)));
+    for (name, bundle) in &packet {
+        assert!(prompt.contains(&format!("Selected skill {name}")));
+        assert!(prompt.contains(&bundle.hash));
+        let page = skills::read(&db, &task, &json!({"name":name, "limit":65536})).unwrap();
+        assert_eq!(page["content"], "x".repeat(65536));
+        assert!(page["next_offset"].is_null());
+    }
 }

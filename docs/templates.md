@@ -84,8 +84,9 @@ GitHub delivery is a separate opt-in step. For non-Next.js projects, include you
 
 Configure named directories under `[skills]` in Horde settings, then select names
 with `skills = ["report"]` on an agent step. Each name must exist in the task's
-pinned catalog. The runtime loads selected instructions into the prompt and makes
-bundled resources available through `read_skill`. A nested template's `skills`
+pinned catalog. The runtime includes selected names, hashes, and resource locations
+in the prompt. The harness reads pinned instructions and resources progressively
+through `read_skill`. A nested template's `skills`
 selection is propagated to its agent steps. See [runtime skills](runtime-skills.md)
 for configuration, inheritance, and file limits.
 

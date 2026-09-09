@@ -9,10 +9,12 @@ pub mod metrics;
 pub mod native;
 mod native_protocol;
 pub mod network;
+pub mod notify;
 pub mod protocol;
 pub mod provisioning;
 pub mod runtime;
 pub mod store;
+pub mod summary;
 pub mod template;
 
 pub mod delegation;

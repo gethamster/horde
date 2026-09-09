@@ -292,7 +292,7 @@ fn skill_history_pages_through_applied_revisions() {
 }
 
 #[test]
-fn planner_invocation_loads_its_pinned_planning_skill_without_step_configuration() {
+fn planner_invocation_discovers_its_pinned_planning_skill_without_loading_it() {
     let (dir, db) = fixture();
     let repo = dir.path().join("repo");
     let guidance =
@@ -329,18 +329,30 @@ fn planner_invocation_loads_its_pinned_planning_skill_without_step_configuration
         context: json!({}),
     };
     let initial = invocation.prompt().unwrap();
-    assert!(initial.contains(&guidance));
+    assert!(!initial.contains(&guidance));
+    assert!(initial.contains("Selected skill horde-planning"));
+    let pinned_hash = skills::packet(&db, &task).unwrap()["horde-planning"]
+        .hash
+        .clone();
+    assert!(initial.contains(&pinned_hash));
+    let read = skills::read(&db, &task, &json!({"name":"horde-planning"})).unwrap();
+    assert_eq!(read["content"], guidance);
+    assert_eq!(read["hash"], pinned_hash);
+    assert!(initial.contains(read["base_directory"].as_str().unwrap()));
     let next = proposal(&db, &repo, &content("Future project guidance."));
     apply(&db, &repo, &next);
     assert_eq!(invocation.prompt().unwrap(), initial);
-    let loaded = db
+    let after_edit = skills::read(&db, &task, &json!({"name":"horde-planning"})).unwrap();
+    assert_eq!(after_edit["content"], guidance);
+    assert_eq!(after_edit["hash"], pinned_hash);
+    let selected = db
         .rows(
             "SELECT name,hash FROM attempt_skills WHERE task=? AND attempt='planning-attempt'",
             &[&task],
         )
         .unwrap();
-    assert_eq!(loaded.len(), 2);
-    let planning = loaded
+    assert_eq!(selected.len(), 2);
+    let planning = selected
         .iter()
         .find(|row| row["name"] == "horde-planning")
         .unwrap();
