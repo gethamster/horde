@@ -57,14 +57,19 @@ fn default_locations() -> Result<Vec<PathBuf>> {
         .context("executable directory")?
         .join("skills");
     let mut locations = vec![adjacent];
-    // Development binaries use the checked-out files on every submission.
-    // Compare canonical paths: `current_exe` resolves symlinks, so a checkout
-    // reached through one (macOS `/tmp` -> `/private/tmp`) would otherwise never
-    // match its own `target/` and every development binary would report no pack.
+    // A development binary is one that lives inside the source checkout: its own
+    // `target/`, an alternate target dir beside it, a `cargo test` binary under
+    // `target/<profile>/deps/`, the integration-test build of the library. Debug or
+    // release. The old rule (debug builds only, under `<checkout>/target` only)
+    // left every `cargo test --release`, every alternate target dir and every
+    // integration test without a pack: seven unit tests and the agent-setup
+    // integration test failed on "no skill pack installed". An installed binary
+    // lives outside the checkout and is unaffected.
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let target = checkout.join("target");
-    let target = target.canonicalize().unwrap_or(target);
-    if cfg!(debug_assertions) && executable.canonicalize()?.starts_with(&target) {
+    let checkout_canonical = checkout
+        .canonicalize()
+        .unwrap_or_else(|_| checkout.to_path_buf());
+    if executable.canonicalize()?.starts_with(&checkout_canonical) {
         locations.push(checkout.join("skills"));
     }
     Ok(locations)
