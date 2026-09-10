@@ -671,15 +671,21 @@ async fn main() -> Result<()> {
                     );
                     resolved_models.insert(name.clone(), horde::executor::probe(&config).await?);
                 } else {
+                    // Every auto-model provider is probed and REPORTED; one unreachable
+                    // provider (a local server that is down) no longer aborts the whole
+                    // report (issue #48). An explicitly named provider still errors.
                     for (name, provider) in &settings.providers {
                         if provider.kind == "tuara" && provider.model.as_deref() == Some("auto") {
-                            resolved_models.insert(
-                                name.clone(),
-                                horde::executor::probe(
-                                    &settings.provider(name).context("provider missing")?,
-                                )
-                                .await?,
-                            );
+                            let entry = match settings.provider(name).context("provider missing") {
+                                Ok(config) => match horde::executor::probe(&config).await {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        json!({"error": format!("{e:#}"), "base_url": config.base_url})
+                                    }
+                                },
+                                Err(e) => json!({"error": format!("{e:#}")}),
+                            };
+                            resolved_models.insert(name.clone(), entry);
                         }
                     }
                 }
