@@ -319,27 +319,25 @@ pub fn failure_reason(kind: &str, stdout: &str, stderr: &str) -> (String, bool) 
     if !stderr.trim().is_empty() {
         return (stderr.trim().to_owned(), is_capacity_message(stderr));
     }
-    if kind == "claude" {
-        if let Ok(event) = serde_json::from_str::<Value>(stdout.trim()) {
-            if let Some(r) = event["result"].as_str() {
-                if !r.trim().is_empty() {
-                    return (r.trim().to_owned(), is_capacity_message(r));
-                }
-            }
-        }
+    if kind == "claude"
+        && let Ok(event) = serde_json::from_str::<Value>(stdout.trim())
+        && let Some(r) = event["result"].as_str()
+        && !r.trim().is_empty()
+    {
+        return (r.trim().to_owned(), is_capacity_message(r));
     }
-    for line in stdout.lines().rev() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            if let Some(m) = v["error"]["message"]
+    for line in stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if let Ok(v) = serde_json::from_str::<Value>(line)
+            && let Some(m) = v["error"]["message"]
                 .as_str()
                 .or_else(|| v["error"].as_str())
-            {
-                return (m.to_owned(), is_capacity_message(m));
-            }
+        {
+            return (m.to_owned(), is_capacity_message(m));
         }
     }
     ("(no stderr; see the events artifact)".to_owned(), false)
