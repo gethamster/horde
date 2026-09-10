@@ -200,7 +200,7 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         .context("unconfigured executor role")?;
     match config.kind.as_str() {
         "simulated" => Ok(json!({"result":"simulated executor","accepted":true})),
-        "codex" | "claude" => harness(i, &config).await,
+        "codex" | "claude" | "grok" => harness(i, &config).await,
         "tuara" => tuara(i, &config).await,
         _ => bail!("unknown executor kind {}", config.kind),
     }
@@ -294,12 +294,21 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     } else {
         None
     };
+    if config.kind == "grok" && config.auth_mode != "login" {
+        bail!("the grok harness runs on its installed subscription login; auth_mode must be login");
+    }
+    if config.kind == "grok" && config.max_api_cost_usd.is_some() {
+        bail!("Grok CLI cannot enforce max_api_cost_usd; configure a supported executor instead");
+    }
     let executable = std::env::current_exe()?;
     let args = vec![
         "--data-dir".to_string(),
         i.db.root.to_string_lossy().into_owned(),
         "mcp".to_string(),
     ];
+    if config.kind == "grok" {
+        return grok_harness(i, config, &executable, &args).await;
+    }
     let mcp = json!({"mcpServers":{"coordination":{"command":executable,"args":args,"env":{"HORDE_WORKER_TOKEN":i.token}}}});
     let mut cmd = clean_command(config.program.as_deref().unwrap_or(&config.kind));
     cmd.current_dir(i.workspace);
@@ -1047,4 +1056,120 @@ mod tool_event_tests {
         );
         assert!(!truncated);
     }
+}
+
+/// The project-scoped MCP configuration Grok reads from `<workspace>/.grok/config.toml`
+/// (`grok mcp add --scope project` writes the same shape): the coordination server as a
+/// stdio process with the worker token in its environment.
+pub fn grok_project_config(executable: &std::path::Path, args: &[String], token: &str) -> String {
+    let mut table = toml::value::Table::new();
+    let mut server = toml::value::Table::new();
+    server.insert(
+        "command".into(),
+        toml::Value::String(executable.to_string_lossy().into_owned()),
+    );
+    server.insert(
+        "args".into(),
+        toml::Value::Array(
+            args.iter()
+                .map(|a| toml::Value::String(a.clone()))
+                .collect(),
+        ),
+    );
+    server.insert("enabled".into(), toml::Value::Boolean(true));
+    let mut env = toml::value::Table::new();
+    env.insert(
+        "HORDE_WORKER_TOKEN".into(),
+        toml::Value::String(token.into()),
+    );
+    server.insert("env".into(), toml::Value::Table(env));
+    let mut servers = toml::value::Table::new();
+    servers.insert("coordination".into(), toml::Value::Table(server));
+    table.insert("mcp_servers".into(), toml::Value::Table(servers));
+    toml::to_string(&toml::Value::Table(table)).unwrap_or_default()
+}
+
+/// Largest prompt the grok harness passes on the command line. Grok's headless mode takes
+/// the prompt as an argument (`-p PROMPT`), never on stdin, and ARG_MAX is finite.
+pub const GROK_PROMPT_LIMIT: usize = 200 * 1024;
+
+/// Grok CLI (`grok -p PROMPT --output-format json --always-approve`) under its installed
+/// subscription login. The prompt travels as an argument; the coordination MCP server is
+/// declared in the workspace's `.grok/config.toml`; the reply is one JSON object with
+/// `text`, `stopReason`, `usage` (Anthropic-style field names) and `total_cost_usd`.
+async fn grok_harness(
+    i: &Invocation<'_>,
+    config: &ExecutorConfig,
+    executable: &std::path::Path,
+    args: &[String],
+) -> Result<Value> {
+    let prompt = i.prompt()?;
+    if prompt.len() > GROK_PROMPT_LIMIT {
+        bail!(
+            "grok harness prompt is {} bytes; the limit is {GROK_PROMPT_LIMIT} (the prompt is a command-line argument)",
+            prompt.len()
+        );
+    }
+    let dir = i.workspace.join(".grok");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("config.toml"),
+        grok_project_config(executable, args, i.token),
+    )?;
+    // The config is runtime-owned, not the worker's work: exclude it from the workspace's
+    // untracked listing so integration's scope check never sees it (worktree-aware path).
+    let exclude = crate::git::run(i.workspace, &["rev-parse", "--git-path", "info/exclude"])?;
+    let exclude = i.workspace.join(exclude.trim());
+    if let Some(parent) = exclude.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if !current.lines().any(|l| l.trim() == ".grok/") {
+        std::fs::write(&exclude, format!("{current}\n.grok/\n"))?;
+    }
+    let mut cmd = clean_command(config.program.as_deref().unwrap_or("grok"));
+    cmd.current_dir(i.workspace);
+    cmd.args(["-p", &prompt, "--output-format", "json", "--always-approve"]);
+    if let Some(model) = &config.model {
+        cmd.arg("--model").arg(model);
+    }
+    let raw = run_process(
+        cmd,
+        None,
+        i.settings.timeout_seconds,
+        Some((i.db, i.attempt)),
+    )
+    .await?;
+    let stdout = raw["stdout"].as_str().unwrap_or("");
+    let artifact = i.db.artifact(
+        i.task,
+        Some(i.step),
+        "executor-events",
+        stdout.as_bytes(),
+        &json!({"attempt":i.attempt}),
+        false,
+    )?;
+    if raw["success"] != true {
+        bail!(
+            "grok executor failed: {}; events artifact {artifact}",
+            raw["stderr"]
+        );
+    }
+    let event: Value = serde_json::from_str(stdout.trim()).context("malformed Grok output")?;
+    crate::capacity::ingest(i.db, config, &event)?;
+    let text = event["text"]
+        .as_str()
+        .context("Grok output carries no text")?
+        .to_owned();
+    let mut usage = json!({"provider":event["usage"],"api_cost_usd":event["total_cost_usd"],"subscription_capacity":null});
+    usage["executor_role"] = json!(i.spec.role);
+    i.db.conn.execute(
+        "UPDATE attempts SET usage=? WHERE id=?",
+        rusqlite::params![usage.to_string(), i.attempt],
+    )?;
+    let mut result = parse_result(&text)?;
+    result["usage"] = usage;
+    result["latency_ms"] = raw["latency_ms"].clone();
+    result["events_artifact"] = json!(artifact);
+    Ok(result)
 }

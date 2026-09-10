@@ -253,6 +253,15 @@ impl Default for Settings {
                 },
             ),
             (
+                "grok".into(),
+                Provider {
+                    kind: "grok".into(),
+                    base_url: "https://api.x.ai/v1".into(),
+                    api_key_env: "XAI_API_KEY".into(),
+                    ..Default::default()
+                },
+            ),
+            (
                 "simulated".into(),
                 Provider {
                     kind: "simulated".into(),
@@ -279,6 +288,7 @@ impl Default for Settings {
             ("native".into(), Executor::default()),
             ("codex".into(), Executor::using("codex")),
             ("claude".into(), Executor::using("claude")),
+            ("grok".into(), Executor::using("grok")),
             ("simulated".into(), Executor::using("simulated")),
         ]);
         Self {
@@ -351,6 +361,11 @@ kind = "claude"
 auth_mode = "login"
 base_url = "https://api.anthropic.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.grok]
+kind = "grok"
+base_url = "https://api.x.ai/v1"
+api_key_env = "XAI_API_KEY"
 
 [providers.simulated]
 kind = "simulated"

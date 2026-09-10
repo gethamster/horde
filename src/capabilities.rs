@@ -155,7 +155,7 @@ fn validate(record: &RuntimeInventory) -> Result<()> {
             "capability IDs must be unique executor names"
         );
         ensure!(
-            ["codex", "claude", "tuara", "simulated"].contains(&capability.kind.as_str()),
+            ["codex", "claude", "grok", "tuara", "simulated"].contains(&capability.kind.as_str()),
             "unsupported executor capability kind"
         );
         ensure!(
