@@ -269,6 +269,117 @@ fn missing_workspace_path_hint(i: &Invocation<'_>) -> String {
     String::new()
 }
 
+/// An attempt that failed on ACCOUNT CAPACITY (a subscription's usage limit, a rate
+/// limit, an auth lapse) rather than on the work. `Store::finish` records it with
+/// `"capacity": true`, and `runtime::settle` does not count it against the step's
+/// `attempts` while a `[fallbacks]` hop remains for the role, so the configured
+/// fallback executor actually runs instead of the step dying on its only attempt
+/// (issue #46).
+#[derive(Debug)]
+pub struct CapacityFailure(pub Value);
+
+impl std::fmt::Display for CapacityFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            self.0["error"]
+                .as_str()
+                .unwrap_or("account capacity failure"),
+        )
+    }
+}
+
+impl std::error::Error for CapacityFailure {}
+
+/// Does an executor's failure text describe account capacity rather than the work?
+pub fn is_capacity_message(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    [
+        "reached your",
+        "usage limit",
+        "rate limit",
+        "rate_limit",
+        "quota",
+        "limit reached",
+        "too many requests",
+        "insufficient credits",
+        "out of credits",
+        "not logged in",
+        "authentication",
+        "unauthorized",
+    ]
+    .iter()
+    .any(|k| t.contains(k))
+}
+
+/// The failure reason of a harness run that exited non-zero: stderr when it says
+/// anything, else the Claude result event's `result` text, else the last JSON
+/// line's `error`, else a pointer at the events artifact. The flag says whether
+/// the reason is an account-capacity message.
+pub fn failure_reason(kind: &str, stdout: &str, stderr: &str) -> (String, bool) {
+    if !stderr.trim().is_empty() {
+        return (stderr.trim().to_owned(), is_capacity_message(stderr));
+    }
+    if kind == "claude"
+        && let Ok(event) = serde_json::from_str::<Value>(stdout.trim())
+        && let Some(r) = event["result"].as_str()
+        && !r.trim().is_empty()
+    {
+        return (r.trim().to_owned(), is_capacity_message(r));
+    }
+    for line in stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if let Ok(v) = serde_json::from_str::<Value>(line)
+            && let Some(m) = v["error"]["message"]
+                .as_str()
+                .or_else(|| v["error"].as_str())
+        {
+            return (m.to_owned(), is_capacity_message(m));
+        }
+    }
+    ("(no stderr; see the events artifact)".to_owned(), false)
+}
+
+#[cfg(test)]
+mod capacity_failure_tests {
+    use super::{failure_reason, is_capacity_message};
+
+    #[test]
+    fn claude_usage_limit_in_the_result_event_is_the_reason_and_is_capacity() {
+        let stdout = r#"{"type":"result","subtype":"success","is_error":true,"result":"You've reached your Fable limit. Switch to another model, or manage usage credits at claude.ai/settings/usage to continue."}"#;
+        let (reason, capacity) = failure_reason("claude", stdout, "");
+        assert!(reason.starts_with("You've reached your Fable limit"));
+        assert!(capacity);
+    }
+
+    #[test]
+    fn stderr_wins_and_a_work_error_is_not_capacity() {
+        let (reason, capacity) = failure_reason("claude", "{}", "panic: assertion failed");
+        assert_eq!(reason, "panic: assertion failed");
+        assert!(!capacity);
+        assert!(!is_capacity_message("the tests failed on the new kernel"));
+        assert!(is_capacity_message("Rate limit exceeded; retry after 60s"));
+    }
+
+    #[test]
+    fn codex_jsonl_error_line_is_the_reason() {
+        let stdout = "{\"type\":\"item.started\"}\n{\"type\":\"error\",\"error\":{\"message\":\"insufficient credits\"}}\n";
+        let (reason, capacity) = failure_reason("codex", stdout, "");
+        assert_eq!(reason, "insufficient credits");
+        assert!(capacity);
+    }
+
+    #[test]
+    fn nothing_to_say_points_at_the_artifact() {
+        let (reason, capacity) = failure_reason("codex", "", "");
+        assert!(reason.contains("events artifact"));
+        assert!(!capacity);
+    }
+}
+
 async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     if !i.settings.allow_commands {
         bail!(
@@ -405,11 +516,18 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         false,
     )?;
     if raw["success"] != true {
-        bail!(
-            "{} executor failed: {}; events artifact {artifact}",
-            config.kind,
-            raw["stderr"]
+        // The Claude CLI puts a usage-limit / auth message in the stdout result event and
+        // leaves stderr empty: the reason must come from wherever it is (issue #46).
+        let stderr = raw["stderr"].as_str().unwrap_or("").trim().to_owned();
+        let (reason, capacity) = failure_reason(&config.kind, stdout, &stderr);
+        let message = format!(
+            "{} executor failed: {reason}; events artifact {artifact}",
+            config.kind
         );
+        if capacity {
+            return Err(CapacityFailure(json!({"error": message, "capacity": true})).into());
+        }
+        bail!("{message}");
     }
     let mut result = None;
     let mut usage = Value::Null;
@@ -417,6 +535,13 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         let event: Value = serde_json::from_str(stdout).context("malformed Claude output")?;
         crate::capacity::ingest(i.db, config, &event)?;
         if event["is_error"] == true {
+            let reason = event["result"].as_str().unwrap_or("").trim().to_owned();
+            if is_capacity_message(&reason) {
+                return Err(CapacityFailure(json!({
+                    "error": format!("Claude reported failure: {reason}; events artifact {artifact}"),
+                    "capacity": true
+                })).into());
+            }
             bail!("Claude reported failure: {event}");
         }
         result = event["result"].as_str().map(str::to_owned);
