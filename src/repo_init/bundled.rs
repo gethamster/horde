@@ -30,5 +30,8 @@ pub(super) fn files() -> Vec<(&'static str, &'static [u8])> {
         skill!("horde-worker/references/operations.md"),
         skill!("horde-templates/SKILL.md"),
         skill!("horde-templates/references/examples.md"),
+        skill!("horde-sdlc/SKILL.md"),
+        skill!("horde-sdlc/references/artifacts.md"),
+        skill!("horde-sdlc/references/execution.md"),
     ]
 }
