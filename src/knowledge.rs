@@ -149,13 +149,20 @@ pub fn add(db: &Store, task: &str, args: &Value, operator: bool) -> Result<Value
         .unwrap_or("");
     ensure!(topic.len() <= 128, "topic exceeds 128 bytes");
     let vocabulary = topics(db, task)?;
-    ensure!(
-        args.get("topic").is_none()
-            || vocabulary.is_empty()
-            || vocabulary.iter().any(|t| t == topic),
-        "unknown knowledge topic; expected one of: {}",
-        vocabulary.join(", ")
-    );
+    if args.get("topic").is_some()
+        && !vocabulary.is_empty()
+        && !vocabulary.iter().any(|t| t == topic)
+    {
+        // The vocabulary is the ROOT task's settings snapshot, frozen at submit; a topic
+        // added to the repository config reaches tasks submitted after it (issue #47).
+        let root = delegation::root(db, task)?;
+        anyhow::bail!(
+            "unknown knowledge topic {topic:?} for the family of root task {root} (knowledge_topics \
+             from its settings snapshot at submit); expected one of: {}; a topic added to the \
+             repository config applies to tasks submitted after the change",
+            vocabulary.join(", ")
+        );
+    }
     let step = args["step"].as_str();
     if let Some(step) = step {
         ensure!(
