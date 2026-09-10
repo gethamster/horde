@@ -570,6 +570,10 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             Err(e) => e
                 .downcast_ref::<crate::budget::Exhausted>()
                 .map(|e| e.0.clone())
+                .or_else(|| {
+                    e.downcast_ref::<crate::executor::CapacityFailure>()
+                        .map(|c| c.0.clone())
+                })
                 .unwrap_or_else(|| json!({"error":format!("{e:#}")})),
         };
         let value = crate::secrets::redact(self, oid, &value);

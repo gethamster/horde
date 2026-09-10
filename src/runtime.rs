@@ -367,9 +367,28 @@ async fn execute_step(
 fn answered_questions(db: &Store, oid: &str) -> Result<Vec<Value>> {
     db.rows("SELECT question,answer FROM questions q WHERE task=? AND answer IS NOT NULL AND NOT EXISTS(SELECT 1 FROM context_records c WHERE c.id='answer:'||q.id AND c.mandatory=1)", &[&oid])
 }
+
+/// How many fallback executors a role can escalate through (`[fallbacks]` walked from
+/// `role`, cycles and runaway chains cut at eight).
+pub fn fallback_hops(settings: &Settings, role: &str) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    let mut current = role;
+    let mut hops = 0;
+    while let Some(next) = settings.fallbacks.get(current) {
+        if hops >= 8 || !seen.insert(next.clone()) {
+            break;
+        }
+        hops += 1;
+        current = next.as_str();
+    }
+    hops
+}
+
 fn settle(db: &Store, oid: &str) -> Result<()> {
     let steps = db.steps(oid)?;
     let mut retrying = false;
+    let settings: Settings =
+        serde_json::from_str(db.task(oid)?["settings"].as_str().context("settings")?)?;
     for t in steps.iter().filter(|t| t["state"] == "failed") {
         let s = Store::step(t)?;
         let count: i64 = db.conn.query_row(
@@ -377,6 +396,16 @@ fn settle(db: &Store, oid: &str) -> Result<()> {
             [t["id"].as_str()],
             |r| r.get(0),
         )?;
+        // An attempt that died on ACCOUNT CAPACITY (executor::CapacityFailure) is not the
+        // work failing: while a [fallbacks] hop remains for the role, it does not count
+        // against `attempts`, so the next attempt runs on the fallback executor (#46).
+        let capacity: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM attempts WHERE step=? AND state='failed' AND json_extract(result,'$.capacity')=1",
+            [t["id"].as_str()],
+            |r| r.get(0),
+        )?;
+        let hops = fallback_hops(&settings, &s.role);
+        let count = count - capacity.min(i64::try_from(hops).unwrap_or(0));
         if count < i64::from(s.attempts) {
             db.conn.execute(
                 "UPDATE steps SET state='pending' WHERE id=?",
