@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.1 - 2026-09-17
+
+- Order the daemon-socket deadlines strictly inward (caller 30 s, daemon read 15 s,
+  nested probe 5 s). The 1 s client read timeout was smaller than the daemon's own
+  read deadline and than the nested `runtime_status` hop `agent_setup inspect` makes
+  on the same socket, which made `inspect` report `daemon_unavailable` against a
+  healthy daemon on a busy host and failed CI on the slowest runner (#54).
+
 - Add a `grok` executor kind: the Grok CLI under its subscription login, prompt as an
   argument, coordination MCP server written to the workspace's `.grok/config.toml`,
   usable as a fallback hop after claude and codex.
