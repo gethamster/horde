@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.6.2 - 2026-09-17
+
+- Rule step-budget exhaustion on a fresh workspace sample taken at the deadline,
+  with the baseline captured before the budget clock starts. The supervisor used
+  to trust the last background poll to finish, so on a loaded runner a command's
+  write inside the idle slack went unseen and the step was stopped; this failed
+  the 0.6.1 release run on `ubuntu-24.04-arm` (`tests/budgets.rs:263`), so 0.6.1
+  was never published (#56).
+- `horde init`'s smoke check uses the daemon-client request budget instead of a
+  private 500 ms socket deadline that #54 did not raise (#56).
+
 ## 0.6.1 - 2026-09-17
 
 - Order the daemon-socket deadlines strictly inward (caller 30 s, daemon read 15 s,
