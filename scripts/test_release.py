@@ -59,6 +59,8 @@ class InstallerTest(unittest.TestCase):
 
     def rewrite_archives(self, extra):
         for archive_path in self.dist.glob('horde-*.tar'):
+            if archive_path.name == 'horde-skills.tar':
+                continue  # the skills pack carries no binary
             with tarfile.open(archive_path) as archive:
                 binary = archive.extractfile('horde').read()
             with tarfile.open(archive_path, 'w') as archive:
@@ -102,7 +104,7 @@ class InstallerTest(unittest.TestCase):
 
     def test_separate_signed_pack_preserves_old_updater_archive_contract(self):
         body = b'---\nname: example\ndescription: Example skill.\n---\nUse tools.\n'
-        with tarfile.open(self.dist/'skills.tar', 'w') as archive:
+        with tarfile.open(self.dist/'horde-skills.tar', 'w') as archive:
             info = tarfile.TarInfo('skills/example/SKILL.md'); info.mode = 0o644; info.size = len(body)
             archive.addfile(info, io.BytesIO(body))
         self.rewrite_archives([])
@@ -120,14 +122,14 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(installed.read_bytes(), body)
 
     def test_separate_pack_checksum_and_binary_injection_are_rejected(self):
-        with tarfile.open(self.dist/'skills.tar', 'w') as archive:
+        with tarfile.open(self.dist/'horde-skills.tar', 'w') as archive:
             info = tarfile.TarInfo('horde'); info.size = 4
             archive.addfile(info, io.BytesIO(b'evil'))
         self.rewrite_archives([])
         result = self.install()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Binary in skills artifact', result.stderr)
-        (self.dist/'skills.tar').write_bytes(b'corrupt')
+        (self.dist/'horde-skills.tar').write_bytes(b'corrupt')
         result = self.install()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('checksum mismatch', result.stderr)

@@ -12,15 +12,21 @@ version = sys.argv[1]
 assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", version)
 root = Path(sys.argv[2])
 artifacts = []
+# The public release repository's verifier derives every artifact's file name
+# as horde-<target>.tar, so the skills pack is horde-skills.tar (0.6.2 shipped
+# skills.tar and the mirror refused the release). Installers select it by
+# target, never by file name.
+skills = root/'horde-skills.tar'
 for archive in sorted(root.glob('horde-*.tar')):
+    if archive == skills:
+        continue
     target = archive.stem.removeprefix('horde-')
     artifacts.append(dict(target=target, sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
                           url=f'https://horde.sh/releases/v{version}/{archive.name}'))
 assert len(artifacts) == 4, 'All four platform archives are required'
-skills = root/'skills.tar'
 if skills.exists():
     artifacts.append(dict(target='skills', sha256=hashlib.sha256(skills.read_bytes()).hexdigest(),
-                          url=f'https://horde.sh/releases/v{version}/skills.tar'))
+                          url=f'https://horde.sh/releases/v{version}/horde-skills.tar'))
 manifest = root/'manifest.json'
 manifest.write_text(json.dumps(dict(version=version, protocol=1, schema_min=2, schema_max=5, artifacts=artifacts, image=os.environ["HORDE_RELEASE_IMAGE"]), sort_keys=True))
 key = os.environ['HORDE_RELEASE_PRIVATE_KEY_FILE']

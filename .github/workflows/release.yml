@@ -164,7 +164,7 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository }}
         run: python3 scripts/merge_release_image.py "$IMAGE" "$GITHUB_REF_NAME" image-digests >> "$GITHUB_OUTPUT"
       - name: Package editable default skills
-        run: python3 scripts/package_release.py skills dist/skills.tar
+        run: python3 scripts/package_release.py skills dist/horde-skills.tar
       - name: Sign release
         env:
           HORDE_RELEASE_PRIVATE_KEY: ${{ secrets.HORDE_RELEASE_PRIVATE_KEY }}
