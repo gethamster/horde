@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.3 - 2026-09-17
+
+- Ship the default skills pack as `horde-skills.tar`. The public release
+  repository's verifier names every artifact `horde-<target>.tar`, so the
+  0.6.2 release (which introduced `skills.tar`) was signed and delivered but
+  never published at horde.sh; installers select the pack by its `skills`
+  target, not its file name, so nothing else changes.
+
 ## 0.6.2 - 2026-09-17
 
 - Rule step-budget exhaustion on a fresh workspace sample taken at the deadline,
