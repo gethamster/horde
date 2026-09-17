@@ -201,7 +201,7 @@ fn inspect(root: &Path, request: &Request) -> Result<Value> {
             }
         }
     }
-    let daemon = daemon_client::request(root, "runtime_status", json!({})).ok();
+    let daemon = daemon_client::probe(root, "runtime_status", json!({})).ok();
     if daemon.is_none() {
         blockers.push(json!({"code":"daemon_unavailable","message":"The local daemon did not answer its private control socket."}));
         next.push(execute(json!(["horde", "--data-dir", root, "start"])));

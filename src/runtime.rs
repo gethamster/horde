@@ -17,6 +17,11 @@ use tokio::{
     task::JoinHandle,
 };
 
+/// A connection may take this long simply to deliver its request line. Clients
+/// must outwait it (see [`crate::daemon_client::REQUEST_TIMEOUT`]) rather than
+/// mistake a busy host for a dead daemon.
+pub const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub fn recover(db: &Store) -> Result<usize> {
     let interrupted=db.rows("SELECT a.id,a.worker,a.step,t.task FROM attempts a JOIN steps t ON t.id=a.step WHERE a.state='running'",&[])?;
     db.atomic(|| {
@@ -547,7 +552,7 @@ async fn handle(stream: tokio::net::UnixStream, root: PathBuf) -> Result<()> {
     // Each connection carries one bounded request; clients can reconnect without affecting execution.
     use tokio::io::AsyncReadExt;
     let n = tokio::time::timeout(
-        Duration::from_secs(15),
+        REQUEST_READ_TIMEOUT,
         (&mut reader).take(1024 * 1024 + 1).read_line(&mut line),
     )
     .await??;

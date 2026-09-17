@@ -58,7 +58,7 @@ fn connected(root: &Path, controller: &str, name: &str) -> Result<bool> {
     {
         return Ok(false);
     }
-    let Ok(status) = daemon_client::request(root, "runtime_status", json!({})) else {
+    let Ok(status) = daemon_client::probe(root, "runtime_status", json!({})) else {
         return Ok(false);
     };
     if pid.is_none() || status["pid"].as_u64() != pid {
