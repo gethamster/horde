@@ -2,7 +2,10 @@
 use crate::{config::Settings, store::Store, template::Step};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    future::Future,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tokio::time::Instant;
 
 fn millis() -> u64 {
@@ -32,6 +35,8 @@ impl std::fmt::Display for Exhausted {
 }
 impl std::error::Error for Exhausted {}
 
+/// Record progress a worker reports about itself. A report that arrives after the
+/// budget ran out cannot revive the attempt.
 pub fn progress(db: &Store, worker: &str, reason: &str, fingerprint: &str) -> Result<()> {
     let Some(a) = db.rows("SELECT a.id,s.id AS step,s.task FROM attempts a JOIN steps s ON a.step=s.id WHERE a.worker=? AND a.state='running' ORDER BY a.started DESC LIMIT 1", &[&worker])?.into_iter().next() else { return Ok(()); };
     let attempt = a["id"].as_str().context("attempt")?;
@@ -39,6 +44,20 @@ pub fn progress(db: &Store, worker: &str, reason: &str, fingerprint: &str) -> Re
     if timing.is_null() || timing["remaining_s"].as_f64().unwrap_or(0.0) <= 0.0 {
         return Ok(());
     }
+    record(db, &a, worker, reason, fingerprint)
+}
+
+/// Record progress the daemon observed itself. Observation lags the change by the
+/// sampling latency, so it is never gated on the remaining budget: a workspace that
+/// changed is not idle, and the supervisor rules on the recorded time through `renew`.
+fn observed(db: &Store, worker: &str, fingerprint: &str) -> Result<()> {
+    let Some(a) = db.rows("SELECT a.id,s.id AS step,s.task FROM attempts a JOIN steps s ON a.step=s.id WHERE a.worker=? AND a.state='running' ORDER BY a.started DESC LIMIT 1", &[&worker])?.into_iter().next() else { return Ok(()); };
+    record(db, &a, worker, "workspace_changed", fingerprint)
+}
+
+fn record(db: &Store, a: &Value, worker: &str, reason: &str, fingerprint: &str) -> Result<()> {
+    let attempt = a["id"].as_str().context("attempt")?;
+    let timing = status(db, attempt)?;
     let previous = db.rows("SELECT data FROM events WHERE kind='step.progress' AND json_extract(data,'$.attempt')=? AND json_extract(data,'$.reason')=? ORDER BY seq DESC LIMIT 1", &[&attempt,&reason])?;
     if previous
         .first()
@@ -131,6 +150,12 @@ where
         return result;
     };
     anyhow::ensure!(budget_s > 0, "step_budget_seconds must be positive");
+    // The baseline precedes the clock so the first write the work makes is a change
+    // against it, not part of it.
+    let observed = std::sync::Arc::new(tokio::sync::Mutex::new(
+        workspace_fingerprint(db, worker).await.ok().flatten(),
+    ));
+    let start = Instant::now();
     let initial_deadline = start
         .checked_add(Duration::from_secs(budget_s))
         .context("step budget is too large")?;
@@ -138,19 +163,14 @@ where
     db.event(task, "step.budget_started", json!({"step":step,"attempt":attempt,"worker":worker,"budget_s":budget_s,"elapsed_s":0,"remaining_s":budget_s,"at_ms":started_ms}))?;
     let root = db.root.clone();
     let watched_worker = worker.to_owned();
+    let watched = observed.clone();
     let _watcher = Watcher(tokio::task::spawn_local(async move {
         let Ok(db) = Store::open(&root) else {
             return;
         };
-        let mut previous = None;
         loop {
-            if let Ok(Some(fingerprint)) = workspace_fingerprint(&db, &watched_worker).await {
-                if previous.as_ref().is_some_and(|p| p != &fingerprint) {
-                    let _ = progress(&db, &watched_worker, "workspace_changed", &fingerprint);
-                }
-                previous = Some(fingerprint);
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            let _ = observe(&db, &watched_worker, &watched).await;
+            tokio::time::sleep(Duration::from_millis(OBSERVER_INTERVAL_MS)).await;
         }
     }));
     let control = CommandControl {
@@ -163,24 +183,51 @@ where
     let mut last_progress = start;
     let mut last_ms = started_ms;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
+    let budget = Duration::from_secs(budget_s);
+    // The sample the deadline takes before ruling, while it is in flight. The work
+    // keeps being polled underneath it, so a slow sample delays the verdict and never
+    // starves the step it is judging.
+    let mut sample: Option<std::pin::Pin<Box<dyn Future<Output = Result<()>> + '_>>> = None;
     let result = loop {
         let deadline = last_progress
-            .checked_add(Duration::from_secs(budget_s))
+            .checked_add(budget)
             .context("step budget is too large")?;
         *deadline_control.lock().unwrap() = Some(deadline.into_std());
         tokio::select! {
             biased;
-            _ = tokio::time::sleep_until(deadline) => {
+            _ = tokio::time::sleep_until(deadline), if sample.is_none() => {
                 // A mutation may have committed just before the timer became runnable.
-                if renew(db, attempt, &mut last_ms, &mut last_progress)? { continue; }
+                renew(db, attempt, &mut last_ms, &mut last_progress)?;
+                if last_progress.elapsed() < budget { continue; }
+                // The poll samples the workspace on its own schedule, which a loaded host
+                // stretches without bound. Exhaustion is a claim that nothing changed for a
+                // whole budget, so it is ruled on a sample taken now, not on the last one the
+                // poll happened to finish.
+                sample = Some(Box::pin(observe(db, worker, &observed)));
+            }
+            _ = async { match sample.as_mut() { Some(s) => s.await, None => std::future::pending().await } }, if sample.is_some() => {
+                sample = None;
+                renew(db, attempt, &mut last_ms, &mut last_progress)?;
+                if last_progress.elapsed() < budget { continue; }
                 let timing = timing(start, last_progress, budget_s);
                 let value = json!({"error":"step budget exhausted","elapsed_s":timing["elapsed_s"],"idle_s":timing["idle_s"],"budget_s":budget_s});
                 db.event(task, "step.budget_exhausted", json!({"step":step,"attempt":attempt,"worker":worker,"error":"step budget exhausted","elapsed_s":timing["elapsed_s"],"idle_s":timing["idle_s"],"budget_s":budget_s,"remaining_s":0}))?;
                 break Err(Exhausted(value).into());
             }
             result = &mut work => {
+                // Idleness ends when the work does; a sample that returns later than
+                // that reports on the workspace the work left behind, not on time it
+                // spent after finishing.
+                let finished = Instant::now();
                 renew(db, attempt, &mut last_ms, &mut last_progress)?;
-                if last_progress.elapsed() >= Duration::from_secs(budget_s) {
+                if finished.saturating_duration_since(last_progress) >= budget {
+                    let _ = match sample.take() {
+                        Some(sample) => sample.await,
+                        None => observe(db, worker, &observed).await,
+                    };
+                    renew(db, attempt, &mut last_ms, &mut last_progress)?;
+                }
+                if finished.saturating_duration_since(last_progress) >= budget {
                     let timing = timing(start, last_progress, budget_s);
                     let value = json!({"error":"step budget exhausted","elapsed_s":timing["elapsed_s"],"idle_s":timing["idle_s"],"budget_s":budget_s});
                     db.event(task, "step.budget_exhausted", json!({"step":step,"attempt":attempt,"worker":worker,"error":"step budget exhausted","elapsed_s":timing["elapsed_s"],"idle_s":timing["idle_s"],"budget_s":budget_s,"remaining_s":0}))?;
@@ -191,6 +238,7 @@ where
             _ = tick.tick() => { renew(db, attempt, &mut last_ms, &mut last_progress)?; }
         }
     };
+    drop(sample);
     // Dropping the work future stops owned async command process groups.
     db.event(task,"step.budget_finished",json!({"step":step,"attempt":attempt,"worker":worker,"timing":timing(start,last_progress,budget_s)}))?;
     result
@@ -218,6 +266,29 @@ fn renew(db: &Store, attempt: &str, last_ms: &mut u64, progress: &mut Instant) -
         .checked_sub(Duration::from_millis(millis().saturating_sub(at)))
         .unwrap_or_else(Instant::now);
     Ok(true)
+}
+
+/// How long the background poll rests between workspace samples. It keeps progress
+/// timestamps fresh for `status`; it is not what decides exhaustion.
+const OBSERVER_INTERVAL_MS: u64 = 250;
+
+/// Sample the workspace and record a change since the previous sample. Samples are
+/// serialized through `previous` so the poll and the deadline check never compare
+/// interleaved reads of a workspace that is still changing.
+async fn observe(
+    db: &Store,
+    worker: &str,
+    previous: &tokio::sync::Mutex<Option<String>>,
+) -> Result<()> {
+    let mut previous = previous.lock().await;
+    let Some(fingerprint) = workspace_fingerprint(db, worker).await? else {
+        return Ok(());
+    };
+    if previous.as_ref().is_some_and(|p| p != &fingerprint) {
+        observed(db, worker, &fingerprint)?;
+    }
+    *previous = Some(fingerprint);
+    Ok(())
 }
 
 async fn workspace_fingerprint(db: &Store, worker: &str) -> Result<Option<String>> {

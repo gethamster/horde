@@ -202,10 +202,14 @@ fn wait_completed(
     }
 }
 
+/// One request to the isolated smoke daemon. Its answer can take as long as the
+/// daemon's own read deadline allows on a loaded host, so the wait is
+/// [`crate::daemon_client::REQUEST_TIMEOUT`], the budget that outwaits it; a
+/// daemon that is not listening fails `connect()` at once and spends none of it.
 fn request(data: &Path, method: &str, args: Value) -> Result<Value> {
     let mut stream = UnixStream::connect(data.join("daemon.sock"))?;
-    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
-    stream.set_write_timeout(Some(Duration::from_millis(500)))?;
+    stream.set_read_timeout(Some(crate::daemon_client::REQUEST_TIMEOUT))?;
+    stream.set_write_timeout(Some(crate::daemon_client::REQUEST_TIMEOUT))?;
     writeln!(stream, "{}", json!({"method":method,"args":args}))?;
     let mut line = String::new();
     BufReader::new(stream.take(1024 * 1024 + 1)).read_line(&mut line)?;
