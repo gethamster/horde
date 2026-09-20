@@ -119,6 +119,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         crate::skills::migrate(&conn)?;
         crate::execution_selection::migrate(&conn)?;
         crate::submission::migrate(&conn)?;
+        crate::decision::store::migrate(&conn)?;
         if version < 5 {
             crate::knowledge::migrate(&conn)?;
         }

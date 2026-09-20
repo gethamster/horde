@@ -586,10 +586,13 @@ type ActiveAttempt = (String, String, String, JoinHandle<Result<()>>);
 
 struct Scheduler {
     running: HashMap<String, ActiveAttempt>,
+    decisions: crate::decision::shadow::Queue,
     limit: usize,
 }
 impl Scheduler {
     async fn tick(&mut self, db: &Store, remote_ready: bool) -> Result<()> {
+        // Advisory failures are isolated from authoritative scheduling.
+        let _ = self.decisions.tick(db).await;
         let finished: Vec<_> = self
             .running
             .iter()
@@ -734,6 +737,21 @@ impl Scheduler {
                 }
                 let tid = row["id"].as_str().context("step")?.to_owned();
                 let (attempt, wid, token) = begin(db, &row)?;
+                let decision_job = (step.kind == "agent"
+                    && settings.decision.mode == crate::config::DecisionMode::Shadow)
+                    .then(|| {
+                        crate::decision::shadow::Job::new(
+                            db.root.clone(),
+                            oid.to_owned(),
+                            row.clone(),
+                            Some(attempt.clone()),
+                            row["dispatch_role"]
+                                .as_str()
+                                .unwrap_or(&step.role)
+                                .to_owned(),
+                            settings.decision.clone(),
+                        )
+                    });
                 let handle = tokio::task::spawn_local(run_step(
                     db.root.clone(),
                     row,
@@ -744,6 +762,12 @@ impl Scheduler {
                 self.running
                     .insert(tid, (oid.to_owned(), attempt, wid, handle));
                 active += 1;
+                // Let the selected executor begin before any advisory database
+                // work. The shadow result can never gate this attempt.
+                if let Some(job) = decision_job {
+                    tokio::task::yield_now().await;
+                    let _ = self.decisions.enqueue(db, job);
+                }
                 if exclusive {
                     break;
                 }
@@ -792,14 +816,16 @@ pub async fn daemon(root: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     let recovered = recover(&db)?;
+    let interrupted_decisions = crate::decision::shadow::recover(&db)?;
     crate::environment::reconcile(&db).await?;
     crate::federation::clear_remote_secrets(&db)?;
     eprintln!(
-        "horde daemon listening on {} ({recovered} interrupted attempts held for reconciliation)",
+        "horde daemon listening on {} ({recovered} interrupted attempts held for reconciliation, {interrupted_decisions} interrupted advisory decisions)",
         socket.display()
     );
     let mut scheduler = Scheduler {
         running: HashMap::new(),
+        decisions: crate::decision::shadow::Queue::default(),
         limit: crate::management::limit(&db)?,
     };
     let remote_ready = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -965,6 +991,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
     }
     maintenance.abort();
     let _ = maintenance.await;
+    scheduler.decisions.shutdown(&db).await;
     for (tid, (_, attempt, wid, h)) in scheduler.running {
         h.abort();
         let _ = h.await;
@@ -1123,6 +1150,7 @@ mod scheduling_limits {
                 crate::management::set(&db, "concurrency", "3").unwrap();
                 let mut scheduler = Scheduler {
                     running: HashMap::new(),
+                    decisions: crate::decision::shadow::Queue::default(),
                     limit: 64,
                 };
                 scheduler.tick(&db, true).await.unwrap();

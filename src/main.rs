@@ -62,6 +62,14 @@ enum Commands {
     Metrics {
         task: String,
     },
+    /// Inspect durable advisory decisions for a task.
+    Decisions {
+        task: String,
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(i64).range(1..=200))]
+        limit: i64,
+    },
     /// Print a task's durable events; with --follow, stream them as NDJSON until the task ends.
     Events {
         task: String,
@@ -559,6 +567,11 @@ async fn main() -> Result<()> {
         Commands::Inspect { task } => request(&root, "inspect", json!({"task":task}))?,
         Commands::Result { task } => request(&root, "remote_result", json!({"task":task}))?,
         Commands::Metrics { task } => request(&root, "metrics", json!({"task":task}))?,
+        Commands::Decisions { task, after, limit } => request(
+            &root,
+            "decisions",
+            json!({"task":task,"after":after,"limit":limit}),
+        )?,
         Commands::List => request(&root, "list_tasks", json!({}))?,
         Commands::Events {
             task,
