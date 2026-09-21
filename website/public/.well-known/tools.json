@@ -1088,6 +1088,14 @@
                       "default": false,
                       "type": "boolean"
                     },
+                    "browser_test": {
+                      "default": null,
+                      "description": "Optional checked-in browser test spec. `test` remains the fallback command.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "compose_file": {
                       "default": "compose.yaml",
                       "type": "string"
@@ -1976,6 +1984,14 @@
                     "allow_external_resources": {
                       "default": false,
                       "type": "boolean"
+                    },
+                    "browser_test": {
+                      "default": null,
+                      "description": "Optional checked-in browser test spec. `test` remains the fallback command.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "compose_file": {
                       "default": "compose.yaml",

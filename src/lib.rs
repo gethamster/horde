@@ -19,6 +19,7 @@ pub mod store;
 pub mod summary;
 pub mod template;
 
+pub mod browser;
 pub mod delegation;
 pub mod environment;
 pub mod secrets;

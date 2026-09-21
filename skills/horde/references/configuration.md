@@ -96,6 +96,27 @@ genuinely separate provider. Comments and hand-written stanzas in `config.toml`
 survive the edit, and settings that would no longer load are reported instead of
 being left on disk.
 
+## Jev browser-test authorization
+
+Browser tests need a separate operator opt-in in this user-owned file. The
+repository's `environment.browser_test` path alone cannot authorize Jev calls.
+For an active browser run, add:
+
+```toml
+[decision]
+mode = "shadow"
+browser_test_mode = "active"
+max_decisions_per_task = 64
+api_key_env = "TYPESAFE_API_KEY"
+```
+
+Store `TYPESAFE_API_KEY=...` in the private `credentials.env` beside this file
+with owner-only permissions. The daemon reads it; app and browser subprocesses
+do not receive it. `browser_test_mode = "shadow"` records an advisory choice and
+runs the environment's ordinary `test` command. Its default, `disabled`, runs
+that test command without attempting browser guidance. See [app environments](environments.md)
+for the browser spec and Playwright setup.
+
 ## Providers
 
 A provider is a named endpoint and credential, declared once. Every executor role
