@@ -366,6 +366,7 @@ async fn non_default_project_authorization_follows_its_current_operator_config()
     let decision = Decision {
         mode: DecisionMode::Shadow,
         native_context_mode: NativeContextMode::Active,
+        base_url: "https://tuara.com/router/v1".into(),
         api_key_env: "HORDE_NATIVE_CONTEXT_TEST_KEY".into(),
         ..Decision::default()
     };
