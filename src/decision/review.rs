@@ -18,6 +18,11 @@ mod manifest;
 pub(crate) use manifest::observed_head;
 use manifest::{git_text, manifest, workspace};
 
+/// Reuse the bounded, coverage-aware diff manifest for delivery checks.
+pub(crate) fn delivery_manifest(repo: &std::path::Path, base: &str, head: &str) -> Result<Value> {
+    manifest(repo, base, head)
+}
+
 const MAX_PENDING: usize = 32;
 const CONCURRENCY: usize = 2;
 

@@ -32,6 +32,8 @@ The daemon evaluates only fresh, available capabilities that the task's executio
 
 Use `horde decisions TASK_ID` to inspect the durable records. `--after` and `--limit` page through them, and `horde metrics TASK_ID` reports decision requests, retries, latency, token usage, abstentions, and agreement with the baseline. Provider cost remains unknown unless a later backend reports it.
 
+Automatic merge and deployment have a separate operator-only `[automatic_delivery]` policy. It is disabled by default and cannot become operational until a held-out delivery qualification has been evaluated and enrolled. See [GitHub delivery](delivery.md#guarded-automatic-delivery) for the scope, evidence contract, and current limit.
+
 Add a provider and its key without editing either file:
 
 ```sh

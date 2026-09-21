@@ -30,6 +30,8 @@ pub struct Settings {
     pub executors: BTreeMap<String, Executor>,
     pub fallbacks: BTreeMap<String, String>,
     pub delivery: Delivery,
+    /// Operator-owned authority for automatic merge and deployment.
+    pub automatic_delivery: AutomaticDelivery,
     pub notify: Notify,
     /// Daemon-owned, advisory decision service configuration. Repository files
     /// cannot set this section.
@@ -37,155 +39,9 @@ pub struct Settings {
     pub limits: crate::delegation::Limits,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DecisionMode {
-    #[default]
-    Disabled,
-    Shadow,
-}
+mod decision;
+pub use decision::*;
 
-/// Native conversation pruning is authorized separately from advisory routing.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NativeContextMode {
-    #[default]
-    Disabled,
-    Shadow,
-    Active,
-}
-
-/// Operator authorization for Jev-guided browser tests.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BrowserTestMode {
-    #[default]
-    Disabled,
-    Shadow,
-    Active,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct CapabilityGuidance {
-    pub runtime: String,
-    pub capability: String,
-    pub description: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct Decision {
-    pub mode: DecisionMode,
-    /// Opt in to advisory review of durable workflow checkpoints.
-    pub review_enabled: bool,
-    pub native_context_mode: NativeContextMode,
-    pub browser_test_mode: BrowserTestMode,
-    /// Optional hard ceiling for serialized native requests, in bytes.
-    pub native_context_max_request_bytes: usize,
-    pub native_context_trigger_bytes: usize,
-    pub native_context_min_savings_bytes: usize,
-    pub native_context_min_savings_ratio_percent: usize,
-    pub backend: String,
-    pub base_url: String,
-    pub api_key_env: String,
-    pub model: String,
-    pub policy: String,
-    pub deadline_ms: u64,
-    pub max_attempts: usize,
-    pub max_decisions_per_task: usize,
-    pub capability_guidance: Vec<CapabilityGuidance>,
-}
-
-impl Default for Decision {
-    fn default() -> Self {
-        Self {
-            mode: DecisionMode::Disabled,
-            review_enabled: false,
-            native_context_mode: NativeContextMode::Disabled,
-            browser_test_mode: BrowserTestMode::Disabled,
-            native_context_max_request_bytes: 0,
-            native_context_trigger_bytes: 64 * 1024,
-            native_context_min_savings_bytes: 16 * 1024,
-            native_context_min_savings_ratio_percent: 15,
-            backend: "typesafe".into(),
-            base_url: "https://api.typesafe.ai".into(),
-            api_key_env: "TYPESAFE_API_KEY".into(),
-            model: "jev-1.13.0".into(),
-            policy: "routing-v1".into(),
-            deadline_ms: 5_000,
-            max_attempts: 2,
-            max_decisions_per_task: 64,
-            capability_guidance: vec![],
-        }
-    }
-}
-
-impl Decision {
-    pub fn validate(&self) -> Result<()> {
-        if self.mode == DecisionMode::Disabled {
-            if self.native_context_mode != NativeContextMode::Disabled {
-                bail!("native context pruning requires decision.mode=shadow");
-            }
-            if self.browser_test_mode != BrowserTestMode::Disabled {
-                bail!("browser testing requires decision.mode=shadow");
-            }
-            return Ok(());
-        }
-        if self.backend != "typesafe" || self.model != "jev-1.13.0" || self.policy != "routing-v1" {
-            bail!(
-                "decision backend, model, and policy must be typesafe, jev-1.13.0, and routing-v1"
-            );
-        }
-        if !(100..=30_000).contains(&self.deadline_ms)
-            || !(1..=3).contains(&self.max_attempts)
-            || !(1..=256).contains(&self.max_decisions_per_task)
-        {
-            bail!("decision deadline, attempts, or per-task limit is outside the supported range");
-        }
-        if self.native_context_max_request_bytes != 0
-            && !(8 * 1024..=16 * 1024 * 1024).contains(&self.native_context_max_request_bytes)
-        {
-            bail!("native context request byte ceiling is outside the supported range");
-        }
-        if !(8 * 1024..=16 * 1024 * 1024).contains(&self.native_context_trigger_bytes) {
-            bail!("native context trigger byte threshold is outside the supported range");
-        }
-        if !(1024..=1024 * 1024).contains(&self.native_context_min_savings_bytes) {
-            bail!("native context minimum savings is outside the supported range");
-        }
-        if !(5..=90).contains(&self.native_context_min_savings_ratio_percent) {
-            bail!("native context minimum savings ratio is outside the supported range");
-        }
-        if self.api_key_env.is_empty()
-            || self.api_key_env.len() > 128
-            || !self
-                .api_key_env
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        {
-            bail!("decision.api_key_env must name an environment variable");
-        }
-        crate::decision::typesafe::endpoint(&self.base_url)?;
-        if self.capability_guidance.len() > 256 {
-            bail!("decision capability guidance accepts at most 256 entries");
-        }
-        let mut pairs = std::collections::BTreeSet::new();
-        for item in &self.capability_guidance {
-            if item.runtime.is_empty()
-                || item.capability.is_empty()
-                || item.description.trim().is_empty()
-                || item.runtime.len() > 256
-                || item.capability.len() > 256
-                || item.description.len() > 2048
-                || !pairs.insert((&item.runtime, &item.capability))
-            {
-                bail!("invalid or duplicate decision capability guidance");
-            }
-        }
-        Ok(())
-    }
-}
 /// Hook events a `[notify]` table may subscribe to.
 pub const NOTIFY_HOOKS: &[&str] = &[
     "step.finished",
@@ -378,7 +234,13 @@ pub struct Delivery {
     pub merge: bool,
     pub deploy_workflow: Option<String>,
     pub health_url: Option<String>,
+    /// Name of the deployment environment expected by automatic delivery.
+    pub environment: Option<String>,
 }
+
+mod automatic_delivery;
+pub use automatic_delivery::AutomaticDelivery;
+
 impl Default for Settings {
     fn default() -> Self {
         let providers = BTreeMap::from([
@@ -467,6 +329,7 @@ impl Default for Settings {
             executors,
             fallbacks: BTreeMap::new(),
             delivery: Delivery::default(),
+            automatic_delivery: AutomaticDelivery::default(),
             notify: Notify::default(),
             decision: Decision::default(),
             limits: Default::default(),
@@ -563,6 +426,11 @@ provider = "simulated"
 # repository = "owner/name"
 # base = "main"
 
+# Operator-owned automatic merge policy is separate from [delivery], disabled
+# by default, and requires a held-out qualification record. See docs/delivery.md.
+# [automatic_delivery]
+# enabled = false
+
 # Push hooks fired by the daemon on task milestones. Set a webhook URL, or the
 # name of a variable holding one (resolved from credentials.env or the daemon
 # environment at send time), or a local command that receives the JSON payload
@@ -653,11 +521,13 @@ impl Settings {
             if file.exists()
                 && toml::from_str::<toml::Value>(&std::fs::read_to_string(&file)?)
                     .with_context(|| format!("parse {}", file.display()))?
-                    .get("decision")
-                    .is_some()
+                    .as_table()
+                    .is_some_and(|table| {
+                        table.contains_key("decision") || table.contains_key("automatic_delivery")
+                    })
             {
                 bail!(
-                    "decision configuration is operator-only and cannot be set in {}",
+                    "decision and automatic_delivery configuration are operator-only and cannot be set in {}",
                     file.display()
                 );
             }
@@ -745,6 +615,7 @@ impl Settings {
         }
         self.notify.validate()?;
         self.decision.validate()?;
+        self.automatic_delivery.validate()?;
         for (slug, provider) in &self.providers {
             crate::native_protocol::validate_extra_body(&provider.extra_body)
                 .map_err(|e| anyhow::anyhow!("provider {slug}: {e}"))?;
