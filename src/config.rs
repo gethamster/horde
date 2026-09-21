@@ -31,7 +31,104 @@ pub struct Settings {
     pub fallbacks: BTreeMap<String, String>,
     pub delivery: Delivery,
     pub notify: Notify,
+    /// Daemon-owned, advisory decision service configuration. Repository files
+    /// cannot set this section.
+    pub decision: Decision,
     pub limits: crate::delegation::Limits,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionMode {
+    #[default]
+    Disabled,
+    Shadow,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CapabilityGuidance {
+    pub runtime: String,
+    pub capability: String,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Decision {
+    pub mode: DecisionMode,
+    pub backend: String,
+    pub base_url: String,
+    pub api_key_env: String,
+    pub model: String,
+    pub policy: String,
+    pub deadline_ms: u64,
+    pub max_attempts: usize,
+    pub max_decisions_per_task: usize,
+    pub capability_guidance: Vec<CapabilityGuidance>,
+}
+
+impl Default for Decision {
+    fn default() -> Self {
+        Self {
+            mode: DecisionMode::Disabled,
+            backend: "typesafe".into(),
+            base_url: "https://api.typesafe.ai".into(),
+            api_key_env: "TYPESAFE_API_KEY".into(),
+            model: "jev-1.13.0".into(),
+            policy: "routing-v1".into(),
+            deadline_ms: 5_000,
+            max_attempts: 2,
+            max_decisions_per_task: 64,
+            capability_guidance: vec![],
+        }
+    }
+}
+
+impl Decision {
+    pub fn validate(&self) -> Result<()> {
+        if self.mode == DecisionMode::Disabled {
+            return Ok(());
+        }
+        if self.backend != "typesafe" || self.model != "jev-1.13.0" || self.policy != "routing-v1" {
+            bail!(
+                "decision backend, model, and policy must be typesafe, jev-1.13.0, and routing-v1"
+            );
+        }
+        if !(100..=30_000).contains(&self.deadline_ms)
+            || !(1..=3).contains(&self.max_attempts)
+            || !(1..=256).contains(&self.max_decisions_per_task)
+        {
+            bail!("decision deadline, attempts, or per-task limit is outside the supported range");
+        }
+        if self.api_key_env.is_empty()
+            || self.api_key_env.len() > 128
+            || !self
+                .api_key_env
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            bail!("decision.api_key_env must name an environment variable");
+        }
+        crate::decision::typesafe::endpoint(&self.base_url)?;
+        if self.capability_guidance.len() > 256 {
+            bail!("decision capability guidance accepts at most 256 entries");
+        }
+        let mut pairs = std::collections::BTreeSet::new();
+        for item in &self.capability_guidance {
+            if item.runtime.is_empty()
+                || item.capability.is_empty()
+                || item.description.trim().is_empty()
+                || item.runtime.len() > 256
+                || item.capability.len() > 256
+                || item.description.len() > 2048
+                || !pairs.insert((&item.runtime, &item.capability))
+            {
+                bail!("invalid or duplicate decision capability guidance");
+            }
+        }
+        Ok(())
+    }
 }
 /// Hook events a `[notify]` table may subscribe to.
 pub const NOTIFY_HOOKS: &[&str] = &[
@@ -315,6 +412,7 @@ impl Default for Settings {
             fallbacks: BTreeMap::new(),
             delivery: Delivery::default(),
             notify: Notify::default(),
+            decision: Decision::default(),
             limits: Default::default(),
         }
     }
@@ -420,6 +518,22 @@ provider = "simulated"
 # events = ["step.finished", "task.finished", "question.asked"] # also task.blocked
 # timeout_seconds = 15
 # children = false # also notify for delegated child tasks
+
+# Optional daemon-owned advisory routing. Repository files cannot set this.
+# [decision]
+# mode = "shadow"
+# backend = "typesafe"
+# base_url = "https://api.typesafe.ai"
+# api_key_env = "TYPESAFE_API_KEY"
+# model = "jev-1.13.0"
+# policy = "routing-v1"
+# deadline_ms = 5000
+# max_attempts = 2
+# max_decisions_per_task = 64
+# [[decision.capability_guidance]]
+# runtime = "local"
+# capability = "codex"
+# description = "Use for repository changes that need a coding harness."
 "#;
 /// Connection settings used to be restated on every executor role. Say where they went,
 /// rather than letting `deny_unknown_fields` report a bare unknown field.
@@ -469,6 +583,22 @@ impl Settings {
         Self::load_files(&[directory.join("config.toml")])
     }
     pub fn load(project: &Path) -> Result<Self> {
+        for file in [
+            project.join(".horde.toml"),
+            crate::branding::project_config(project),
+        ] {
+            if file.exists()
+                && toml::from_str::<toml::Value>(&std::fs::read_to_string(&file)?)
+                    .with_context(|| format!("parse {}", file.display()))?
+                    .get("decision")
+                    .is_some()
+            {
+                bail!(
+                    "decision configuration is operator-only and cannot be set in {}",
+                    file.display()
+                );
+            }
+        }
         Self::load_files(&[
             Self::user_path(),
             project.join(".horde.toml"),
@@ -551,6 +681,7 @@ impl Settings {
             bail!("tool_event_bytes must be between 0 and 65536");
         }
         self.notify.validate()?;
+        self.decision.validate()?;
         for (slug, provider) in &self.providers {
             crate::native_protocol::validate_extra_body(&provider.extra_body)
                 .map_err(|e| anyhow::anyhow!("provider {slug}: {e}"))?;

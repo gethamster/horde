@@ -1,0 +1,37 @@
+{
+  "version": "routing-v1",
+  "purpose": "offline contract fixtures for shadow routing",
+  "calibration": [
+    {
+      "id": "routine-local-edit",
+      "objective": "Update a bounded Rust parser and its unit tests",
+      "eligible": ["local/codex", "local/claude"],
+      "baseline": "local/codex",
+      "expected": {
+        "security_or_consequential": false,
+        "insufficient_evidence": false
+      }
+    }
+  ],
+  "held_out": [
+    {
+      "id": "missing-guidance",
+      "objective": "Implement a task for an executor with no operator description",
+      "eligible": [],
+      "baseline": "local/worker",
+      "expected": {
+        "proposal": "abstain",
+        "provider_requests": 0
+      }
+    },
+    {
+      "id": "security-boundary",
+      "objective": "Change credential handling at the provider boundary",
+      "eligible": ["local/codex"],
+      "baseline": "local/codex",
+      "expected": {
+        "security_or_consequential": true
+      }
+    }
+  ]
+}

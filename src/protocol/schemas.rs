@@ -343,6 +343,11 @@ pub fn admin_schema(name: &str) -> Value {
             ("after", "integer"),
             ("consumer", "string"),
         ],
+        "decisions" => &[
+            ("task", "string"),
+            ("after", "integer"),
+            ("limit", "integer"),
+        ],
         "list_tasks" | "runtime_list" => &[("project", "string"), ("all_projects", "boolean")],
         _ => &[("task", "string")],
     };
@@ -350,6 +355,11 @@ pub fn admin_schema(name: &str) -> Value {
         .iter()
         .map(|(k, t)| {
             let mut s = json!({"type":t});
+            if name == "decisions" && *k == "limit" {
+                s["minimum"] = json!(1);
+                s["maximum"] = json!(200);
+                s["default"] = json!(50);
+            }
             if *k == "execution" {
                 s = json!({"type":"object","additionalProperties":false,"required":["allowed","selected"],"properties":{
                     "allowed":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["runtime","capabilities"],"properties":{"runtime":{"type":"string"},"capabilities":{"type":"array","minItems":1,"items":{"type":"string"}}}}},
@@ -438,6 +448,7 @@ pub fn admin_schema(name: &str) -> Value {
         "runtime_reconcile" => &["id", "request_id", "resource"],
         "account_observe" => &["account", "provider", "window", "observed_at", "source"],
         "management_ack" => &["consumer", "seq"],
+        "decisions" => &["task"],
         "submit_task" => &["objective", "repo"],
         "remote_result" => &["task"],
         "delegate_task" => &["id", "objective"],

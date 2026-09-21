@@ -20,6 +20,8 @@ tested behavior and current limitations.
 | [Example prompts](example-prompts.md) | Copy prompts for features, fixes, parallel work, and task follow-up. |
 | [Installation and releases](installing.md) | Install, update, and repair an older database. |
 | [Configuration](configuration.md) | Choose providers, manage credentials, and configure roles. |
+| [Jev integration plan](jev-integration-plan.md) | Follow the staged plan for decision routing, review, context, browser tests, and delivery. |
+| [Decision routing evaluation](decision-routing-v1-report.md) | Inspect shadow-routing fixtures, results, and qualification limits. |
 | [Native providers](native-providers.md) | Use local models, tune requests, and inspect tool events. |
 | [Agent connections and coordination](coordination.md) | Connect agents, manage file ownership, and recover interrupted work. |
 | [Authoring templates](templates.md) | Define reusable workflows and acceptance checks. |

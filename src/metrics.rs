@@ -140,6 +140,7 @@ pub fn report(db: &Store, oid: &str) -> Result<Value> {
             "attempts":runs.iter().map(|a|json!({"attempt":a["id"],"state":a["state"],"timing":a["timing"]})).collect::<Vec<_>>() }));
     }
     result["steps"] = json!(step_metrics);
+    result["decisions"] = crate::decision::store::metrics(db, oid)?;
     if let Some(remote) = db
         .rows(
             "SELECT data FROM external_ops WHERE task=? AND name='federation.metrics'",

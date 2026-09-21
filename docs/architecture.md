@@ -162,6 +162,7 @@ The native loop offers file reads, search, full-file writes, unified patches, co
 - `template.rs`: composition, pinning, output references and contracts.
 - `delivery.rs`: GitHub/Actions/health reconciliation.
 - `metrics.rs`: reported usage, costs, latency and coordination counts.
+- `decision/`: tool-free shadow routing, TypeSafe transport validation, and durable advisory evidence.
 - `agent_setup.rs` / `provider_login.rs`: administrative setup and supervised provider sign-in.
 
 - `delegation.rs`: root limits, context sources, questions, caller receipts.

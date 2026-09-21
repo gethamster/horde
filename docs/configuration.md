@@ -4,6 +4,34 @@ Defaults are autonomous execution, four concurrent workers, Tuara over an API ke
 
 Installing runs `horde config init`, which writes a starter `config.toml` and a private `credentials.env` into the configuration directory. It creates neither if it is already there, so it is safe to run again. `horde config` prints the complete default TOML.
 
+## Advisory routing decisions
+
+Horde can record Jev routing advice without changing which executor runs a step. The feature is disabled by default and can be enabled only in the operator's user configuration. A repository `.horde.toml` cannot enable or alter it.
+
+```toml
+[decision]
+mode = "shadow"
+backend = "typesafe"
+base_url = "https://api.typesafe.ai"
+api_key_env = "TYPESAFE_API_KEY"
+model = "jev-1.13.0"
+policy = "routing-v1"
+deadline_ms = 5000
+max_attempts = 2
+max_decisions_per_task = 64
+
+[[decision.capability_guidance]]
+runtime = "local"
+capability = "codex"
+description = "Use for repository changes that need the Codex coding harness."
+```
+
+Put the key named by `api_key_env` in the private `credentials.env` file or the daemon environment. Horde snapshots only the variable name. Before every request, the daemon confirms that the current user configuration still authorizes the task's pinned backend, endpoint, model, policy, and limits.
+
+The daemon evaluates only fresh, available capabilities that the task's execution policy already permits. Without an execution policy, it considers the conventional local role and its configured fallback chain. Every candidate needs operator guidance; missing guidance produces an abstention. Jev never receives tools or worker credentials, and shadow output cannot change the selected executor.
+
+Use `horde decisions TASK_ID` to inspect the durable records. `--after` and `--limit` page through them, and `horde metrics TASK_ID` reports decision requests, retries, latency, token usage, abstentions, and agreement with the baseline. Provider cost remains unknown unless a later backend reports it.
+
 Add a provider and its key without editing either file:
 
 ```sh
