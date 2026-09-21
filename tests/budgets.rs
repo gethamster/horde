@@ -252,8 +252,10 @@ async fn duplicate_artifacts_do_not_renew_and_real_proposals_do() {
         })
         .await;
 }
+// Keep these command scenarios in separate async tests so each exercises the
+// production path on the runtime's normal thread stack.
 #[tokio::test(flavor = "current_thread")]
-async fn command_writes_are_observed_and_expired_commands_are_stopped() {
+async fn command_writes_are_observed() {
     tokio::task::LocalSet::new().run_until(async {
         let f=Fixture::new();
         let result=f.run(async {
@@ -261,15 +263,43 @@ async fn command_writes_are_observed_and_expired_commands_are_stopped() {
             Ok(json!({"accepted":true,"result":"done"}))
         }).await;
         assert!(result.is_ok(),"{result:?}");assert!(!f.events("step.progress").is_empty());
-        let f=Fixture::new();
-        let result=f.run(async {
-            native::call(&f.db,&f.worker,"command",&json!({"argv":["sh","-c","sleep 30"]}),&Settings::default(),&["command".into()]).await
-        }).await;
-        assert!(result.unwrap_err().is::<budget::Exhausted>());
-        let pid:i32=f.db.conn.query_row("SELECT pid FROM attempts WHERE id='attempt'",[],|r|r.get(0)).unwrap();
-        for _ in 0..50 {if !horde::executor::process_alive(pid) {return;} tokio::time::sleep(Duration::from_millis(20)).await;}
-        panic!("expired process survived: {pid}");
     }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn expired_commands_are_stopped() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let result = f
+                .run(async {
+                    native::call(
+                        &f.db,
+                        &f.worker,
+                        "command",
+                        &json!({"argv":["sh","-c","sleep 30"]}),
+                        &Settings::default(),
+                        &["command".into()],
+                    )
+                    .await
+                })
+                .await;
+            assert!(result.unwrap_err().is::<budget::Exhausted>());
+            let pid: i32 =
+                f.db.conn
+                    .query_row("SELECT pid FROM attempts WHERE id='attempt'", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
+            for _ in 0..50 {
+                if !horde::executor::process_alive(pid) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("expired process survived: {pid}");
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
