@@ -1,7 +1,14 @@
 import importlib.util
+import copy
+import contextlib
+import io
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -17,7 +24,82 @@ def nft_state(policy=POLICY):
     return json.dumps({"nftables": [c["add"] for c in commands]})
 
 
+def nft_kernel_state():
+    # nft 1.0.9 readback represents single-host destinations as address strings.
+    # Keep this independent of nft_rules so the fixture exercises the wire shape.
+    return {"nftables": [
+        {"metainfo": {"version": "1.0.9", "json_schema_version": 1}},
+        {"table": {"family": "inet", "name": "fixture", "handle": 4}},
+        {"chain": {"family": "inet", "table": "fixture", "name": "output", "handle": 1,
+                   "type": "filter", "hook": "output", "prio": -100, "policy": "accept"}},
+        {"rule": {"family": "inet", "table": "fixture", "chain": "output", "handle": 2, "expr": [
+            {"match": {"op": "==", "left": {"meta": {"key": "skuid"}}, "right": 501}},
+            {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": "203.0.113.9"}},
+            {"accept": None}]}},
+        {"rule": {"family": "inet", "table": "fixture", "chain": "output", "handle": 3, "expr": [
+            {"match": {"op": "==", "left": {"meta": {"key": "skuid"}}, "right": 501}},
+            {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "daddr"}}, "right": "2001:db8::1"}},
+            {"accept": None}]}},
+        {"rule": {"family": "inet", "table": "fixture", "chain": "output", "handle": 4, "expr": [
+            {"match": {"op": "==", "left": {"meta": {"key": "skuid"}}, "right": 501}},
+            {"drop": None}]}}
+    ]}
+
+
 class GuardTests(unittest.TestCase):
+    def test_nft_accepts_exact_host_address_readback_without_replacing_rules(self):
+        state = nft_kernel_state()
+        for action in ["apply", "verify"]:
+            with self.subTest(action=action), patch.object(guard, "run", return_value=json.dumps(state)) as runner:
+                guard.nft(POLICY, 501, action)
+                self.assertEqual(runner.call_count, 2)
+                self.assertTrue(all("list" in call.args[0] for call in runner.call_args_list))
+        self.assertEqual(state, nft_kernel_state(), "verification must not mutate its input")
+
+    def test_nft_host_normalization_cannot_hide_rule_changes(self):
+        base = nft_kernel_state()
+        changes = [
+            (0, 1, {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": "203.0.113.10"}}),
+            (0, 1, {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": {"prefix": {"addr": "203.0.113.0", "len": 24}}}}),
+            (1, 1, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "daddr"}}, "right": {"prefix": {"addr": "2001:db8::", "len": 64}}}}),
+            (0, 1, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "daddr"}}, "right": "203.0.113.9"}}),
+            (0, 1, {"match": {"op": "!=", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": "203.0.113.9"}}),
+            (0, 1, {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": "203.0.113.9"}}),
+            (0, 0, {"match": {"op": "==", "left": {"meta": {"key": "skuid"}}, "right": 502}}),
+            (0, 2, {"drop": None}),
+            (2, 1, {"accept": None}),
+        ]
+        for rule, expression, replacement in changes:
+            state = copy.deepcopy(base)
+            state["nftables"][3 + rule]["rule"]["expr"][expression] = replacement
+            with self.subTest(replacement=replacement), patch.object(guard, "run", return_value=json.dumps(state)):
+                with self.assertRaisesRegex(ValueError, "rules differ"):
+                    guard.nft(POLICY, 501, "verify")
+        for change in ["extra expression", "missing UID", "extra match field"]:
+            state = copy.deepcopy(base)
+            expressions = state["nftables"][3]["rule"]["expr"]
+            if change == "extra expression":
+                expressions.append({"accept": None})
+            elif change == "missing UID":
+                expressions.pop(0)
+            else:
+                expressions[1]["match"]["extra"] = True
+            with self.subTest(change=change), patch.object(guard, "run", return_value=json.dumps(state)):
+                with self.assertRaisesRegex(ValueError, "rules differ"):
+                    guard.nft(POLICY, 501, "verify")
+
+    def test_nft_preserves_non_host_prefixes(self):
+        policy = dict(POLICY, egress=["203.0.113.0/24", "2001:db8::/64"])
+        state = json.loads(nft_state(policy))
+        with patch.object(guard, "run", return_value=json.dumps(state)):
+            guard.nft(policy, 501, "verify")
+        for index, address in [(2, "203.0.113.0"), (3, "2001:db8::")]:
+            changed = copy.deepcopy(state)
+            changed["nftables"][index]["rule"]["expr"][1]["match"]["right"] = address
+            with self.subTest(address=address), patch.object(guard, "run", return_value=json.dumps(changed)):
+                with self.assertRaisesRegex(ValueError, "rules differ"):
+                    guard.nft(policy, 501, "verify")
+
     def test_nft_verifies_every_rule_and_output_hook(self):
         with patch.object(guard, "run", return_value=nft_state()):
             guard.nft(POLICY, 501, "verify")
@@ -94,6 +176,37 @@ class GuardTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"has not been prepared"):
                 guard.main()
             mkdir.assert_not_called()
+
+    def test_new_managed_parent_is_traversable_under_private_bootstrap_umask(self):
+        self.check_managed_parent_mode(existing=False, expected=0o755)
+
+    def test_existing_managed_parent_permissions_are_not_silently_changed(self):
+        self.check_managed_parent_mode(existing=True, expected=0o700)
+
+    def check_managed_parent_mode(self, existing, expected):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "horde-lima"
+            if existing:
+                root.mkdir(mode=0o700)
+            policy = dict(POLICY, home=str(root / POLICY["project"]))
+            user = SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
+            def path(value):
+                return root if str(value) == "/var/lib/horde-lima" else Path(value)
+            previous = os.umask(0o077)
+            try:
+                with patch.object(guard, "Path", side_effect=path), \
+                     patch.object(guard.os, "geteuid", return_value=0), \
+                     patch.object(guard.os, "chown"), \
+                     patch.object(guard.sys, "argv", ["guard", "apply", POLICY["project"]]), \
+                     patch.object(guard.sys, "platform", "linux"), \
+                     patch.object(guard, "private_root"), \
+                     patch.object(guard, "load_policy", return_value=(policy, user)), \
+                     patch.object(guard, "nft"), contextlib.redirect_stdout(io.StringIO()):
+                    guard.main()
+            finally:
+                os.umask(previous)
+            self.assertEqual(stat.S_IMODE(root.stat().st_mode), expected)
+            self.assertEqual(stat.S_IMODE(Path(policy["home"]).stat().st_mode), 0o700)
 
     def test_pf_disabled_host_fails_closed(self):
         with patch.object(guard, "run", return_value="Status: Disabled"):

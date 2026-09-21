@@ -89,6 +89,25 @@ def require_unused_uid(uid):
         raise ValueError("initial firewall installation requires an unused dedicated host UID")
 
 
+def canonical_nft_expression(expression):
+    # nft readback may collapse /32 and /128 destinations to bare IP strings.
+    # Normalize only that equivalent form; preserve every other key and value.
+    match = expression.get("match") if isinstance(expression, dict) else None
+    if not isinstance(match, dict) or match.get("op") != "==" or not isinstance(match.get("right"), str):
+        return expression
+    for protocol, version in [("ip", 4), ("ip6", 6)]:
+        if match.get("left") != {"payload": {"protocol": protocol, "field": "daddr"}}:
+            continue
+        try:
+            address = ipaddress.ip_address(match["right"])
+        except ValueError:
+            return expression
+        if address.version == version:
+            return dict(expression, match=dict(match, right={"prefix": {
+                "addr": str(address), "len": address.max_prefixlen}}))
+    return expression
+
+
 def nft(policy, uid, action):
     name, commands = nft_rules(policy, uid)
     try:
@@ -102,7 +121,8 @@ def nft(policy, uid, action):
     chains = [entry["chain"] for entry in actual if "chain" in entry]
     if len(chains) != 1 or any(chains[0].get(k) != v for k, v in {"name": "output", "hook": "output", "type": "filter", "prio": -100, "policy": "accept"}.items()):
         raise ValueError("host firewall chain differs from project policy")
-    expressions = [entry["rule"]["expr"] for entry in actual if "rule" in entry]
+    expressions = [[canonical_nft_expression(expression) for expression in entry["rule"]["expr"]]
+                   for entry in actual if "rule" in entry]
     expected = [entry["add"]["rule"]["expr"] for entry in commands if "rule" in entry["add"]]
     if expressions != expected:
         raise ValueError("host firewall rules differ from project policy")
@@ -152,6 +172,9 @@ def main():
         if sys.argv[1] != "apply":
             raise ValueError("Lima host directory has not been prepared")
         root.mkdir(mode=0o755)
+        # Root bootstrap commonly uses umask 077; project UIDs must traverse
+        # this shared parent while their own homes remain private.
+        root.chmod(0o755)
     private_root(root)
     home = Path(policy["home"])
     if not home.exists() and sys.argv[1] == "apply":

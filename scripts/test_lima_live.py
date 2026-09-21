@@ -31,6 +31,45 @@ def run(argv, timeout=120, check=True):
     return result
 
 
+GUEST_TCP_PROBE = r"""
+import errno,json,socket,sys
+address,port,nonce = sys.argv[1],int(sys.argv[2]),sys.argv[3]
+report = dict(version=1,nonce=nonce,address=address,port=port,attempted=True,status='inconclusive',reason='socket-error')
+try:
+    with socket.create_connection((address,port),timeout=5):
+        report.update(status='connected',reason=None)
+except socket.timeout:
+    report.update(status='denied',reason='timeout')
+except OSError as error:
+    reasons = {errno.EACCES:'permission',errno.EPERM:'permission',errno.ECONNREFUSED:'refused',
+               errno.ENETUNREACH:'unreachable',errno.EHOSTUNREACH:'unreachable',
+               errno.ECONNRESET:'reset',errno.ETIMEDOUT:'timeout'}
+    if error.errno in reasons:
+        report.update(status='denied',reason=reasons[error.errno])
+print('HORDE_TCP_PROBE:'+json.dumps(report))
+"""
+
+
+def assert_guest_denied(base, address, port):
+    nonce = uuid.uuid4().hex
+    result = run(base + ['python3', '-c', GUEST_TCP_PROBE, address, str(port), nonce], timeout=30, check=True)
+    if result.returncode != 0:
+        raise RuntimeError('guest network probe transport failed; denial is unverified')
+    reports = [line.removeprefix('HORDE_TCP_PROBE:') for line in result.stdout.splitlines()
+               if line.startswith('HORDE_TCP_PROBE:')]
+    if len(reports) != 1:
+        raise RuntimeError('guest network probe result missing or ambiguous')
+    try:
+        report = json.loads(reports[0])
+    except ValueError as error:
+        raise RuntimeError('guest network probe result is malformed') from error
+    if (not isinstance(report, dict) or report.get('version') != 1 or report.get('nonce') != nonce
+            or report.get('address') != address or report.get('port') != port or report.get('attempted') is not True):
+        raise RuntimeError('guest network probe result does not match this attempted connection')
+    if report.get('status') != 'denied' or report.get('reason') not in {'timeout', 'permission', 'refused', 'unreachable', 'reset'}:
+        raise RuntimeError('guest network access allowed or denial probe inconclusive')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-live", action="store_true")
@@ -141,10 +180,9 @@ cmp marker copied-marker
 ! test -e /run/host-services/docker.sock
 """
             run(base + ["/bin/sh", "-c", script, "acceptance", marker], timeout=180)
-            # Bash TCP is bounded by timeout and sends no application payload.
-            denied = run(base + ["timeout", "5", "bash", "-c", 'exec 3<>/dev/tcp/"$1"/"$2"', "check", args.blocked_ip, str(args.blocked_port)], check=False)
-            if denied.returncode not in (1, 124):
-                raise RuntimeError("guest network denial probe inconclusive or unexpectedly allowed: %s" % denied.returncode)
+            # Require a matching guest-emitted result; a failed sudo, SSH, or
+            # limactl command does not prove the guest was denied network access.
+            assert_guest_denied(base, args.blocked_ip, args.blocked_port)
             for action in ("runtime_stop", "runtime_start"):
                 request = action + "-" + runtime
                 payload = {"id": runtime, "request_id": request}
