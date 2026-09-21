@@ -1,6 +1,6 @@
 //! Bounded stdio app-server transport. Authentication messages never become artifacts.
 use crate::store::Store;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::process::{Command, Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -145,6 +145,7 @@ async fn execute_inner(
     account: &str,
 ) -> Result<Value> {
     let started = std::time::Instant::now();
+    let generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
     let token = crate::account_auth::invocation_tokens(
         i,
         project,
@@ -153,6 +154,10 @@ async fn execute_inner(
         config.program.as_deref(),
     )
     .await?;
+    ensure!(
+        generation.as_deref() == Some(format!("managed:{}", token.version).as_str()),
+        "controller credential no longer matches invocation binding"
+    );
     let mut cmd = crate::account_auth::command(i.db, project, account, config)?;
     cmd.args([
         "app-server",
@@ -195,6 +200,7 @@ async fn execute_inner(
         }
         if message.get("id").is_some() {
             if method == "account/chatgptAuthTokens/refresh" {
+                crate::capacity::ensure_generation(i.db, config, generation.as_deref())?;
                 let tokens = crate::account_auth::invocation_tokens(
                     i,
                     project,
@@ -203,6 +209,10 @@ async fn execute_inner(
                     config.program.as_deref(),
                 )
                 .await?;
+                ensure!(
+                    generation.as_deref() == Some(format!("managed:{}", tokens.version).as_str()),
+                    "renewed credential no longer matches invocation binding"
+                );
                 secrets.insert(
                     format!("refresh_{}", secrets.len()),
                     tokens.access_token.clone(),
@@ -244,7 +254,12 @@ async fn execute_inner(
                 usage = json!({"provider":{"input_tokens":total["inputTokens"],"output_tokens":total["outputTokens"],"cached_input_tokens":total["cachedInputTokens"]},"app_server":report,"subscription_capacity":null,"executor_role":i.spec.role,"account":account,"project":project})
             }
             "account/rateLimits/updated" => {
-                crate::capacity::ingest(i.db, config, &message["params"])?;
+                crate::capacity::ingest_current(
+                    i.db,
+                    config,
+                    generation.as_deref(),
+                    &message["params"],
+                )?;
             }
             "turn/completed" => {
                 if message["params"]["turn"]["status"] != "completed" {

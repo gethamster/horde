@@ -5,7 +5,7 @@ use crate::{
     store::{Store, now},
 };
 use anyhow::{Result, ensure};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -26,6 +26,165 @@ pub fn account(c: &ExecutorConfig) -> String {
         } else {
             format!("{}:login", c.kind)
         }
+    })
+}
+fn generation_key(account: &str) -> String {
+    format!("capacity.credentials_generation:{account}")
+}
+
+/// Capture before acquiring credentials or starting a subscription process.
+pub fn credential_generation(db: &Store, config: &ExecutorConfig) -> Result<Option<String>> {
+    let id = account(config);
+    let version: Option<i64> = db
+        .conn
+        .query_row(
+            "SELECT credential_version FROM auth_profiles WHERE account=?",
+            [&id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(version) = version {
+        return Ok(Some(format!("managed:{version}")));
+    }
+    management::value(db, &generation_key(&id))
+}
+
+/// Managed invocations must launch the profile version reserved before dispatch.
+pub fn invocation_generation(
+    db: &Store,
+    attempt: &str,
+    config: &ExecutorConfig,
+) -> Result<Option<String>> {
+    db.atomic(|| {
+        let generation = credential_generation(db, config)?;
+        if generation.as_deref().is_some_and(|value| value.starts_with("managed:")) {
+            let bound: bool = db.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM attempt_bindings b JOIN auth_profiles p ON p.id=b.profile AND p.account=b.account JOIN attempts a ON a.id=b.attempt JOIN steps s ON s.id=a.step JOIN task_projects t ON t.task=s.task WHERE b.attempt=? AND b.account=? AND b.credential_version=p.credential_version AND b.project=t.project AND (? IS NULL OR b.project=?))",
+                params![attempt,account(config),config.project,config.project], |row| row.get(0),
+            )?;
+            ensure!(bound, "managed credential no longer matches persisted invocation binding; retry before launch");
+        }
+        Ok(generation)
+    })
+}
+
+/// Check immediately after resolving credentials, before any provider contact.
+/// Once resolved, a running invocation keeps this credential and generation.
+pub fn ensure_generation(
+    db: &Store,
+    config: &ExecutorConfig,
+    expected: Option<&str>,
+) -> Result<()> {
+    ensure!(
+        credential_generation(db, config)?.as_deref() == expected,
+        "credential changed while resolving invocation binding; retry before launch"
+    );
+    Ok(())
+}
+
+fn if_current(
+    db: &Store,
+    config: &ExecutorConfig,
+    generation: Option<&str>,
+    ingest: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    // Hold the same write transaction for the comparison and every resulting observation.
+    db.atomic(|| {
+        if credential_generation(db, config)?.as_deref() == generation {
+            ingest()?;
+        }
+        Ok(())
+    })
+}
+
+pub fn ingest_current(
+    db: &Store,
+    config: &ExecutorConfig,
+    generation: Option<&str>,
+    event: &Value,
+) -> Result<()> {
+    if_current(db, config, generation, || ingest(db, config, event))
+}
+
+pub fn ingest_headers_current(
+    db: &Store,
+    config: &ExecutorConfig,
+    generation: Option<&str>,
+    headers: &reqwest::header::HeaderMap,
+    status: u16,
+) -> Result<()> {
+    if_current(db, config, generation, || {
+        ingest_headers(db, config, headers, status)
+    })
+}
+
+/// Replacing a legacy default-project credential invalidates its provider observations.
+/// Managed accounts retain quota across authentication-profile renewal.
+/// Unknown capacity permits a fresh attempt; it does not assert valid access or zero usage.
+pub fn credentials_changed(db: &Store, changed: &ExecutorConfig) -> Result<()> {
+    let managed: std::collections::BTreeSet<String> = db
+        .rows("SELECT id FROM accounts", &[])?
+        .iter()
+        .filter_map(|row| row["id"].as_str().map(str::to_owned))
+        .collect();
+    ensure!(
+        changed
+            .project
+            .as_deref()
+            .is_none_or(|project| project == crate::projects::DEFAULT_PROJECT)
+            && !managed.contains(&account(changed)),
+        "legacy credential replacement cannot change managed account quota"
+    );
+    let same_store = |config: &ExecutorConfig| {
+        !managed.contains(&account(config))
+            && config.auth_mode == changed.auth_mode
+            && if changed.auth_mode == "api" {
+                config.api_key_env == changed.api_key_env
+            } else {
+                config.kind == changed.kind
+            }
+    };
+    let mut accounts = std::collections::BTreeSet::from([account(changed)]);
+    let mut collect = |settings: Settings| {
+        for name in settings.providers.keys() {
+            if let Some(config) = settings.provider(name)
+                && same_store(&config)
+            {
+                accounts.insert(account(&config));
+            }
+        }
+        for role in settings.executors.keys() {
+            if let Some(config) = settings.executor(role)
+                && same_store(&config)
+            {
+                accounts.insert(account(&config));
+            }
+        }
+    };
+    collect(Settings::load_user()?);
+    // Running and held tasks retain their submitted configuration and account names.
+    for row in db.rows("SELECT DISTINCT t.settings FROM tasks t JOIN task_projects p ON p.task=t.id WHERE p.project='default'", &[])? {
+        if let Some(settings) = row["settings"].as_str() {
+            collect(serde_json::from_str(settings)?);
+        }
+    }
+    db.atomic(|| {
+        for account in &accounts {
+            management::set(
+                db,
+                &generation_key(account),
+                &uuid::Uuid::new_v4().to_string(),
+            )?;
+            db.conn.execute(
+                "DELETE FROM account_capacity WHERE account=? AND source='provider'",
+                [account],
+            )?;
+        }
+        management::event(
+            db,
+            "account.credentials_changed",
+            json!({"accounts":accounts,"capacity":"unknown","local_budgets":"preserved"}),
+        )
     })
 }
 pub fn observe(db: &Store, s: &Snapshot) -> Result<()> {
@@ -280,6 +439,7 @@ pub fn budgets(db: &Store) -> Result<()> {
 /// Read the installed Codex app-server account API; never starts a thread or model turn.
 pub async fn codex_probe(db: &Store, config: &ExecutorConfig) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+    let generation = credential_generation(db, config)?;
     if let Some(project) = config.project.as_deref()
         && crate::accounts::validate_account(db, project, config)?
     {
@@ -307,7 +467,7 @@ pub async fn codex_probe(db: &Store, config: &ExecutorConfig) -> Result<()> {
             let response = session
                 .request("account/rateLimits/read", json!({}))
                 .await?;
-            ingest(db, config, &response)?;
+            ingest_current(db, config, generation.as_deref(), &response)?;
             session.stop().await;
             Ok(())
         })
@@ -366,7 +526,7 @@ pub async fn codex_probe(db: &Store, config: &ExecutorConfig) -> Result<()> {
                     "Codex account capacity API unavailable"
                 );
                 if id == 2 {
-                    ingest(db, config, &response["result"])?;
+                    ingest_current(db, config, generation.as_deref(), &response["result"])?;
                 }
                 break;
             }

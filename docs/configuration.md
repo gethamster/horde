@@ -26,6 +26,93 @@ Both repository paths remain supported; if both exist, `.horde/horde.toml` wins.
 To migrate, move `.horde.toml` to `.horde/horde.toml` after updating Horde.
 
 The merged settings are pinned to the task. Later file changes affect new tasks.
+Credentials are read at invocation time, so replacing a key or CLI login can serve
+existing tasks that use that provider. Running invocations retain their credentials.
+
+## Add or change an account through your agent
+
+You can ask your connected agent to replace an API key or sign in to another
+Codex, Claude, or Tuara account without terminal access. These are administrative tools;
+a task-scoped worker token cannot call them. The connection to Horde must remain
+available, but these operations do not make model requests or require model quota.
+
+For an API key, the agent calls `agent_setup` with a request such as:
+
+```json
+{"action":"configure_provider","provider":"openai","credential":"YOUR_NEW_API_KEY"}
+```
+
+Give the key to your trusted agent through your chosen channel. `credential`
+accepts the value directly; `credential_env` and `credential_file` remain available
+when the agent already has a reference. Supply only one source. Horde writes the
+key to its private `credentials.env`, preserves other accounts and settings, and
+omits the key from its response. `roles` optionally selects which roles use the
+provider for new tasks. Omit it when rotating an existing provider's key.
+
+The response reports `credential_activation: "next_invocation"` and
+`restart_required: false`. An explicitly supplied credential takes precedence
+over an older value inherited by the daemon, so the replacement needs no restart.
+Horde records that variable's file priority in private `credential-overrides.json`
+beside the credentials file; this record contains variable names only. Other
+variables keep their existing environment-first lookup. Saving a key does not
+verify access; `provider_api` remains `not_probed`.
+
+For Tuara, the agent can guide you through obtaining and verifying a key:
+
+```json
+{"action":"start","provider":"tuara","request_id":"connect-tuara-1"}
+```
+
+The session reports `method: "api_key"` and directs you to
+[Tuara's key page](https://tuara.com/app/buy/keys). Sign in, create or copy an
+inference API key, and give it to your agent. The agent submits it as `input` with
+the returned `session_id`. Horde checks Tuara's account introspection endpoint
+for an API key with `router:invoke` access before saving it. Failed verification,
+cancellation, or expiry leaves the existing key intact. Success reports
+`provider_authentication: "verified"` and `credential_activation: "next_invocation"`;
+it does not prove available quota. This requires no Tuara CLI or inference request.
+Tuara's account OAuth grants do not include inference access.
+
+You can also name an existing Tuara provider. The `tuara` preset reuses a matching
+configured provider, usually `default`, and preserves its model and role settings.
+
+For a subscription account, the agent starts a `provider_login` session:
+
+```json
+{"action":"start","provider":"codex","request_id":"connect-codex-1","timeout_seconds":600}
+```
+
+Use `claude` for Claude Code. Horde runs the installed CLI's login command and
+returns a `session_id`. The agent polls `status` with that ID and relays the CLI's
+URL and device code, or its request for a manual authorization code. Open the
+provider's URL in your browser and complete sign-in. If the CLI asks for a code,
+give it to the agent, which submits it through the same session:
+
+```json
+{"action":"submit","session_id":"SESSION_ID","input":"AUTHORIZATION_CODE"}
+```
+
+The agent then polls `status` until the session finishes, or calls `cancel` if
+you abandon sign-in. Horde reports `provider_authentication: "verified"` only
+after both login and the CLI's authentication-status check succeed. Available
+quota remains `unknown`. Horde uses the provider's login pages and does not host
+a separate connection form.
+
+A session survives tool calls and client disconnects until its deadline, which
+defaults to 600 seconds and can be set from 1 through 1800 seconds. Retrying
+`start` with the same request ID and arguments returns that session. Horde retains
+this deduplication record through the deadline plus one hour while the daemon
+lives. A daemon restart ends the session; start a new login afterward.
+
+Codex and Claude each use their shared CLI login store on that runtime, so signing
+in replaces the account used by other invocations of that CLI. This flow does not
+create separate subscription profiles. Existing tasks keep their saved provider
+selection, and changing role settings affects new tasks. After an effective API
+key change or a verified login, Horde discards affected provider quota observations
+and treats capacity as unknown; local budget observations remain. Account changes
+do not reconcile or automatically resume uncertain work.
+
+## Provider and executor settings
 
 Configure skill directories under `[skills]` and select their names with a step’s `skills` field. Horde exposes selected names, pinned hashes, and resource locations in the worker prompt. The harness reads instructions and references progressively; child tasks receive the same pinned bundles. See [runtime skills](runtime-skills.md) for configuration, worker tools, and remote delivery.
 
@@ -156,6 +243,11 @@ Application bundle names resolve through the project's private
 to private environment files. Relative bundle paths resolve beside that file.
 The default project retains its user-level `secrets.toml`. Provider credentials
 use the account store described below and do not belong in application bundles.
+
+Provider login handoffs configure the default project's legacy credentials.
+For a managed project account, import its credential with `account credential-set`
+as shown below. Project-bound MCP connections cannot start a host-wide login
+handoff or replace another project's credentials.
 
 Create managed accounts using the provider's executor kind, authentication mode,
 and endpoint. Save the returned account ID for inspection, grants, or pinning:

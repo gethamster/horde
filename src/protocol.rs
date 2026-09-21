@@ -63,6 +63,7 @@ pub fn project_allowed(name: &str) -> bool {
         name,
         "shutdown"
             | "agent_setup"
+            | "provider_login"
             | "skill_pack_list"
             | "skill_pack_install"
             | "project_create"
@@ -260,12 +261,21 @@ fn dispatch_authorized(
             crate::orchestration::plan(db, &args)
         };
     }
-    if name == "agent_setup" {
+    if matches!(name, "agent_setup" | "provider_login") {
+        if args["project"] != crate::projects::DEFAULT_PROJECT {
+            bail!(
+                "host-wide provider setup and login require the default project; use managed account credentials for other projects"
+            );
+        }
         // This host-wide API has a strict schema and is unavailable to bound connections.
         args.as_object_mut()
             .context("arguments object")?
             .remove("project");
-        return crate::agent_setup::dispatch(db, &args);
+        return if name == "provider_login" {
+            crate::provider_login::dispatch(db, &args)
+        } else {
+            crate::agent_setup::dispatch(db, &args)
+        };
     }
     match name {
         "skill_pack_list" => {

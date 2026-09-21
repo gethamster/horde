@@ -142,6 +142,47 @@ None of these are available to a worker token.
 | `management_events` | `after` |
 | `management_ack` | `consumer`*, `seq`* |
 
+## Provider account setup
+
+These operations require an administrative agent connection. They make no model
+request, so exhausted model quota does not prevent a connected agent from
+changing credentials.
+
+| Operation | Arguments | Result |
+| --- | --- | --- |
+| `agent_setup` | `action: "configure_provider"`, `provider`*, optional `credential`, `credential_env`, or `credential_file`; optional provider settings and `roles[]` | Saves the provider and key. Choose at most one credential source. The response omits the key and reports activation separately from verification. |
+| `provider_login` | `action: "start"`, `provider`*, `request_id`*, `timeout_seconds` | Starts a Tuara key-page handoff, `codex login --device-auth`, or `claude auth login`; returns a `session_id`. The timeout defaults to 600 seconds and accepts 1 through 1800. |
+| `provider_login` | `action: "status"`, `session_id`* | Returns status, bounded `output`, expiry, and authentication evidence. Relay the login instructions to the user. `method` is `api_key` for Tuara or `cli_login` for Codex/Claude. |
+| `provider_login` | `action: "submit"`, `session_id`*, `input`* | Accepts one nonempty line of at most 4096 bytes: a Tuara inference API key or a CLI-requested authorization code. |
+| `provider_login` | `action: "cancel"`, `session_id`* | Cancels the session and stops any process group or pending verification request. |
+
+`credential_activation: "next_invocation"` and `restart_required: false` mean
+the saved API key applies to the next invocation. Explicitly supplied credentials
+take precedence over older daemon environment values for those variables.
+Running invocations retain their credentials. Saving a key leaves
+`provider_api: "not_probed"`.
+
+Login status is `starting`, `awaiting_user`, or `verifying` until a terminal result
+of `succeeded`, `failed`, `expired`, or `cancelled`. `succeeded` requires a successful
+login and CLI authentication-status check, or Tuara API-key introspection with
+`router:invoke` scope followed by saving the key. `provider_authentication` then reports
+`verified`; `capacity` remains `unknown`. CLI output is provider-supplied text,
+and submitted input is redacted from returned output. Tuara returns authored
+instructions only, never the submitted key or upstream response body. Its
+successful session also reports `credential_activation: "next_invocation"`.
+
+Retry `start` with the same request ID and arguments after a lost reply. Horde
+retains the session until its deadline plus one hour while the daemon lives.
+Sessions survive client disconnects but not daemon restart, which never replays
+login input. Only one active login per provider kind is allowed on the runtime;
+Codex and Claude invocations share their CLI's account store.
+
+An effective API key change or verified login invalidates affected provider quota
+observations and preserves local budgets. Existing task provider bindings and
+uncertain-work recovery requirements remain in force.
+
+## Connecting fleet workers
+
 To connect and use a named worker, configure the controller network once, then:
 
 ```sh

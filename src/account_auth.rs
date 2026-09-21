@@ -162,8 +162,7 @@ pub async fn access_tokens(
         }
     }
     // Recheck grant and credential after acquiring the cross-process refresh lock.
-    let credential = accounts::credential(db, project, account)?;
-    let version = accounts::credential_version(db, account)?;
+    let (credential, version) = accounts::credential_with_version(db, project, account)?;
     if credential.kind == "codex_access_token" {
         ensure!(
             !force,

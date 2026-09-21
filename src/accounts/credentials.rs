@@ -110,14 +110,26 @@ fn read_version(db: &Store, account: &str, version: i64) -> Result<Credential> {
     serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("invalid stored credential"))
 }
 pub fn credential(db: &Store, project: &str, account: &str) -> Result<Credential> {
-    authorized(db, project, account)?;
-    let credential = read_version(db, account, credential_version(db, account)?)?;
-    ensure!(
-        credential.expires_at.is_none_or(|t| t > now()),
-        "account authentication expired; renewal required"
-    );
-    Ok(credential)
+    credential_with_version(db, project, account).map(|(credential, _)| credential)
 }
+/// Read profile metadata and its immutable material under the same database lock.
+pub fn credential_with_version(
+    db: &Store,
+    project: &str,
+    account: &str,
+) -> Result<(Credential, i64)> {
+    db.atomic(|| {
+        authorized(db, project, account)?;
+        let version = credential_version(db, account)?;
+        let credential = read_version(db, account, version)?;
+        ensure!(
+            credential.expires_at.is_none_or(|t| t > now()),
+            "account authentication expired; renewal required"
+        );
+        Ok((credential, version))
+    })
+}
+
 /// A transport envelope must travel only over authenticated controller/runtime channels.
 #[derive(Serialize, Deserialize)]
 pub struct Provision {

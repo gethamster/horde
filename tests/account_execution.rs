@@ -222,6 +222,7 @@ for line in sys.stdin:
             ],
         )
         .unwrap();
+    db.conn.execute("INSERT INTO attempt_bindings SELECT 'test','default','local',account,id,credential_version,'native' FROM auth_profiles WHERE account=?",[&account]).unwrap();
     let invocation = horde::executor::Invocation {
         db: &db,
         task: &task,
@@ -403,6 +404,7 @@ print(json.dumps({{'result':json.dumps({{'accepted':True,'result':os.environ['CL
             ],
         )
         .unwrap();
+    db.conn.execute("INSERT INTO attempt_bindings SELECT 'test','default','local',account,id,credential_version,'native' FROM auth_profiles WHERE account=?",[&account]).unwrap();
     let invocation = horde::executor::Invocation {
         db: &db,
         task: &task,

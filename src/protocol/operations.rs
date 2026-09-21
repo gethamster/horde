@@ -55,6 +55,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Inspect credential delivery and revocation state",
     ),
     (
+        "provider_login",
+        "Administer default-project legacy provider sign-in; managed accounts use account_credential_set",
+    ),
+    (
         "skill_pack_list",
         "Inspect this runtime's file-based default skill pack and content hash",
     ),

@@ -1,4 +1,4 @@
-//! Agent-operated setup with private credential references and explicit readiness checks.
+//! Agent-operated setup with credential updates and explicit readiness checks.
 use crate::{
     config::Settings,
     daemon_client,
@@ -40,6 +40,7 @@ struct Request {
     #[serde(default)]
     roles: Vec<String>,
     model: Option<String>,
+    credential: Option<String>,
     credential_env: Option<String>,
     credential_file: Option<PathBuf>,
     invitation_file: Option<PathBuf>,
@@ -69,12 +70,18 @@ pub fn dispatch(db: &Store, args: &Value) -> Result<Value> {
 
 pub async fn run(root: &Path, args: &Value) -> Result<Value> {
     crate::fleet_enrollment::admin()?;
-    let request: Request = serde_json::from_value(args.clone()).map_err(|_| {
-        anyhow::anyhow!("invalid setup request; supply credential references, never secret values")
-    })?;
+    let request: Request = serde_json::from_value(args.clone())
+        .map_err(|_| anyhow::anyhow!("invalid setup request"))?;
+    ensure!(
+        matches!(request.action, Action::ConfigureProvider)
+            || (request.credential.is_none()
+                && request.credential_env.is_none()
+                && request.credential_file.is_none()),
+        "provider credentials are only accepted by configure_provider"
+    );
     match request.action {
         Action::Inspect | Action::Verify => inspect(root, &request),
-        Action::ConfigureProvider => configure_provider(&request),
+        Action::ConfigureProvider => configure_provider(root, &request),
         Action::ConfigureController => configure_controller(root).await,
         Action::CreateFleetKey => create_key(root, &request).await,
         Action::JoinWorker => {
@@ -222,10 +229,20 @@ fn inspect(root: &Path, request: &Request) -> Result<Value> {
 
 fn read_secret(request: &Request, default_env: &str) -> Result<Option<String>> {
     ensure!(
-        request.credential_env.is_none() || request.credential_file.is_none(),
-        "use one credential reference"
+        [
+            request.credential.is_some(),
+            request.credential_env.is_some(),
+            request.credential_file.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count()
+            <= 1,
+        "use only one of credential, credential_env, or credential_file"
     );
-    let value = if let Some(path) = &request.credential_file {
+    let value = if let Some(value) = &request.credential {
+        Some(value.clone())
+    } else if let Some(path) = &request.credential_file {
         let file = std::fs::File::open(path).context("credential file unavailable")?;
         let metadata = file.metadata()?;
         ensure!(
@@ -252,13 +269,13 @@ fn read_secret(request: &Request, default_env: &str) -> Result<Option<String>> {
     };
     if let Some(value) = &value {
         ensure!(
-            !value.is_empty() && value.len() <= 16384 && !value.contains(['\n', '\r', '\0']),
+            !value.trim().is_empty() && value.len() <= 16384 && !value.contains(['\n', '\r', '\0']),
             "credential is empty or has invalid content"
         );
     }
     Ok(value)
 }
-fn configure_provider(request: &Request) -> Result<Value> {
+fn configure_provider(root: &Path, request: &Request) -> Result<Value> {
     let provider = request
         .provider
         .as_deref()
@@ -319,6 +336,24 @@ fn configure_provider(request: &Request) -> Result<Value> {
     } else {
         base
     };
+    let spec = provisioning::Spec {
+        name: provisioning::existing_equivalent(&settings, &spec)
+            .unwrap_or_else(|| spec.name.clone()),
+        ..spec
+    };
+    let existing = settings.providers.get(&spec.name);
+    if let Some(account) = existing.and_then(|provider| provider.account.as_deref()) {
+        let db = Store::open(root)?;
+        let managed: bool = db.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?)",
+            [account],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            !managed,
+            "provider selects a managed account; configure its credentials with account_credential_set"
+        );
+    }
     let Some(kind) = spec.kind.as_deref() else {
         return Ok(blocked(
             "provider_details_missing",
@@ -338,7 +373,7 @@ fn configure_provider(request: &Request) -> Result<Value> {
         ["api", "login"].contains(&auth_mode),
         "invalid provider authentication mode"
     );
-    let variable = spec.api_key_env.as_deref().unwrap_or("");
+    let variable = spec.api_key_env.clone().unwrap_or_default();
     if auth_mode == "api" || kind == "tuara" {
         ensure!(
             !variable.is_empty()
@@ -384,19 +419,21 @@ fn configure_provider(request: &Request) -> Result<Value> {
         ));
     }
     let key = if auth_mode == "api" || kind == "tuara" {
-        match read_secret(request, variable)? {
+        match read_secret(request, &variable)? {
             Some(key) => Some(key),
             None => {
                 return Ok(blocked(
                     "provider_credential_missing",
-                    "The referenced provider credential is unavailable. Inject it through the agent's existing secret access, then repeat this action.",
+                    "The provider credential is unavailable. Supply credential, credential_env, or credential_file, then repeat this action.",
                     vec![],
                 ));
             }
         }
     } else {
         ensure!(
-            request.credential_env.is_none() && request.credential_file.is_none(),
+            request.credential.is_none()
+                && request.credential_env.is_none()
+                && request.credential_file.is_none(),
             "subscription providers use their own login store, not an API key"
         );
         None
@@ -405,9 +442,28 @@ fn configure_provider(request: &Request) -> Result<Value> {
         auth_mode: Some(auth_mode.into()),
         ..spec
     };
+    let changed = key
+        .as_ref()
+        .is_some_and(|key| crate::config::credential(&variable).ok().as_ref() != Some(key));
+    let key_supplied = key.is_some();
     let summary = provisioning::apply(&crate::branding::config_dir(), &spec, key)?;
+    if key_supplied
+        && (request.credential.is_some()
+            || request.credential_env.is_some()
+            || request.credential_file.is_some())
+    {
+        crate::config::activate_saved_credential(&variable)?;
+    }
+    if changed {
+        let updated = Settings::load_user()?;
+        let config = updated
+            .provider(&spec.name)
+            .context("updated API provider is unavailable")?;
+        crate::capacity::credentials_changed(&Store::open(root)?, &config)?;
+    }
+    let next = vec![tool(json!({"action":"verify"}))];
     Ok(
-        json!({"status":"configured","provider":provider,"summary":summary,"provider_api":"not_probed","next_actions":[tool(json!({"action":"verify"}))]}),
+        json!({"status":"configured","provider":provider,"summary":summary,"provider_api":"not_probed","credential_activation":if key_supplied {"next_invocation"} else {"not_applicable"},"restart_required":false,"activation_message":if key_supplied {"Saved credentials are read for the next provider invocation; running invocations keep their existing credentials."} else {"This provider uses its harness login store; no API credential was changed."},"next_actions":next}),
     )
 }
 
