@@ -778,6 +778,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
         .open(root.join("daemon.lock"))?;
     lock.try_lock_exclusive()
         .context("another daemon is already running")?;
+    crate::provider_login::recover(root)?;
     crate::enrollment::bootstrap(root)?;
     crate::fleet_enrollment::worker::bootstrap(root).await?;
     let shutdown = root.join("shutdown.request");
@@ -963,6 +964,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
         network.abort();
         let _ = network.await;
     }
+    crate::provider_login::shutdown(root);
     maintenance.abort();
     let _ = maintenance.await;
     for (tid, (_, attempt, wid, h)) in scheduler.running {

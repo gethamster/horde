@@ -28,6 +28,14 @@ pub fn admin_schema(name: &str) -> Value {
         "runtime_skills_update" => &[("id", "string"), ("request_id", "string")],
         "runtime_capabilities" => &[("task", "string")],
         "plan_execution" => &[("task", "string"), ("roles", "object")],
+        "provider_login" => &[
+            ("action", "string"),
+            ("provider", "string"),
+            ("request_id", "string"),
+            ("session_id", "string"),
+            ("input", "string"),
+            ("timeout_seconds", "integer"),
+        ],
         "agent_setup" => &[
             ("action", "string"),
             ("provider", "string"),
@@ -40,6 +48,7 @@ pub fn admin_schema(name: &str) -> Value {
             ("program", "string"),
             ("credential_env", "string"),
             ("credential_file", "string"),
+            ("credential", "string"),
             ("name", "string"),
             ("invitation_file", "string"),
             ("output_file", "string"),
@@ -314,6 +323,17 @@ pub fn admin_schema(name: &str) -> Value {
             if name == "agent_setup" && *k == "action" {
                 s["enum"] = json!(["inspect","verify","configure_provider","configure_controller","create_fleet_key","join_worker","restart_local"]);
             }
+            if name == "provider_login" && *k == "action" {
+                s["enum"] = json!(["start", "status", "submit", "cancel"]);
+            }
+            if name == "provider_login" && *k == "timeout_seconds" {
+                s["minimum"] = json!(1);
+                s["maximum"] = json!(1800);
+                s["default"] = json!(600);
+            }
+            if name == "agent_setup" && *k == "credential" {
+                s["description"] = json!("Provider API key supplied by the user through their trusted agent. Use exactly one of credential, credential_env, credential_file. Never repeat the value in responses.");
+            }
             if name == "skill_apply" && *k == "accepted" {
                 s["const"] = json!(true);
                 s["description"] = json!("Set only after the user agrees to this proposed persistent skill change.");
@@ -348,7 +368,7 @@ pub fn admin_schema(name: &str) -> Value {
         .collect();
     let required: &[&str] = match name {
         "plan_execution" => &["roles"],
-        "agent_setup" => &["action"],
+        "agent_setup" | "provider_login" => &["action"],
         "skill_inspect" => &["repo"],
         "skill_propose" => &["repo", "name", "content"],
         "skill_apply" => &["repo", "proposal_id", "accepted"],
