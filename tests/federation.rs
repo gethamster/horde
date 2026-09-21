@@ -318,7 +318,7 @@ fn independent_runtimes_preserve_context_route_questions_share_secrets_and_verif
         worker["token"].as_str(),
     )
     .unwrap();
-    assert_eq!(shared["records"].as_array().unwrap().len(), 2, "{shared}");
+    assert_eq!(shared["records"].as_array().unwrap().len(), 2);
     assert!(!shared.to_string().contains("private"));
     let options = horde::protocol::dispatch(
         &remotedb,

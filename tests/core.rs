@@ -1974,7 +1974,7 @@ fn workflow_revisions_return_ignored_fields_without_persisting_them_as_instructi
         let result = protocol::dispatch(&f.db, operation, json!({"task":f.oid,"worker":worker["id"],"steps":[{"id":"future-compatible","kind":"simulated","guessed_option":{"value":"discard-this-value"}}]}), None).unwrap();
         assert!(
             result["warnings"].to_string().contains("guessed_option"),
-            "{result}"
+            "unknown submitted step options must produce a warning"
         );
         let rows = f.db.steps(&f.oid).unwrap();
         let saved = rows

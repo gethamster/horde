@@ -34,7 +34,7 @@ fn wait_for(db: &Store, session: &Value, predicate: impl Fn(&Value) -> bool) -> 
         }
         assert!(
             Instant::now() < deadline,
-            "session did not advance: {report}"
+            "session did not advance before the deadline"
         );
         thread::sleep(Duration::from_millis(10));
     }
@@ -303,7 +303,7 @@ fn child_tuara_login() {
         "expire" | "expire_verify" => "expired",
         _ => "failed",
     };
-    assert_eq!(finished["status"], expected, "{finished}");
+    assert_eq!(finished["status"], expected);
     if scenario.ends_with("_verify") {
         thread::sleep(Duration::from_millis(1500));
     }

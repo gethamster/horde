@@ -36,7 +36,7 @@ fn wait_for(db: &Store, session: &Value, predicate: impl Fn(&Value) -> bool) -> 
         }
         assert!(
             Instant::now() < deadline,
-            "session did not advance: {value}"
+            "session did not advance before the deadline"
         );
         thread::sleep(Duration::from_millis(20));
     }
@@ -273,7 +273,7 @@ fn child_login() {
                 assert_eq!(finished["status"], "failed");
                 assert_ne!(finished["provider_authentication"], "verified");
             } else {
-                assert_eq!(finished["status"], "succeeded", "{finished}");
+                assert_eq!(finished["status"], "succeeded");
                 assert_eq!(finished["provider_authentication"], "verified");
                 assert_eq!(finished["capacity"], "unknown");
             }
