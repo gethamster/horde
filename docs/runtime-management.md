@@ -231,6 +231,13 @@ cleans up its resources. It requires installed Lima and prepared host policies;
 the ordinary Rust tests use mocked providers and do not establish live VM
 compatibility.
 
+## Experimental AX workers
+
+The `ax` provider runs project-bound Horde workers on Google AX and Agent
+Substrate with gVisor. It uses the same runtime lifecycle commands and enrollment
+as other backends. See [experimental AX runtimes](ax.md) for the pinned upstream
+versions, runner image, profile configuration, and current limitations.
+
 ## Provisioning
 
 Workers launched by your own deployment or autoscaler can register themselves

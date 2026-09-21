@@ -1,0 +1,3 @@
+#!/bin/sh
+# AX fixes this entrypoint; tini reaps adopted descendants across daemon restarts.
+exec /usr/bin/tini -- /usr/local/libexec/horde-ax-runner.py "$@"

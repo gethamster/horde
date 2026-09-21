@@ -318,11 +318,13 @@ fn validate_requirements(requirements: &Value) -> Result<()> {
                     .is_some_and(|arch| ["aarch64", "x86_64"].contains(&arch)),
                 "unsupported execution architecture"
             ),
-            "docker" => ensure!(value.is_boolean(), "docker requirement must be boolean"),
+            "docker" | "compose" => {
+                ensure!(value.is_boolean(), "container requirement must be boolean")
+            }
             "isolation" => ensure!(
                 value
                     .as_str()
-                    .is_some_and(|mode| ["native", "lima"].contains(&mode)),
+                    .is_some_and(|mode| ["native", "lima", "gvisor"].contains(&mode)),
                 "unsupported execution isolation"
             ),
             _ => anyhow::bail!("unknown execution requirement {key}"),
@@ -333,7 +335,7 @@ fn validate_requirements(requirements: &Value) -> Result<()> {
 pub(crate) fn check_requirements(runtime: &Value, requirements: &Value) -> Result<()> {
     validate_requirements(requirements)?;
     for (key, expected) in requirements.as_object().context("execution requirements")? {
-        if key == "docker" && expected == false {
+        if ["docker", "compose"].contains(&key.as_str()) && expected == false {
             continue;
         }
         ensure!(

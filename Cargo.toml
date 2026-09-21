@@ -32,7 +32,7 @@ toml = "0.9"
 uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
 httpdate = "1"
-tonic = { version = "0.14", features = ["tls-ring"] }
+tonic = { version = "0.14", features = ["tls-ring", "tls-webpki-roots"] }
 tonic-health = "0.14"
 tokio-stream = { version = "0.1.19", features = ["net"] }
 prost = "0.14"

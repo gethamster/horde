@@ -235,6 +235,7 @@ and [runtime skills](docs/runtime-skills.md). Terminal setup remains documented 
 | [Progress and notifications](docs/progress.md) | Follow task events, read summaries, and configure notifications. |
 | [Runtime networking](docs/networking.md) | Direct connections and Tailscale. |
 | [Runtime management](docs/runtime-management.md) | Hosts, capacity, and updates. |
+| [Experimental AX runtimes](docs/ax.md) | Run project workers on AX with gVisor. |
 | [Architecture](docs/architecture.md) | Scheduling and persistence. |
 | [Verification and limitations](docs/verification.md) | Test coverage and boundaries. |
 

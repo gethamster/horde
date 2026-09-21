@@ -8,6 +8,8 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
+pub mod ax;
+mod ax_spec;
 mod project_host;
 mod providers;
 use project_host::{
@@ -30,6 +32,9 @@ pub struct Profile {
     pub lima_egress: Vec<String>,
     pub endpoint: String,
     pub api_key_env: String,
+    pub ax_router_endpoint: String,
+    pub ax_revision: String,
+    pub ax_egress: Vec<String>,
     pub image: String,
     pub context: String,
     pub namespace: String,
@@ -55,6 +60,9 @@ impl Default for Profile {
             lima_egress: vec![],
             endpoint: String::new(),
             api_key_env: String::new(),
+            ax_router_endpoint: String::new(),
+            ax_revision: ax::PINNED_REVISION.into(),
+            ax_egress: vec!["*:443".into()],
             image: String::new(),
             context: "default".into(),
             namespace: "default".into(),
@@ -140,7 +148,8 @@ impl Profile {
                 "e2b",
                 "daytona",
                 "tailscale",
-                "lima"
+                "lima",
+                "ax"
             ]
             .contains(&self.provider.as_str()),
             "unsupported runtime provider"
@@ -162,6 +171,9 @@ impl Profile {
                 self.image.contains("@sha256:"),
                 "container image must be pinned by digest"
             );
+        }
+        if self.provider == "ax" {
+            ax::validate(self)?;
         }
         if self.provider == "lima" {
             crate::lima::validate(self)?;
@@ -306,6 +318,11 @@ fn enqueue_operation(db: &Store, name: &str, args: &Value) -> Result<Option<Valu
             .first()
     {
         let spec: Profile = serde_json::from_str(row["spec"].as_str().context("runtime spec")?)?;
+        if spec.provider == "ax"
+            && ["runtime_stop", "runtime_start", "runtime_destroy"].contains(&name)
+        {
+            management::set(db, &format!("ax_hold:{id}"), "true")?;
+        }
         if let Some(requested) = args["project"].as_str() {
             ensure!(
                 crate::projects::resolve(db, requested)?
@@ -313,6 +330,10 @@ fn enqueue_operation(db: &Store, name: &str, args: &Value) -> Result<Option<Valu
                 "runtime belongs to another project"
             );
         }
+        ensure!(
+            spec.provider != "ax" || name != "runtime_update",
+            "AX uses a pinned image; upgrade by creating a new runtime with an updated profile image"
+        );
     }
     let body = if name == "runtime_skills_update" {
         let mut payload = args.as_object().context("operation args")?.clone();
@@ -470,9 +491,13 @@ pub async fn tick(db: &Store) -> Result<()> {
     db.conn.execute("UPDATE managed_runtimes SET error='bootstrap enrollment expired before activation; inspect retained guest and recreate with a new runtime identity' WHERE state NOT IN ('removed','ready') AND error IS NULL AND EXISTS(SELECT 1 FROM runtime_enrollments e WHERE e.runtime=managed_runtimes.id AND e.state='pending' AND e.expires<=?)", [now()])?;
     let paused =
         i64::from(management::value(db, "fleet_updates_paused")?.as_deref() == Some("true"));
+    let cursor = management::value(db, "fleet_operation_cursor")?
+        .map(|value| value.parse::<i64>())
+        .transpose()?
+        .unwrap_or(0);
     let operations = db.rows(
-        "SELECT * FROM runtime_operations WHERE state IN ('pending','waiting') AND runtime!='local' AND (?=0 OR action!='runtime_update') ORDER BY created,rowid LIMIT 1",
-        &[&paused],
+        "SELECT r.rowid AS operation_rowid,r.* FROM runtime_operations r WHERE r.state IN ('pending','waiting') AND r.runtime!='local' AND (?=0 OR r.action!='runtime_update') AND (r.action='runtime_reconcile' OR NOT EXISTS(SELECT 1 FROM runtime_operations earlier WHERE earlier.runtime=r.runtime AND earlier.rowid<r.rowid AND earlier.state IN ('pending','waiting','running'))) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 1",
+        &[&paused, &cursor],
     )?;
     let Some(op) = operations.first() else {
         return Ok(());
@@ -486,6 +511,15 @@ pub async fn tick(db: &Store) -> Result<()> {
     {
         return Ok(());
     }
+    // Advance even when this operation must wait for a disconnected runtime.
+    management::set(
+        db,
+        "fleet_operation_cursor",
+        &op["operation_rowid"]
+            .as_i64()
+            .context("operation row ID")?
+            .to_string(),
+    )?;
     let action = op["action"].as_str().context("action")?;
     let operation=async{
         let managed = db.rows("SELECT * FROM managed_runtimes WHERE id=?", &[&id])?;
@@ -533,14 +567,17 @@ pub async fn tick(db: &Store) -> Result<()> {
                 ensure!(action=="runtime_destroy", "Tailscale hosts support update, restart, and destroy (unenroll); host power and provisioning remain user-owned");
                 json!({"unenrolled":true,"host_retained":true})
             }else{lifecycle(db,&p,id,resource,action).await?};
+            if result["lifecycle_pending"] == true { return Ok(result); }
             if action=="runtime_reconcile" {db.conn.execute("UPDATE managed_runtimes SET resource=?,error=NULL WHERE id=?",params![resource,id])?;}
             if action=="runtime_destroy" {db.conn.execute("UPDATE runtime_enrollments SET state='revoked',token_hash='' WHERE runtime=?",[id])?;}
-            db.conn.execute("UPDATE managed_runtimes SET state=? WHERE id=?",params![match action{"runtime_destroy"=>"removed","runtime_stop"=>"stopped","runtime_reconcile" if p.provider == "lima" => result["state"].as_str().unwrap_or("uncertain"),_=>"provisioned"},id])?;Ok(result)
+            db.conn.execute("UPDATE managed_runtimes SET state=? WHERE id=?",params![match action{"runtime_destroy"=>"removed","runtime_stop"=>"stopped","runtime_reconcile" if ["lima","ax"].contains(&p.provider.as_str()) => result["state"].as_str().unwrap_or("uncertain"),_=>"provisioned"},id])?;Ok(result)
         }
     }.await;
     match operation {
         Ok(result) => {
-            let state = if remote_management(action) || result["host_managed"] == true {
+            let state = if result["lifecycle_pending"] == true {
+                "waiting"
+            } else if remote_management(action) || result["host_managed"] == true {
                 match result["state"].as_str() {
                     Some("succeeded") => "succeeded",
                     Some("failed" | "blocked" | "uncertain") => "failed",

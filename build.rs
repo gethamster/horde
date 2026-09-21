@@ -4,9 +4,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     prost.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
     tonic_prost_build::configure().compile_with_config(
         prost,
-        &["proto/federation.proto"],
+        &["proto/federation.proto", "proto/ax.proto"],
         &["proto"],
     )?;
     println!("cargo:rerun-if-changed=proto/federation.proto");
+    println!("cargo:rerun-if-changed=proto/ax.proto");
     Ok(())
 }

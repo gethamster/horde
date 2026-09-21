@@ -364,7 +364,7 @@ pub fn admin_schema(name: &str) -> Value {
                 s = json!({"type":"object","additionalProperties":false,"required":["allowed","selected"],"properties":{
                     "allowed":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["runtime","capabilities"],"properties":{"runtime":{"type":"string"},"capabilities":{"type":"array","minItems":1,"items":{"type":"string"}}}}},
                     "selected":{"type":"object","additionalProperties":false,"required":["runtime","capability"],"properties":{"runtime":{"type":"string"},"capability":{"type":"string"}}},
-                    "requirements":{"type":"object","additionalProperties":false,"properties":{"os":{"type":"string","enum":["macos","linux"]},"arch":{"type":"string","enum":["aarch64","x86_64"]},"docker":{"type":"boolean"},"isolation":{"type":"string","enum":["native","lima"]}}}
+                    "requirements":{"type":"object","additionalProperties":false,"properties":{"os":{"type":"string","enum":["macos","linux"]},"arch":{"type":"string","enum":["aarch64","x86_64"]},"docker":{"type":"boolean"},"compose":{"type":"boolean"},"isolation":{"type":"string","enum":["native","lima","gvisor"]}}}
                 },"description":"Parent-selected capability and allowed runtime/capability pairs from discovery. Children may narrow this pool; no credentials or global configuration changes."});
             }
             if name == "plan_execution" && *k == "roles" {
