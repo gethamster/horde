@@ -479,7 +479,17 @@ impl LoginDaemon {
     }
 
     fn stop(&mut self) {
-        self.rpc("shutdown", json!({})).unwrap();
+        let response = self.rpc("shutdown", json!({}));
+        // The daemon may consume shutdown.request and exit before its detached
+        // RPC task writes the acknowledgment. Only an empty reply is allowed;
+        // the successful, bounded process exit below confirms shutdown.
+        assert!(
+            response.is_ok()
+                || response.as_ref().err().is_some_and(|error| {
+                    error == "EOF while parsing a value at line 1 column 0"
+                }),
+            "shutdown RPC failed: {response:?}"
+        );
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
