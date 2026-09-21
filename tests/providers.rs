@@ -771,8 +771,9 @@ fn ordinary_doctor_resolves_auto_from_a_minimal_default_provider_block() {
         json!({"data":[{"id":"/models/local-only"}]}).to_string(),
     )]);
     let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config/horde")).unwrap();
     std::fs::write(
-        dir.path().join(".horde.toml"),
+        dir.path().join("config/horde/config.toml"),
         format!(
             "[providers.default]\nbase_url = {url:?}\napi_key_env = \"PATH\"\nmodel = \"auto\"\n"
         ),
@@ -962,8 +963,8 @@ fn doctor_probes_a_named_provider_with_auto_model() {
         ),
     ]);
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join(".horde")).unwrap();
-    std::fs::write(dir.path().join(".horde.toml"), format!("[providers.local]\nkind = \"tuara\"\nauth_mode = \"api\"\nbase_url = {url:?}\napi_key_env = \"PATH\"\nmodel = \"auto\"\n")).unwrap();
+    std::fs::create_dir_all(dir.path().join("config/horde")).unwrap();
+    std::fs::write(dir.path().join("config/horde/config.toml"), format!("[providers.local]\nkind = \"tuara\"\nauth_mode = \"api\"\nbase_url = {url:?}\napi_key_env = \"PATH\"\nmodel = \"auto\"\n")).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_horde"))
         .args(["doctor", "--probe", "--provider", "local", "--repo"])
         .arg(dir.path())

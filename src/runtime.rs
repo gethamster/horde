@@ -130,6 +130,10 @@ fn begin(db: &Store, step: &Value) -> Result<(String, String, String)> {
     };
     let attempt = id();
     db.atomic(|| {
+        anyhow::ensure!(crate::project_runtime::eligible(db, oid)?, "project admission changed before launch");
+        anyhow::ensure!(crate::project_runtime::host_active(db)? < crate::project_runtime::host_limit(db)?, "host capacity changed before launch");
+        let binding = step.get("account_binding").map(|value| serde_json::from_value::<crate::accounts::Binding>(value.clone())).transpose()?;
+        if let Some(binding) = &binding && !crate::project_runtime::is_remote(db, oid)? { crate::accounts::reserve(db, tid, binding)?; }
         if db.conn.execute(
             "UPDATE steps SET state='running' WHERE id=? AND state='pending'",
             [tid],
@@ -147,6 +151,7 @@ fn begin(db: &Store, step: &Value) -> Result<(String, String, String)> {
         )?;
         db.conn.execute("UPDATE notifications SET dispatched_seq=COALESCE((SELECT MAX(m.seq) FROM messages m JOIN receipts r ON r.message=m.id WHERE r.worker=?),0) WHERE worker=?",rusqlite::params![wid,wid])?;
         crate::delegation::pin(db,oid,&attempt)?;
+        crate::project_runtime::record(db, oid, &attempt, binding.as_ref())?;
         db.event(
             oid,
             "step.started",
@@ -182,7 +187,9 @@ async fn run_step(
         execute_step(&db, &row, &attempt, &wid, &token),
     )
     .await;
-    db.finish(tid, &attempt, &wid, result)
+    db.finish(tid, &attempt, &wid, result)?;
+    crate::accounts::release_step(&db, tid)?;
+    crate::project_runtime::release_remote(&db, tid).await
 }
 async fn execute_step(
     db: &Store,
@@ -198,7 +205,7 @@ async fn execute_step(
     let o = db.task(oid)?;
     let settings: Settings = serde_json::from_str(o["settings"].as_str().context("settings")?)?;
     let mut step = Store::step(row)?;
-    let settings = if step.kind == "agent" {
+    let mut settings = if step.kind == "agent" {
         crate::execution_selection::apply(db, oid, &settings)?
     } else {
         settings
@@ -223,6 +230,18 @@ async fn execute_step(
             crate::capacity::select(db, &settings, &step.role)?
                 .context("account capacity unavailable; work held")?
         };
+        if let Some(binding) = row.get("account_binding") {
+            let binding: crate::accounts::Binding = serde_json::from_value(binding.clone())?;
+            if let Some(account) = binding.account {
+                let mut executor = settings
+                    .executors
+                    .get(&step.role)
+                    .context("executor role")?
+                    .clone();
+                executor.account = Some(account);
+                settings.executors.insert(step.role.clone(), executor);
+            }
+        }
         if let Some(config) = settings.executor(&step.role) {
             db.conn.execute(
                 "INSERT OR REPLACE INTO attempt_accounts VALUES(?,?,?)",
@@ -564,11 +583,12 @@ async fn handle(stream: tokio::net::UnixStream, root: PathBuf) -> Result<()> {
             let root = root.clone();
             crate::budget::blocking(move || {
                 let db = Store::open(&root)?;
-                crate::protocol::dispatch(
+                crate::protocol::dispatch_scoped(
                     &db,
                     v["method"].as_str().unwrap_or(""),
                     v.get("args").cloned().unwrap_or(json!({})),
                     v["token"].as_str(),
+                    v["project"].as_str(),
                 )
             })
             .await
@@ -593,6 +613,8 @@ impl Scheduler {
     async fn tick(&mut self, db: &Store, remote_ready: bool) -> Result<()> {
         // Advisory failures are isolated from authoritative scheduling.
         let _ = self.decisions.tick(db).await;
+        crate::project_runtime::reconcile_releases(db).await?;
+        crate::accounts::cleanup_ungranted(db)?;
         let finished: Vec<_> = self
             .running
             .iter()
@@ -612,6 +634,8 @@ impl Scheduler {
                         )?;
                     }
                 }
+                crate::accounts::release_step(db, &tid)?;
+                crate::project_runtime::release_remote(db, &tid).await?;
             }
         }
         let cancelled: Vec<_> = self
@@ -620,7 +644,10 @@ impl Scheduler {
             .filter_map(|(tid, (oid, _, _, _))| {
                 db.task(oid)
                     .ok()
-                    .filter(|o| o["status"] == "cancelled")
+                    .filter(|o| {
+                        o["status"] == "cancelled"
+                            || crate::project_runtime::revoked(db, tid).unwrap_or(true)
+                    })
                     .map(|_| tid.clone())
             })
             .collect();
@@ -634,19 +661,30 @@ impl Scheduler {
                     &wid,
                     Err(anyhow::anyhow!("cancelled; worker process group stopped")),
                 )?;
+                crate::accounts::release_step(db, &tid)?;
+                crate::project_runtime::release_remote(db, &tid).await?;
             }
         }
-        self.limit = crate::management::limit(db)?;
+        self.limit = crate::project_runtime::host_limit(db)?;
         if crate::management::draining(db)? {
             return Ok(());
         }
         notify_completed_children(db)?;
         wake_notified(db)?;
-        for o in db.rows(
-            "SELECT id,settings FROM tasks WHERE status='running' AND NOT EXISTS(SELECT 1 FROM remote_links WHERE task=tasks.id) ORDER BY created",
-            &[],
-        )? {
+        for o in crate::project_runtime::ordered_tasks(db)? {
             let oid = o["id"].as_str().context("task")?;
+            match crate::federation::route_queued(db, oid) {
+                Ok(false) => (),
+                Ok(true) => continue,
+                Err(_) => {
+                    crate::project_runtime::queue(
+                        db,
+                        oid,
+                        "project configuration or runtime inventory could not be validated",
+                    )?;
+                    continue;
+                }
+            }
             if !remote_ready
                 && !db
                     .rows("SELECT task FROM remote_origins WHERE task=?", &[&oid])?
@@ -656,16 +694,27 @@ impl Scheduler {
             }
             let settings: Settings =
                 serde_json::from_str(o["settings"].as_str().context("settings")?)?;
-            let settings = if db.steps(oid)?.iter().any(|step| Store::step(step).is_ok_and(|step| step.kind == "agent")) {
+            let settings = if db
+                .steps(oid)?
+                .iter()
+                .any(|step| Store::step(step).is_ok_and(|step| step.kind == "agent"))
+            {
                 match crate::execution_selection::apply(db, oid, &settings) {
                     Ok(settings) => settings,
                     Err(error) => {
-                        db.conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", [oid])?;
-                        db.event(oid, "execution.selection_blocked", json!({"reason":error.to_string()}))?;
+                        db.conn
+                            .execute("UPDATE tasks SET status='blocked' WHERE id=?", [oid])?;
+                        db.event(
+                            oid,
+                            "execution.selection_blocked",
+                            json!({"reason":error.to_string()}),
+                        )?;
                         continue;
                     }
                 }
-            } else { settings };
+            } else {
+                settings
+            };
             settle(db, oid)?;
             let mut active = self
                 .running
@@ -673,24 +722,53 @@ impl Scheduler {
                 .filter(|(o, _, _, _)| o == oid)
                 .count();
             for mut row in ready(db, oid)? {
+                if !crate::project_runtime::eligible(db, oid)? {
+                    break;
+                }
                 if !crate::delegation::capacity(db, oid)? {
                     break;
                 }
-                if active >= settings.concurrency || self.running.len() >= self.limit {
+                if active >= settings.concurrency
+                    || crate::project_runtime::host_active(db)? >= self.limit
+                {
+                    crate::project_runtime::queue(
+                        db,
+                        oid,
+                        "host or workflow concurrency limit reached",
+                    )?;
                     break;
                 }
                 let step = Store::step(&row)?;
                 if step.kind == "agent" {
-                    let Some(role) = crate::capacity::select_for_step(
-                        db,
-                        &settings,
-                        &step.role,
-                        row["id"].as_str().context("step")?,
-                    )?
-                    else {
+                    let remote_managed =
+                        crate::project_runtime::managed_remote(db, oid, &settings, &step.role)?;
+                    row["managed_remote_account"] = json!(remote_managed);
+                    let selected = if remote_managed {
+                        Some(crate::accounts::Binding {
+                            role: step.role.clone(),
+                            account: None,
+                            profile: None,
+                            credential_version: None,
+                        })
+                    } else {
+                        crate::accounts::choose_for_step(
+                            db,
+                            oid,
+                            &settings,
+                            &step.role,
+                            row["id"].as_str().context("step")?,
+                        )?
+                    };
+                    let Some(binding) = selected else {
+                        crate::project_runtime::queue(
+                            db,
+                            oid,
+                            "no eligible authorized account capacity",
+                        )?;
                         continue;
                     };
-                    row["dispatch_role"] = json!(role);
+                    row["dispatch_role"] = json!(binding.role);
+                    row["account_binding"] = serde_json::to_value(binding)?;
                 }
                 if step.environment.is_some() && !crate::environment::available(db, oid)? {
                     continue;
@@ -736,6 +814,9 @@ impl Scheduler {
                     continue;
                 }
                 let tid = row["id"].as_str().context("step")?.to_owned();
+                if !crate::project_runtime::acquire_remote(db, &mut row).await? {
+                    continue;
+                }
                 let (attempt, wid, token) = begin(db, &row)?;
                 let decision_job = (step.kind == "agent"
                     && settings.decision.mode == crate::config::DecisionMode::Shadow)
@@ -768,7 +849,10 @@ impl Scheduler {
                     tokio::task::yield_now().await;
                     let _ = self.decisions.enqueue(db, job);
                 }
-                if exclusive {
+                if exclusive
+                    || o["project"] != crate::projects::DEFAULT_PROJECT
+                    || crate::project_runtime::multiple_projects(db)?
+                {
                     break;
                 }
             }
@@ -805,6 +889,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
     crate::provider_login::recover(root)?;
     crate::enrollment::bootstrap(root)?;
     crate::fleet_enrollment::worker::bootstrap(root).await?;
+    crate::projects::local_runtime(&db)?;
     let shutdown = root.join("shutdown.request");
     if shutdown.exists() {
         std::fs::remove_file(&shutdown)?;
@@ -1121,6 +1206,70 @@ mod coordination_regressions {
 #[cfg(test)]
 mod scheduling_limits {
     use super::*;
+    fn queued_step(db: &Store, repo: &std::path::Path) -> Value {
+        let plan = template::compile(
+            "simulated",
+            &template::load_templates(repo).unwrap(),
+            BTreeMap::from([("task".into(), "admission".into())]),
+        )
+        .unwrap();
+        let task = db
+            .submit("admission", repo, &Settings::default(), &plan)
+            .unwrap();
+        db.steps(&task).unwrap().remove(0)
+    }
+
+    #[test]
+    fn launch_rechecks_controller_reservations_in_the_admission_transaction() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Store::open(temp.path()).unwrap();
+        let row = queued_step(&db, temp.path());
+        db.conn
+            .execute("UPDATE projects SET concurrency=1 WHERE id='default'", [])
+            .unwrap();
+        assert!(crate::project_runtime::eligible(&db, row["task"].as_str().unwrap()).unwrap());
+        assert!(
+            crate::accounts::reserve_project_remote(
+                &db,
+                "default",
+                row["task"].as_str().unwrap(),
+                "other-runtime",
+                "other-invocation"
+            )
+            .unwrap()
+        );
+        assert!(
+            begin(&db, &row)
+                .unwrap_err()
+                .to_string()
+                .contains("admission")
+        );
+        assert_eq!(crate::project_runtime::host_active(&db).unwrap(), 0);
+    }
+
+    #[test]
+    fn uncertain_process_holds_host_capacity_after_scheduler_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Store::open(temp.path()).unwrap();
+        crate::management::set(&db, "concurrency", "1").unwrap();
+        let old = queued_step(&db, temp.path());
+        let (attempt, _, _) = begin(&db, &old).unwrap();
+        db.conn
+            .execute(
+                "UPDATE attempts SET state='uncertain' WHERE id=?",
+                [attempt],
+            )
+            .unwrap();
+        let next = queued_step(&db, temp.path());
+        assert!(
+            begin(&db, &next)
+                .unwrap_err()
+                .to_string()
+                .contains("host capacity")
+        );
+        assert_eq!(crate::project_runtime::host_active(&db).unwrap(), 1);
+    }
+
     #[tokio::test]
     async fn runtime_ceiling_changes_without_interrupting_dispatched_attempts() {
         tokio::task::LocalSet::new()

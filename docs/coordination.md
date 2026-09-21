@@ -19,6 +19,38 @@ supplied `verified` flag with a warning; workers cannot certify their own eviden
 
 For a script or independent harness, create a worker with `register_worker`, then register its separate worktree using `register_workspace` (`path`, `branch`, `base`). Set the returned token as `HORDE_WORKER_TOKEN` in its MCP bridge environment. Acquire claims before editing. Never share the personal-agent bridge with an untrusted worker.
 
+### Bind an agent to one project
+
+Give each personal agent a project-bound MCP connection:
+
+```json
+{
+  "mcpServers": {
+    "horde-hamster": {
+      "command": "horde",
+      "args": ["--project", "hamster", "mcp"]
+    }
+  }
+}
+```
+
+The bridge carries project selection outside tool arguments. Supplying a
+different `project`, another project's task ID, or its artifact hash fails the
+ownership check. The connection cannot request all-project listings or change
+fleet, account, and project administration. An administrator can use an unbound
+connection or CLI command for those operations.
+
+`delegate_task` inherits the parent project. Its optional `repo` must name a
+repository registered in that project. A child working in another repository
+keeps its own result and cannot be Git-integrated into the parent's repository.
+Nested work in the same repository retains the parent's logical repository
+identity even though each child has a separate physical checkout.
+
+Native project boundaries protect Horde-managed requests and state. They do not
+prevent programs running under the same OS account from reading each other's
+files. Use a separate execution identity or the configured VM isolation when
+that filesystem boundary is required.
+
 ### Command-step identity
 
 Every ordinary `kind = "command"` step receives its task, step, attempt, and worker

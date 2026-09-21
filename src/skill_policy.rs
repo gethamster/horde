@@ -96,8 +96,8 @@ impl Snapshot {
     fn load(db: &Store, args: &Value) -> Result<Self> {
         let repo = project(args)?;
         let name = name(args)?.to_owned();
-        let configured = crate::config::Settings::load(&repo)?.skills;
-        let baseline = skills::baseline_for_root(&db.root, &repo, &configured)?
+        let (root, configured) = skill_configuration(db, args, &repo)?;
+        let baseline = skills::baseline_for_root(&root, &repo, &configured)?
             .remove(&name)
             .context("unknown skill; inspect the available project skills")?;
         let (revision, overridden) = head(db, &repo, &name)?;
@@ -123,13 +123,35 @@ impl Snapshot {
     }
 }
 
+fn skill_configuration(
+    db: &Store,
+    args: &Value,
+    repo: &Path,
+) -> Result<(PathBuf, BTreeMap<String, PathBuf>)> {
+    let owner = crate::projects::infer(db, repo)?;
+    let project = match args["project"].as_str() {
+        Some(selector) => crate::projects::resolve(db, selector)?,
+        None => owner
+            .clone()
+            .unwrap_or_else(|| crate::projects::DEFAULT_PROJECT.into()),
+    };
+    ensure!(
+        owner.as_ref().is_none_or(|owner| owner == &project),
+        "repository belongs to another project"
+    );
+    Ok((
+        crate::projects::storage_root(db, &project)?,
+        crate::config::Settings::load_project(db, &project, repo)?.skills,
+    ))
+}
+
 pub fn inspect(db: &Store, args: &Value) -> Result<Value> {
     if args.get("name").is_some() {
         return Snapshot::load(db, args)?.view();
     }
     let repo = project(args)?;
-    let configured = crate::config::Settings::load(&repo)?.skills;
-    let packet = skills::baseline_for_root(&db.root, &repo, &configured)?;
+    let (root, configured) = skill_configuration(db, args, &repo)?;
+    let packet = skills::baseline_for_root(&root, &repo, &configured)?;
     let catalog = packet.into_iter().map(|(name,baseline)| {
         let (revision,overridden) = head(db,&repo,&name)?;
         Ok(json!({"name":name,"source":if configured.contains_key(&name){"configured"}else{"builtin"},"baseline_hash":baseline.hash,"effective_hash":overridden.as_ref().unwrap_or(&baseline).hash,"revision":revision,"overridden":overridden.is_some()}))

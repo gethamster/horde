@@ -7,7 +7,7 @@ pub fn schema(name: &str) -> Value {
     let mut schema = admin_schema(name);
     if worker_allowed(name) {
         let owned = |key: &str| {
-            ["task", "worker", "step", "verified"].contains(&key) || key.starts_with('_')
+            ["task", "worker", "step", "verified", "project"].contains(&key) || key.starts_with('_')
         };
         schema["properties"]
             .as_object_mut()
@@ -23,6 +23,45 @@ pub fn schema(name: &str) -> Value {
 /// Operator tools keep explicit task selection and verification controls.
 pub fn admin_schema(name: &str) -> Value {
     let fields: &[(&str, &str)] = match name {
+        "project_create" => &[
+            ("id", "string"),
+            ("name", "string"),
+            ("slug", "string"),
+            ("concurrency", "integer"),
+            ("isolation", "string"),
+        ],
+        "project_list" => &[],
+        "project_inspect" => &[("project", "string")],
+        "project_update" => &[
+            ("project", "string"),
+            ("concurrency", "integer"),
+            ("isolation", "string"),
+        ],
+        "project_configure" => &[("project", "string"), ("file", "string")],
+        "project_repo_add" => &[("project", "string"), ("path", "string")],
+        "project_runtime_grant" => &[
+            ("project", "string"),
+            ("runtime", "string"),
+            ("dedicated", "boolean"),
+        ],
+        "project_runtime_revoke" => &[("project", "string"), ("runtime", "string")],
+        "account_create" => &[
+            ("project", "string"),
+            ("name", "string"),
+            ("provider", "string"),
+            ("auth_mode", "string"),
+            ("base_url", "string"),
+            ("concurrency", "integer"),
+        ],
+        "account_list" | "account_usage" => &[("project", "string")],
+        "account_inspect" | "account_grant" | "account_revoke" | "account_delivery_list" => {
+            &[("project", "string"), ("account", "string")]
+        }
+        "account_credential_set" => &[
+            ("project", "string"),
+            ("account", "string"),
+            ("credential_file", "string"),
+        ],
         "skill_pack_list" => &[],
         "skill_pack_install" => &[("path", "string")],
         "runtime_skills_update" => &[("id", "string"), ("request_id", "string")],
@@ -89,7 +128,6 @@ pub fn admin_schema(name: &str) -> Value {
             ("request_id", "string"),
             ("resource", "string"),
         ],
-        "runtime_list" => &[],
         "runtime_rename" => &[("id", "string"), ("name", "string")],
         "runtime_forget" => &[("id", "string")],
         "runtime_inspect" => &[("id", "string")],
@@ -231,6 +269,7 @@ pub fn admin_schema(name: &str) -> Value {
             ("validation", "array"),
         ],
         "delegate_task" => &[
+            ("repo", "string"),
             ("execution", "object"),
             ("task", "string"),
             ("worker", "string"),
@@ -309,10 +348,10 @@ pub fn admin_schema(name: &str) -> Value {
             ("after", "integer"),
             ("limit", "integer"),
         ],
-        "list_tasks" => &[],
+        "list_tasks" | "runtime_list" => &[("project", "string"), ("all_projects", "boolean")],
         _ => &[("task", "string")],
     };
-    let properties: serde_json::Map<String, Value> = fields
+    let mut properties: serde_json::Map<String, Value> = fields
         .iter()
         .map(|(k, t)| {
             let mut s = json!({"type":t});
@@ -324,7 +363,8 @@ pub fn admin_schema(name: &str) -> Value {
             if *k == "execution" {
                 s = json!({"type":"object","additionalProperties":false,"required":["allowed","selected"],"properties":{
                     "allowed":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["runtime","capabilities"],"properties":{"runtime":{"type":"string"},"capabilities":{"type":"array","minItems":1,"items":{"type":"string"}}}}},
-                    "selected":{"type":"object","additionalProperties":false,"required":["runtime","capability"],"properties":{"runtime":{"type":"string"},"capability":{"type":"string"}}}
+                    "selected":{"type":"object","additionalProperties":false,"required":["runtime","capability"],"properties":{"runtime":{"type":"string"},"capability":{"type":"string"}}},
+                    "requirements":{"type":"object","additionalProperties":false,"properties":{"os":{"type":"string","enum":["macos","linux"]},"arch":{"type":"string","enum":["aarch64","x86_64"]},"docker":{"type":"boolean"},"isolation":{"type":"string","enum":["native","lima"]}}}
                 },"description":"Parent-selected capability and allowed runtime/capability pairs from discovery. Children may narrow this pool; no credentials or global configuration changes."});
             }
             if name == "plan_execution" && *k == "roles" {
@@ -376,7 +416,18 @@ pub fn admin_schema(name: &str) -> Value {
             (k.to_string(), s)
         })
         .collect();
+    properties.entry("project".to_owned()).or_insert_with(|| json!({"type":"string","description":"Project ID or slug; cannot change a project-bound connection."}));
     let required: &[&str] = match name {
+        "project_create" => &["name"],
+        "project_list" | "account_list" | "account_usage" => &[],
+        "project_inspect" | "project_update" => &["project"],
+        "project_configure" => &["project", "file"],
+        "project_repo_add" => &["project", "path"],
+        "project_runtime_grant" | "project_runtime_revoke" => &["project", "runtime"],
+        "account_create" => &["name", "provider"],
+        "account_inspect" | "account_delivery_list" => &["account"],
+        "account_grant" | "account_revoke" => &["project", "account"],
+        "account_credential_set" => &["account", "credential_file"],
         "plan_execution" => &["roles"],
         "agent_setup" | "provider_login" => &["action"],
         "skill_inspect" => &["repo"],

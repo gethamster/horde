@@ -60,8 +60,23 @@ pub fn parse(text: &str) -> Result<BTreeMap<String, String>> {
 }
 pub fn load_bundle(name: &str) -> Result<(String, BTreeMap<String, String>)> {
     let file = config_path();
+    load_bundle_file(&file, name)
+}
+pub fn load_bundle_for_task(
+    db: &Store,
+    task: &str,
+    name: &str,
+) -> Result<(String, BTreeMap<String, String>)> {
+    let project = crate::projects::task_project(db, task)?;
+    if project == crate::projects::DEFAULT_PROJECT {
+        return load_bundle(name);
+    }
+    let file = crate::projects::storage_root(db, &project)?.join("secrets.toml");
+    load_bundle_file(&file, name)
+}
+fn load_bundle_file(file: &Path, name: &str) -> Result<(String, BTreeMap<String, String>)> {
     let config: SecretConfig = toml::from_str(
-        &std::fs::read_to_string(&file)
+        &std::fs::read_to_string(file)
             .context("configure application bundles in user secrets.toml")?,
     )?;
     let path = config
@@ -86,7 +101,7 @@ pub fn load_bundle(name: &str) -> Result<(String, BTreeMap<String, String>)> {
 }
 pub fn select(db: &Store, oid: &str, names: &[String]) -> Result<()> {
     for name in names {
-        let (version, _) = load_bundle(name)?;
+        let (version, _) = load_bundle_for_task(db, oid, name)?;
         db.conn.execute(
             "INSERT INTO task_bundles VALUES(?,?,?)",
             rusqlite::params![oid, name, version],
@@ -131,8 +146,7 @@ pub fn values(db: &Store, oid: &str) -> Result<BTreeMap<String, String>> {
         &[&oid],
     )? {
         let name = row["name"].as_str().context("bundle")?;
-        let remote = db
-            .root
+        let remote = crate::project_runtime::task_root(db, oid)?
             .join("remote-secrets")
             .join(oid)
             .join(hash(name.as_bytes()));
@@ -151,7 +165,7 @@ pub fn values(db: &Store, oid: &str) -> Result<BTreeMap<String, String>> {
                     .is_empty(),
                 "remote application bundle must be reacquired from its caller"
             );
-            load_bundle(name)?
+            load_bundle_for_task(db, oid, name)?
         };
         ensure!(
             row["version"] == version,

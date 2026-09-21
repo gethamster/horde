@@ -1,5 +1,5 @@
 {
-  "count": 82,
+  "count": 97,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -8,7 +8,352 @@
   "specVersion": "1.0",
   "tools": [
     {
-      "description": "Start, inspect, complete or cancel a provider sign-in through the agent; no model usage required",
+      "description": "Inspect granted account quotas and usage attributed to this project",
+      "name": "account_usage",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Install administrator-approved project settings from a TOML file",
+      "name": "project_configure",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "file"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Create an isolated project with no inherited resource grants",
+      "name": "project_create",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "concurrency": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "isolation": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "List projects visible to this connection",
+      "name": "project_list",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Inspect a project and its resource grants",
+      "name": "project_inspect",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Change project concurrency and isolation requirements",
+      "name": "project_update",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "concurrency": {
+            "type": "integer"
+          },
+          "isolation": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Register a checkout and its worktrees to a project",
+      "name": "project_repo_add",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "path"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Authorize a runtime for a project",
+      "name": "project_runtime_grant",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "dedicated": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "string"
+          },
+          "runtime": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "runtime"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Revoke a project's runtime authorization",
+      "name": "project_runtime_revoke",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "runtime": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "runtime"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Create a provider account owned by a project",
+      "name": "account_create",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "auth_mode": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "concurrency": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "List accounts granted to the selected project",
+      "name": "account_list",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Inspect a granted provider account without exposing credentials",
+      "name": "account_inspect",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Explicitly share an account with another project",
+      "name": "account_grant",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "account"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Revoke a project's account grant",
+      "name": "account_revoke",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project",
+          "account"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Import a versioned credential from a private file",
+      "name": "account_credential_set",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "credential_file": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "credential_file"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Inspect credential delivery and revocation state",
+      "name": "account_delivery_list",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Administer default-project legacy provider sign-in; managed accounts use account_credential_set",
       "name": "provider_login",
       "parameters": {
         "additionalProperties": false,
@@ -23,6 +368,10 @@
             "type": "string"
           },
           "input": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "provider": {
@@ -53,7 +402,12 @@
       "name": "skill_pack_list",
       "parameters": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -66,6 +420,10 @@
         "additionalProperties": false,
         "properties": {
           "path": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           }
         },
@@ -83,6 +441,10 @@
         "additionalProperties": false,
         "properties": {
           "id": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "request_id": {
@@ -219,6 +581,10 @@
           "program": {
             "type": "string"
           },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "provider": {
             "type": "string"
           },
@@ -243,6 +609,10 @@
         "additionalProperties": false,
         "properties": {
           "name": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "repo": {
@@ -271,6 +641,10 @@
           "name": {
             "type": "string"
           },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "reason": {
             "type": "string"
           },
@@ -297,6 +671,10 @@
             "const": true,
             "description": "Set only after the user agrees to this proposed persistent skill change.",
             "type": "boolean"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
           },
           "proposal_id": {
             "type": "string"
@@ -329,6 +707,10 @@
           "name": {
             "type": "string"
           },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "repo": {
             "type": "string"
           }
@@ -348,6 +730,10 @@
         "additionalProperties": false,
         "properties": {
           "name": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "reason": {
@@ -374,7 +760,12 @@
       "name": "runtime_updates_resume",
       "parameters": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -387,6 +778,10 @@
         "additionalProperties": false,
         "properties": {
           "id": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "request_id": {
@@ -410,7 +805,14 @@
       "name": "runtime_list",
       "parameters": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "all_projects": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -426,6 +828,10 @@
             "type": "string"
           },
           "name": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           }
         },
@@ -445,6 +851,10 @@
         "properties": {
           "id": {
             "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
           }
         },
         "required": [
@@ -461,6 +871,10 @@
         "additionalProperties": false,
         "properties": {
           "id": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           }
         },
@@ -481,6 +895,10 @@
             "type": "string"
           },
           "profile": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "request_id": {
@@ -511,6 +929,10 @@
           "profile": {
             "type": "string"
           },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "request_id": {
             "type": "string"
           },
@@ -538,6 +960,10 @@
           "profile": {
             "type": "string"
           },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "request_id": {
             "type": "string"
           },
@@ -563,6 +989,10 @@
             "type": "string"
           },
           "profile": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "request_id": {
@@ -593,6 +1023,10 @@
           "profile": {
             "type": "string"
           },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "request_id": {
             "type": "string"
           },
@@ -620,6 +1054,10 @@
           "profile": {
             "type": "string"
           },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "request_id": {
             "type": "string"
           },
@@ -640,7 +1078,12 @@
       "name": "runtime_config_get",
       "parameters": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -654,6 +1097,10 @@
         "properties": {
           "concurrency": {
             "type": "integer"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
           }
         },
         "required": [
@@ -668,7 +1115,12 @@
       "name": "runtime_drain",
       "parameters": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -679,7 +1131,12 @@
       "name": "runtime_resume",
       "parameters": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -690,7 +1147,12 @@
       "name": "runtime_status",
       "parameters": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -701,7 +1163,12 @@
       "name": "account_status",
       "parameters": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -718,6 +1185,10 @@
           },
           "observed_at": {
             "type": "integer"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
           },
           "provider": {
             "type": "string"
@@ -754,6 +1225,10 @@
         "properties": {
           "after": {
             "type": "integer"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
           }
         },
         "required": [],
@@ -768,6 +1243,10 @@
         "additionalProperties": false,
         "properties": {
           "consumer": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "seq": {
@@ -823,6 +1302,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           }
@@ -872,6 +1355,36 @@
                 "minItems": 1,
                 "type": "array"
               },
+              "requirements": {
+                "additionalProperties": false,
+                "properties": {
+                  "arch": {
+                    "enum": [
+                      "aarch64",
+                      "x86_64"
+                    ],
+                    "type": "string"
+                  },
+                  "docker": {
+                    "type": "boolean"
+                  },
+                  "isolation": {
+                    "enum": [
+                      "native",
+                      "lima"
+                    ],
+                    "type": "string"
+                  },
+                  "os": {
+                    "enum": [
+                      "macos",
+                      "linux"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
               "selected": {
                 "additionalProperties": false,
                 "properties": {
@@ -902,6 +1415,9 @@
             "type": "string"
           },
           "peer": {
+            "type": "string"
+          },
+          "repo": {
             "type": "string"
           },
           "skills": {
@@ -1006,6 +1522,10 @@
           "mandatory": {
             "type": "boolean"
           },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "provenance": {
             "type": "string"
           },
@@ -1065,6 +1585,10 @@
         "additionalProperties": false,
         "properties": {
           "consumer": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "seq": {
@@ -1424,6 +1948,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           }
@@ -1499,6 +2027,36 @@
                 "minItems": 1,
                 "type": "array"
               },
+              "requirements": {
+                "additionalProperties": false,
+                "properties": {
+                  "arch": {
+                    "enum": [
+                      "aarch64",
+                      "x86_64"
+                    ],
+                    "type": "string"
+                  },
+                  "docker": {
+                    "type": "boolean"
+                  },
+                  "isolation": {
+                    "enum": [
+                      "native",
+                      "lima"
+                    ],
+                    "type": "string"
+                  },
+                  "os": {
+                    "enum": [
+                      "macos",
+                      "linux"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
               "selected": {
                 "additionalProperties": false,
                 "properties": {
@@ -1528,6 +2086,10 @@
           "on": {
             "type": "string"
           },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "repo": {
             "type": "string"
           },
@@ -1552,6 +2114,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           }
@@ -1569,6 +2135,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           }
@@ -1584,6 +2154,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           }
@@ -1598,7 +2172,14 @@
       "name": "list_tasks",
       "parameters": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "all_projects": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -1616,6 +2197,10 @@
           "consumer": {
             "type": "string"
           },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           }
@@ -1631,6 +2216,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           }
@@ -1646,6 +2235,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           }
@@ -1685,6 +2278,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "step": {
             "type": "string"
           },
@@ -1766,6 +2363,10 @@
             "type": "string"
           },
           "id": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "refs": {
@@ -1915,6 +2516,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           },
@@ -1933,6 +2538,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           },
@@ -1951,6 +2560,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "steps": {
             "description": "Workflow Step objects. Call this tool with a steps array; step IDs are data, never tool names. Use expanded steps, not nested template invocations.",
             "items": {
@@ -2501,6 +3114,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
           "task": {
             "type": "string"
           },

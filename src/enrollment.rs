@@ -10,6 +10,16 @@ use serde_json::{Value, json};
 use std::path::Path;
 pub fn issue(db: &Store, id: &str, profile: &crate::fleet::Profile) -> Result<Option<Value>> {
     let concurrency = profile.concurrency;
+    let project = crate::projects::resolve(db, &profile.project)?;
+    ensure!(
+        crate::projects::runtime_allowed(db, &project, id)?,
+        "runtime is not granted to project"
+    );
+    let project_record = db
+        .rows("SELECT * FROM projects WHERE id=?", &[&project])?
+        .into_iter()
+        .next()
+        .context("project missing")?;
     let fleet = crate::fleet::load()?;
     let Some(keyfile) = fleet.issuer_key else {
         return Ok(None);
@@ -61,7 +71,7 @@ pub fn issue(db: &Store, id: &str, profile: &crate::fleet::Profile) -> Result<Op
     network
         .peers
         .insert(controller.runtime_id, DirectPeer { address, tls_name });
-    let mut settings = crate::config::Settings::load_user()?;
+    let mut settings = crate::config::Settings::load_project_user(db, &project)?;
     settings.concurrency = concurrency;
     settings
         .executors
@@ -79,6 +89,11 @@ pub fn issue(db: &Store, id: &str, profile: &crate::fleet::Profile) -> Result<Op
         .retain(|slug, _| referenced.contains(slug));
     let mut credentials = std::collections::BTreeMap::new();
     for config in settings.resolved().values() {
+        if crate::accounts::validate_account(db, &project, config)? {
+            // Managed credentials are delivered only after an authenticated
+            // invocation reservation; controller refresh secrets never bootstrap.
+            continue;
+        }
         ensure!(
             config.auth_mode == "api" || config.kind == "tuara" || config.kind == "simulated",
             "subscription login must be performed explicitly on the remote runtime"
@@ -90,9 +105,9 @@ pub fn issue(db: &Store, id: &str, profile: &crate::fleet::Profile) -> Result<Op
             );
         }
     }
-    db.conn.execute("INSERT INTO runtime_enrollments(runtime,fingerprint,token_hash,expires,state) VALUES(?,?,?,?,'pending')",params![id,fingerprint,crate::store::hash(token.as_bytes()),now()+900])?;
+    db.conn.execute("INSERT INTO runtime_enrollments(runtime,fingerprint,token_hash,expires,state) VALUES(?,?,?,?,'pending')",params![id,fingerprint,crate::store::hash(token.as_bytes()),now()+if profile.provider == "lima" {3600} else {900}])?;
     Ok(Some(
-        json!({"id":id,"network":network,"ca":ca,"certificate":cert.pem(),"key":key.serialize_pem(),"concurrency":concurrency,"settings":settings,"credentials":credentials}),
+        json!({"id":id,"network":network,"ca":ca,"certificate":cert.pem(),"key":key.serialize_pem(),"concurrency":concurrency,"project":project_record,"isolation":if profile.provider == "lima" { "lima" } else { "native" },"dedicated":profile.provider != "tailscale","settings":settings,"credentials":credentials}),
     ))
 }
 pub fn identity(db: &Store, fingerprint: &str) -> Result<Option<String>> {
@@ -138,6 +153,31 @@ pub fn activate(db: &Store, id: &str, token: Option<&str>) -> Result<bool> {
         .execute("UPDATE managed_runtimes SET state='ready' WHERE id=?", [id])?;
     Ok(true)
 }
+
+/// Called only for a validated heartbeat on the peer's authenticated control stream.
+/// Provider lifecycle observations alone never establish guest readiness.
+pub(crate) fn heartbeat(db: &Store, peer: &str, status: &Value) -> Result<()> {
+    if !status["pid"].as_u64().is_some_and(|pid| pid > 0)
+        || !status["version"]
+            .as_str()
+            .is_some_and(|version| !version.is_empty())
+        || !status["concurrency"]
+            .as_u64()
+            .is_some_and(|limit| limit > 0)
+    {
+        return Ok(());
+    }
+    db.atomic(|| {
+        if crate::fleet_enrollment::authority::is_active(db, peer)? {
+            db.conn.execute(
+                "UPDATE managed_runtimes SET state='ready' WHERE id=? AND state='provisioned' AND error IS NULL",
+                [peer],
+            )?;
+        }
+        Ok(())
+    })
+}
+
 fn write_same_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     if path.exists() {
@@ -170,10 +210,25 @@ pub fn apply_bootstrap(root: &Path, raw: &str) -> Result<()> {
             existing == id,
             "bootstrap identity cannot replace an existing runtime"
         );
+        let project = packet["project"]["id"].as_str().unwrap_or("default");
+        ensure!(
+            crate::management::value(&db, "bootstrap_project")?
+                .as_deref()
+                .unwrap_or("default")
+                == project,
+            "bootstrap cannot replace project ownership"
+        );
+        if let Some(hash) = crate::management::value(&db, "bootstrap_packet_hash")? {
+            ensure!(
+                hash == crate::store::hash(packet.to_string().as_bytes()),
+                "bootstrap retry changed immutable packet"
+            );
+        }
         return Ok(());
     }
     let mut network: NetworkConfig = serde_json::from_value(packet["network"].clone())?;
     ensure!(network.runtime_id == id, "bootstrap identity mismatch");
+    let project = bootstrap_project(&db, &packet, &network)?;
     let tls = root.join("tls");
     std::fs::create_dir_all(&tls)?;
     for (field, file) in [
@@ -205,7 +260,11 @@ pub fn apply_bootstrap(root: &Path, raw: &str) -> Result<()> {
     crate::management::set(&db, "concurrency", &n.to_string())?;
     if let Some(settings) = packet.get("settings") {
         let settings: crate::config::Settings = serde_json::from_value(settings.clone())?;
-        let config = crate::config::Settings::user_path();
+        let config = if project == crate::projects::DEFAULT_PROJECT {
+            crate::config::Settings::user_path()
+        } else {
+            crate::projects::storage_root(&db, &project)?.join("config.toml")
+        };
         std::fs::create_dir_all(config.parent().context("configuration directory")?)?;
         write_same_private(&config, toml::to_string(&settings)?.as_bytes())?;
         let credentials: std::collections::BTreeMap<String, String> =
@@ -220,6 +279,90 @@ pub fn apply_bootstrap(root: &Path, raw: &str) -> Result<()> {
         }
         write_same_private(&config.with_file_name("credentials.env"), env.as_bytes())?;
     }
+    if let Some(isolation) = packet["isolation"].as_str() {
+        ensure!(
+            ["native", "lima"].contains(&isolation),
+            "invalid bootstrap isolation"
+        );
+        crate::management::set(&db, "isolation", isolation)?;
+    }
+    crate::management::set(&db, "bootstrap_project", &project)?;
+    crate::management::set(
+        &db,
+        "bootstrap_packet_hash",
+        &crate::store::hash(packet.to_string().as_bytes()),
+    )?;
     crate::management::set(&db, "bootstrap_identity", id)?;
     Ok(())
+}
+
+fn bootstrap_project(db: &Store, packet: &Value, network: &NetworkConfig) -> Result<String> {
+    let Some(project) = packet.get("project") else {
+        return Ok(crate::projects::DEFAULT_PROJECT.into());
+    };
+    let id = project["id"]
+        .as_str()
+        .context("bootstrap project ID missing")?;
+    crate::accounts::identifier(id)?;
+    let slug = project["slug"]
+        .as_str()
+        .context("bootstrap project slug missing")?;
+    let name = project["name"]
+        .as_str()
+        .context("bootstrap project name missing")?;
+    let concurrency = project["concurrency"]
+        .as_i64()
+        .context("bootstrap project concurrency missing")?;
+    let isolation = project["isolation"]
+        .as_str()
+        .context("bootstrap project isolation missing")?;
+    ensure!(
+        (1..=64).contains(&concurrency) && ["native", "vm"].contains(&isolation),
+        "invalid bootstrap project settings"
+    );
+    db.atomic(|| {
+        if let Some(old) = db.rows("SELECT * FROM projects WHERE id=?", &[&id])?.first() {
+            ensure!(old["slug"] == slug && (id == "default" || (old["name"] == name && old["concurrency"] == concurrency && old["isolation"] == isolation)), "bootstrap cannot replace project ownership");
+        } else {
+            db.conn.execute("INSERT INTO projects(id,slug,name,concurrency,isolation,created) VALUES(?,?,?,?,?,?)", params![id,slug,name,concurrency,isolation,now()])?;
+        }
+        if packet["dedicated"] == true || packet["isolation"] == "lima" {
+            crate::projects::bind_runtime(db,id,&network.runtime_id)?;
+        }
+        let controller = network.controller_peer.as_deref().context("project bootstrap requires controller identity")?;
+        for runtime in [network.runtime_id.as_str(), controller] {
+            db.conn.execute("INSERT OR IGNORE INTO project_runtime_grants VALUES(?,?,?)", params![id,runtime,now()])?;
+        }
+        Ok(id.to_owned())
+    })
+}
+
+#[cfg(test)]
+mod project_bootstrap_tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_binds_project_to_controller_and_guest_without_other_grants() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = Store::open(temp.path())?;
+        let network = NetworkConfig {
+            runtime_id: "guest".into(),
+            controller_peer: Some("controller".into()),
+            ..Default::default()
+        };
+        let packet = json!({"dedicated":true,"isolation":"lima","project":{"id":"hamster","slug":"hamster","name":"Hamster","concurrency":4,"isolation":"vm"}});
+        assert_eq!(bootstrap_project(&db, &packet, &network)?, "hamster");
+        assert_eq!(bootstrap_project(&db, &packet, &network)?, "hamster");
+        assert!(crate::projects::runtime_allowed(
+            &db,
+            "hamster",
+            "controller"
+        )?);
+        assert!(crate::projects::runtime_allowed(&db, "hamster", "guest")?);
+        assert!(!crate::projects::runtime_allowed(&db, "default", "guest")?);
+        assert!(!crate::projects::runtime_allowed(&db, "hamster", "other")?);
+        let changed = json!({"project":{"id":"hamster","slug":"hamster","name":"Changed","concurrency":4,"isolation":"vm"}});
+        assert!(bootstrap_project(&db, &changed, &network).is_err());
+        Ok(())
+    }
 }
