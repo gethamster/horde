@@ -3,6 +3,7 @@ pub mod config;
 pub mod credentials;
 pub mod decision;
 pub mod delivery;
+pub mod delivery_policy;
 pub mod executor;
 pub mod git;
 pub mod knowledge;

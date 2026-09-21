@@ -1,24 +1,38 @@
 //! External writes are reconciled by stable task branch and persisted GitHub identifiers.
-use crate::executor::{Invocation, run_command};
+use crate::executor::{Invocation, run_command, run_command_env};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-async fn gh(i: &Invocation<'_>, args: &[&str]) -> Result<Value> {
-    let argv = std::iter::once(
+pub(crate) async fn gh(i: &Invocation<'_>, args: &[&str]) -> Result<Value> {
+    let program = if i.settings.automatic_delivery.enabled && i.settings.delivery.merge {
+        i.settings.automatic_delivery.gh_program.clone()
+    } else {
         i.settings
             .delivery
             .program
             .clone()
-            .unwrap_or_else(|| "gh".to_owned()),
-    )
-    .chain(args.iter().map(|x| x.to_string()))
-    .collect::<Vec<_>>();
-    let out = run_command(
-        &argv,
-        i.workspace,
-        i.settings.timeout_seconds,
-        Some((i.db, i.attempt)),
-    )
-    .await?;
+            .unwrap_or_else(|| "gh".to_owned())
+    };
+    let argv = std::iter::once(program)
+        .chain(args.iter().map(|x| x.to_string()))
+        .collect::<Vec<_>>();
+    let out = if i.settings.automatic_delivery.enabled && i.settings.delivery.merge {
+        run_command_env(
+            &argv,
+            i.workspace,
+            i.settings.timeout_seconds,
+            Some((i.db, i.attempt)),
+            &Default::default(),
+        )
+        .await?
+    } else {
+        run_command(
+            &argv,
+            i.workspace,
+            i.settings.timeout_seconds,
+            Some((i.db, i.attempt)),
+        )
+        .await?
+    };
     if out["success"] != true {
         bail!("GitHub command failed: {}", out["stderr"]);
     }
@@ -65,6 +79,9 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         .context("malformed GitHub PR list")?
         .first()
         .cloned();
+    if existing.as_ref().is_none_or(|row| row["state"] != "MERGED") {
+        crate::delivery_policy::preflight(i, &head)?;
+    }
     let pr = if let Some(pr) = existing {
         if pr["state"] == "CLOSED" {
             bail!("task PR was closed without merging; reconcile explicitly");
@@ -72,18 +89,38 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         pr
     } else {
         save(i, "pr", "intent", &json!({"branch":branch,"head":head}))?;
-        let out = run_command(
-            &[
+        let push_argv = [
+            "git".into(),
+            "push".into(),
+            "origin".into(),
+            format!("HEAD:refs/heads/{branch}"),
+        ];
+        let out = if i.settings.automatic_delivery.enabled && d.merge {
+            let automatic_push = [
                 "git".into(),
+                "-c".into(),
+                "core.hooksPath=/dev/null".into(),
                 "push".into(),
                 "origin".into(),
                 format!("HEAD:refs/heads/{branch}"),
-            ],
-            i.workspace,
-            i.settings.timeout_seconds,
-            Some((i.db, i.attempt)),
-        )
-        .await?;
+            ];
+            run_command_env(
+                &automatic_push,
+                i.workspace,
+                i.settings.timeout_seconds,
+                Some((i.db, i.attempt)),
+                &Default::default(),
+            )
+            .await?
+        } else {
+            run_command(
+                &push_argv,
+                i.workspace,
+                i.settings.timeout_seconds,
+                Some((i.db, i.attempt)),
+            )
+            .await?
+        };
         if out["success"] != true {
             bail!("push failed: {}", out["stderr"]);
         }
@@ -151,7 +188,23 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         if !d.merge {
             return Ok(json!({"result":pr["url"],"accepted":true,"delivery":"pr_ready"}));
         }
-        save(i, "merge", "intent", &json!({"pr":number,"head":head}))?;
+        let authorization = if i.settings.automatic_delivery.enabled {
+            Some(crate::delivery_policy::authorize_merge(i, &head, &number).await?)
+        } else {
+            None
+        };
+        if let Some(row) = &authorization {
+            crate::delivery_policy::record_merge_intent(i, row, &number, &head)?;
+        }
+        save(
+            i,
+            "merge",
+            "intent",
+            &json!({"pr":number,"head":head,"authorization":authorization}),
+        )?;
+        if let Some(row) = &authorization {
+            crate::delivery_policy::validate_merge_boundary(i, row)?;
+        }
         gh(
             i,
             &[
@@ -183,6 +236,17 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
     if merged["state"] != "MERGED" {
         bail!("merge has not completed");
     }
+    if i.settings.automatic_delivery.enabled && d.merge {
+        let base_sha = crate::delivery_policy::require_prior_authorization(i, &head, &number)?;
+        let merge_sha = merged["mergeCommit"]["oid"]
+            .as_str()
+            .context("merge commit")?;
+        let endpoint = format!("repos/{}/commits/{merge_sha}", d.repository);
+        let commit = gh(i, &["api", &endpoint]).await?;
+        if !crate::delivery_policy::merge_parent_matches(&commit, &base_sha) {
+            bail!("squash merge parent differs from authorized base; reconcile deployment effects");
+        }
+    }
     save(i, "merge", "succeeded", &merged)?;
     if let Some(workflow) = &d.deploy_workflow {
         let sha = merged["mergeCommit"]["oid"]
@@ -203,14 +267,22 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
                     "--commit",
                     sha,
                     "--json",
-                    "databaseId,headSha,status,conclusion",
+                    "databaseId,headSha,headBranch,event,status,conclusion",
                     "--limit",
-                    "10",
+                    "100",
                 ],
             )
             .await?;
-            if let Some(found) = runs.as_array().and_then(|a| a.first()) {
-                run = Some(found.clone());
+            let found = if i.settings.automatic_delivery.enabled && d.merge {
+                crate::delivery_policy::select_deployment_run(&runs, sha, &d.base)?
+            } else {
+                runs.as_array()
+                    .and_then(|a| a.first())
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            };
+            if !found.is_null() {
+                run = Some(found);
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -231,6 +303,30 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
             ],
         )
         .await?;
+        if i.settings.automatic_delivery.enabled && d.merge {
+            let checked = gh(
+                i,
+                &[
+                    "run",
+                    "view",
+                    &run["databaseId"].to_string(),
+                    "--repo",
+                    &d.repository,
+                    "--json",
+                    "databaseId,headSha,headBranch,event,status,conclusion",
+                ],
+            )
+            .await?;
+            if checked["databaseId"] != run["databaseId"]
+                || checked["headSha"] != sha
+                || checked["headBranch"] != d.base
+                || checked["event"] != "push"
+                || checked["status"] != "completed"
+                || checked["conclusion"] != "success"
+            {
+                bail!("deployment run did not complete successfully for merge commit");
+            }
+        }
         save(i, "deployment", "succeeded", &run)?;
     }
     if let Some(url) = &d.health_url {
@@ -244,6 +340,37 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
             return Err(error);
         }
         save(i, "health", "succeeded", &json!({"url":url}))?;
+    }
+    if i.settings.automatic_delivery.enabled && d.merge {
+        let policy = &i.settings.automatic_delivery;
+        crate::delivery_policy::verify_version(
+            policy.version_url.as_deref().context("version URL")?,
+            merged["mergeCommit"]["oid"]
+                .as_str()
+                .context("merge commit")?,
+            d.environment.as_deref().context("environment")?,
+        )
+        .await?;
+        save(
+            i,
+            "version",
+            "succeeded",
+            &json!({"commit":merged["mergeCommit"]["oid"],"environment":d.environment}),
+        )?;
+        crate::delivery_policy::verify_smoke(
+            policy.smoke_url.as_deref().context("smoke URL")?,
+            merged["mergeCommit"]["oid"]
+                .as_str()
+                .context("merge commit")?,
+            d.environment.as_deref().context("environment")?,
+        )
+        .await?;
+        save(
+            i,
+            "smoke",
+            "succeeded",
+            &json!({"commit":merged["mergeCommit"]["oid"],"environment":d.environment}),
+        )?;
     }
     Ok(json!({"result":merged["url"],"accepted":true,"delivery":"complete"}))
 }
