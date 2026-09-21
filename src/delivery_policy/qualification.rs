@@ -5,6 +5,10 @@ pub(super) fn current_policy(i: &Invocation<'_>) -> Result<Option<AutomaticDeliv
     if !policy.enabled {
         return Ok(None);
     }
+    ensure!(
+        crate::projects::task_project(i.db, i.task)? == crate::projects::DEFAULT_PROJECT,
+        "automatic delivery is limited to the default project"
+    );
     let operator = Settings::load_user().context("current operator delivery policy unavailable")?;
     ensure!(
         operator.automatic_delivery == *policy && operator.automatic_delivery.enabled,
@@ -94,6 +98,10 @@ pub(super) fn verify_qualification(
 }
 
 pub(super) fn scoped(i: &Invocation<'_>, policy: &AutomaticDelivery) -> Result<String> {
+    ensure!(
+        crate::projects::task_project(i.db, i.task)? == crate::projects::DEFAULT_PROJECT,
+        "automatic delivery is limited to the default project"
+    );
     let tree =
         i.db.rows(
             "SELECT root,parent,depth FROM task_tree WHERE task=?",
