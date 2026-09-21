@@ -280,6 +280,40 @@ pub fn budgets(db: &Store) -> Result<()> {
 /// Read the installed Codex app-server account API; never starts a thread or model turn.
 pub async fn codex_probe(db: &Store, config: &ExecutorConfig) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+    if let Some(project) = config.project.as_deref()
+        && crate::accounts::validate_account(db, project, config)?
+    {
+        return tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let account = config
+                .account
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("account missing"))?;
+            let tokens = crate::account_auth::access_tokens(
+                db,
+                project,
+                account,
+                false,
+                config.program.as_deref(),
+            )
+            .await?;
+            let mut command = crate::account_auth::command(db, project, account, config)?;
+            command.args(["app-server", "--stdio"]);
+            let mut session = crate::codex_session::Session::spawn(command, None)?;
+            session.initialize().await?;
+            // Login uses externally owned access tokens and never a profile's ambient refresh credential.
+            session
+                .request("account/login/start", tokens.login())
+                .await?;
+            let response = session
+                .request("account/rateLimits/read", json!({}))
+                .await?;
+            ingest(db, config, &response)?;
+            session.stop().await;
+            Ok(())
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("capacity probe timed out"))?;
+    }
     let program = config.program.as_deref().unwrap_or("codex");
     let mut command = tokio::process::Command::from(crate::executor::clean_command(program));
     command
@@ -354,9 +388,11 @@ pub async fn codex_probe(db: &Store, config: &ExecutorConfig) -> Result<()> {
 pub async fn subscriptions(db: &Store) -> Result<()> {
     let mut seen = std::collections::BTreeSet::new();
     // Probe only accounts actually used here, using the pinned executable of that attempt.
-    for row in db.rows("SELECT o.settings,c.role FROM attempt_accounts c JOIN attempts a ON a.id=c.attempt JOIN steps t ON t.id=a.step JOIN tasks o ON o.id=t.task WHERE a.started>? ORDER BY a.started DESC",&[&(now()-86400)])?{
+    for row in db.rows("SELECT o.settings,o.id AS task,c.role,c.account FROM attempt_accounts c JOIN attempts a ON a.id=c.attempt JOIN steps t ON t.id=a.step JOIN tasks o ON o.id=t.task WHERE a.started>? ORDER BY a.started DESC",&[&(now()-86400)])?{
         let settings:Settings=serde_json::from_str(row["settings"].as_str().ok_or_else(||anyhow::anyhow!("settings missing"))?)?;
-        let Some(config)=row["role"].as_str().and_then(|r|settings.executor(r))else{continue};
+        let Some(mut config)=row["role"].as_str().and_then(|r|settings.executor(r))else{continue};
+        config.account=row["account"].as_str().map(str::to_owned);
+        config.project=Some(crate::projects::task_project(db,row["task"].as_str().ok_or_else(||anyhow::anyhow!("task missing"))?)?);
         if config.kind=="codex"&&config.auth_mode=="login"&&seen.insert(account(&config)) && codex_probe(db,&config).await.is_err(){management::event(db,"account.refresh_failed",json!({"account":account(&config),"capacity":"unknown"}))?;}
     }
     Ok(())

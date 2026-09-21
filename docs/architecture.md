@@ -170,8 +170,8 @@ runtime execution grants, provider access, or delivery authorization.
 Schema version 4 records execution policies, submission receipts, and project
 skill revisions. The version advances only after all additive migrations finish;
 reopening never lowers it. Older runtimes reject this database instead of running
-tasks without their saved execution constraints. Release manifests accept upgrades
-from schema 2 and advertise schema 5 support.
+tasks without their saved execution constraints. Release manifests advertise the schema range supported by their binary; the current
+database schema is 6.
 
 Administrative runtime settings, capacity snapshots, enrollment fingerprints,
 management receipts, provider resources, and operation intents are stored separately
@@ -258,3 +258,42 @@ runtime, which checks authenticated task ownership before resolving family visib
 Scoped reads have bounded pages and revision-bound cursors; index changes require
 restarting pagination. Relationship pages filter out inaccessible targets. Consumers
 own durable exports beyond the task family.
+
+## Projects and shared accounts
+
+Schema 6 adds authoritative projects, repository registrations, task ownership,
+and explicit runtime/account grants to each host's existing SQLite store.
+Tasks retain their original table layout; an immutable ownership record binds
+project and repository identities. Git common-directory registration prevents
+one checkout or its worktrees from joining two projects. Children inherit their
+project, and cross-repository children require a registered repository in that
+project. Git integration rejects a child from another repository.
+
+Task RPCs authorize project membership before returning records or artifacts.
+A project-bound MCP bridge cannot switch projects or administer the fleet.
+Administrator operations can request an explicit view across projects. Remote
+assignments include immutable project identity, and both sides check grants;
+older peers without project support cannot accept these assignments. Dedicated
+runtime bindings are immutable and checked before legacy default-project access.
+New managed guests belong exclusively to their provisioning project; migration
+preserves explicit default grants for existing managed runtimes.
+
+The scheduler rotates project queues and records invocation bindings before
+launch. Accounts own shared quota and concurrency totals, while authentication
+profiles select versioned credentials. Project grants share an account without
+creating another quota identity. Remote reservations remain at the controller
+through disconnection or uncertain completion. Execution never infers ownership
+or releases reservations from worker conversation.
+
+New projects place workspaces, app resources, skills, and harness profiles under
+project-specific paths. The default project retains its legacy paths. Native
+execution provides logical separation within one OS user's authority; arbitrary
+commands under that user can still read that user's other files. Lima guests
+add separate disks and Docker daemons with host-enforced network policy. The
+optional backend refuses unsupported isolation prerequisites instead of falling
+back to native execution. See [runtime management](runtime-management.md#optional-project-vms-with-lima).
+
+Before upgrading schema 5, Horde writes a private `pre-projects-<id>.sqlite3`
+backup. The migration assigns legacy tasks and repositories to `default`, keeps
+IDs and active paths, and preserves uncertain attempts. The schema version
+advances after all additive migrations complete; older binaries reject it.

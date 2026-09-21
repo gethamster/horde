@@ -27,6 +27,8 @@ pub fn build(db: &Store, task: &str) -> Result<Value> {
     let delivery = delivery_outcome(db, task, &settings, &steps)?;
     let mut summary = json!({
         "task": task,
+        "project": crate::projects::task_project(db, task)?,
+        "execution": crate::project_runtime::inspection(db, task)?,
         "objective": row["objective"],
         "repo": row["repo"],
         "status": status,
@@ -78,7 +80,10 @@ fn preview(value: &Value) -> Value {
 /// The verified integrated commit: the live integrated worktree when present,
 /// otherwise the last successful integration record.
 fn integrated_head(db: &Store, task: &str) -> Result<Value> {
-    let workspace = db.root.join("workspaces").join(task).join("integrated");
+    let workspace = crate::project_runtime::task_root(db, task)?
+        .join("workspaces")
+        .join(task)
+        .join("integrated");
     if workspace.exists()
         && let Ok(head) = crate::git::run(&workspace, &["rev-parse", "HEAD"])
     {

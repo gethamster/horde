@@ -51,6 +51,15 @@ impl Broker {
     ) -> Result<Self> {
         Self::with_observer(config, token, key, timeout, None).await
     }
+    pub async fn with_key_observed(
+        config: &ExecutorConfig,
+        token: &str,
+        key: String,
+        timeout: u64,
+        root: &std::path::Path,
+    ) -> Result<Self> {
+        Self::with_observer(config, token, key, timeout, Some(root.to_owned())).await
+    }
     pub async fn start_observed(
         config: &ExecutorConfig,
         token: &str,

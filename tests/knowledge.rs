@@ -447,7 +447,14 @@ fn schema_four_upgrade_preserves_execution_receipts_and_skill_revisions() {
     };
     let binding = json!({"runtime":"local","capability":"fixture","provider":"fixture","kind":"simulated","model":null,"configuration_hash":"a".repeat(64)});
     let policy = json!({"version":1,"allowed":[{"runtime":"local","capabilities":["fixture"]}],"bindings":[binding.clone()],"selected":binding});
-    horde::execution_selection::pin(&old, "v4-task", &policy).unwrap();
+    // Seed the historical schema directly; current pinning requires the project
+    // ownership tables that this migration fixture intentionally predates.
+    old.conn
+        .execute(
+            "INSERT INTO task_execution_policy VALUES('v4-task',?)",
+            [policy.to_string()],
+        )
+        .unwrap();
     old.conn
         .execute(
             "INSERT INTO submission_receipts VALUES('submission-v4','pinned-request','v4-task',?)",
@@ -501,7 +508,7 @@ fn schema_four_upgrade_preserves_execution_receipts_and_skill_revisions() {
             db.conn
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            5
+            i64::from(horde::store::SCHEMA_VERSION)
         );
         assert_eq!(
             horde::execution_selection::policy(&db, "v4-task").unwrap(),

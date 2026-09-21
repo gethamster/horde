@@ -40,8 +40,14 @@ impl Daemon {
         d.wait_ready();
         d
     }
+    fn config_file(&self) -> PathBuf {
+        self.root.parent().unwrap().join("config/horde/config.toml")
+    }
     fn spawn(root: &Path) -> Child {
+        let config = root.parent().unwrap().join("config");
+        std::fs::create_dir_all(config.join("horde")).unwrap();
         Command::new(BIN)
+            .env("XDG_CONFIG_HOME", config)
             .arg("--data-dir")
             .arg(root)
             .arg("daemon")
@@ -124,10 +130,10 @@ impl Daemon {
 }
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        support::stop_daemon(&mut self.child, &self.root);
     }
 }
+mod support;
 #[test]
 fn execution_outlives_cli_and_mcp_clients_and_survives_restart() {
     let mut d = Daemon::new();
@@ -471,7 +477,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_token
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::write(
-        d.repo.join(".horde.toml"),
+        d.config_file(),
         format!(
             "[executors.worker]\nprovider=\"codex\"\nprogram={:?}\n",
             script.to_str().unwrap()
@@ -535,7 +541,7 @@ esac
     std::fs::write(&script, code).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::write(d.repo.join(".horde.toml"),format!("[delivery]\nenabled=true\nrepository=\"test/repo\"\nbase=\"main\"\nmerge=true\ndeploy_workflow=\"deploy.yml\"\nprogram={:?}\n",script.to_str().unwrap())).unwrap();
+    std::fs::write(d.config_file(),format!("[delivery]\nenabled=true\nrepository=\"test/repo\"\nbase=\"main\"\nmerge=true\ndeploy_workflow=\"deploy.yml\"\nprogram={:?}\n",script.to_str().unwrap())).unwrap();
     d.template(
         "delivery",
         r#"
@@ -568,7 +574,7 @@ instructions="Test delivery"
 #[test]
 fn explicit_fallback_is_recorded_and_used_only_after_failure() {
     let d = Daemon::new();
-    std::fs::write(d.repo.join(".horde.toml"),"[fallbacks]\nworker=\"simulated\"\n[executors.worker]\nprovider=\"codex\"\nprogram=\"/definitely/missing/executor\"\n").unwrap();
+    std::fs::write(d.config_file(),"[fallbacks]\nworker=\"simulated\"\n[executors.worker]\nprovider=\"codex\"\nprogram=\"/definitely/missing/executor\"\n").unwrap();
     d.template(
         "fallback",
         r#"
@@ -806,7 +812,7 @@ fn daemon_ends_a_streaming_planner_loop_despite_valid_different_calls() {
     // Budget includes Git workspace setup. Leave room for multiple model turns
     // on slower CI hosts; the command regression separately tests a one-second cap.
     std::fs::write(
-        d.repo.join(".horde.toml"),
+        d.config_file(),
         format!(
             r#"
 max_tool_rounds = 10000
@@ -1239,7 +1245,7 @@ printf '%s\n' '{"text":"{\"result\":\"implemented\",\"accepted\":true}","stopRea
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::write(
-        d.repo.join(".horde.toml"),
+        d.config_file(),
         format!(
             "[executors.worker]\nprovider=\"grok\"\nprogram={:?}\n",
             script.to_str().unwrap()

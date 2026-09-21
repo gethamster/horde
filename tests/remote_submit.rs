@@ -1,5 +1,6 @@
 use horde::{network::NetworkConfig, remote_submit, store::Store};
 use serde_json::json;
+mod support;
 
 fn fixture() -> (tempfile::TempDir, Store, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -20,6 +21,12 @@ fn fixture() -> (tempfile::TempDir, Store, std::path::PathBuf) {
     };
     horde::federation::configure(&db.root, &config).unwrap();
     db.conn.execute("INSERT INTO managed_runtimes(id,profile,spec,state,created) VALUES('apollo','test','{}','ready',0)", []).unwrap();
+    horde::projects::dispatch(
+        &db,
+        "project_runtime_grant",
+        &json!({"project":"default","runtime":"apollo"}),
+    )
+    .unwrap();
     (dir, db, repo)
 }
 
@@ -276,14 +283,13 @@ async fn remote_root_flow(scoped: bool) {
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
-    struct Daemon(std::process::Child);
+    struct Daemon(std::process::Child, std::path::PathBuf);
     impl Drop for Daemon {
         fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
+            support::stop_daemon(&mut self.0, &self.1);
         }
     }
-    let _daemon = Daemon(child);
+    let _daemon = Daemon(child, remote.clone());
     let submission = if scoped {
         let deadline = Instant::now() + Duration::from_secs(10);
         while std::os::unix::net::UnixStream::connect(remote.join("daemon.sock")).is_err() {

@@ -100,10 +100,10 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.process.kill();
-        let _ = self.process.wait();
+        support::stop_daemon(&mut self.process, &self.root);
     }
 }
+mod support;
 
 fn identity(
     dir: &Path,
@@ -224,6 +224,12 @@ fn parent_selects_local_astra_and_delegates_one_narrowed_apollo_glm_child() {
         ..Default::default()
     };
     controller_db.conn.execute("INSERT INTO managed_runtimes(id,profile,spec,state,created) VALUES('apollo','test',?,'ready',0)", [serde_json::to_string(&profile).unwrap()]).unwrap();
+    horde::projects::dispatch(
+        &controller_db,
+        "project_runtime_grant",
+        &json!({"project":"default","runtime":"apollo"}),
+    )
+    .unwrap();
 
     let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);

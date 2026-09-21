@@ -189,7 +189,15 @@ pub fn resolve(inventory: &Value, args: &Value) -> Result<Value> {
 }
 
 pub fn plan(db: &crate::store::Store, args: &Value) -> Result<Value> {
-    let inventory = crate::capabilities::inventory(db)?;
+    let project = match args["project"].as_str() {
+        Some(project) => crate::projects::resolve(db, project)?,
+        None => args["task"]
+            .as_str()
+            .map(|task| crate::projects::task_project(db, task))
+            .transpose()?
+            .unwrap_or_else(|| crate::projects::DEFAULT_PROJECT.into()),
+    };
+    let inventory = crate::capabilities::inventory_project(db, &project)?;
     let mut result = resolve(&inventory, args)?;
     if let Some(task) = args["task"].as_str()
         && let Some(parent) = crate::execution_selection::policy(db, task)?
