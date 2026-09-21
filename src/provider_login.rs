@@ -191,6 +191,18 @@ fn start(root: &Path, request: Request) -> Result<Value> {
         return Ok(report(existing));
     }
     let config = configuration(&provider)?;
+    if let Some(account) = config.account.as_deref() {
+        let db = Store::open(root)?;
+        let managed: bool = db.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?)",
+            [account],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            !managed,
+            "provider selects a managed account; renew it with account_credential_set instead of shared CLI login"
+        );
+    }
     ensure!(
         !registry
             .values()

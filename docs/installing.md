@@ -172,6 +172,23 @@ are refused without changing their records. Keep the database for manual recover
 if repair reports one of these conditions. Package-manager and source installations
 must use their owning installer.
 
+### Upgrading to project ownership
+
+Schema 6 assigns existing tasks and repositories to the `default` project. Horde
+backs up schema 5 as `pre-projects-<id>.sqlite3` in the private data directory
+before changing it. Stop the existing daemon first; migration holds its lock
+and refuses to proceed while another daemon owns it. Task IDs, settings,
+repository paths, remote ownership, and uncertain attempts stay intact. Active workspaces are not moved. New projects
+start without the default project's account or runtime grants.
+
+The version advances only after the additive migrations succeed. On a migration
+error, keep the database and backup together and resolve the reported cause
+before restarting. Binaries that support only older schemas reject schema 6.
+A backup predates any work recorded after the upgrade; restoring it requires a
+stopped daemon and inspection of later local and remote effects before execution
+can resume. Do not replace a running daemon's database or discard its WAL files
+as a rollback shortcut.
+
 ## Release operator setup
 
 Configure GitHub Actions with:

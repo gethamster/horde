@@ -178,6 +178,11 @@ pub async fn call(
                     ".",
                 ])
                 .current_dir(root);
+            crate::account_auth::scope_command(
+                &mut command,
+                db,
+                w["task"].as_str().context("worker task")?,
+            )?;
             let out =
                 crate::executor::run_process(command, None, settings.timeout_seconds, None).await?;
             if out["exit_code"].as_i64().is_none_or(|c| c > 1) {
@@ -196,11 +201,16 @@ pub async fn call(
                 bail!("empty argv");
             }
             let attempt:Option<String>=db.conn.query_row("SELECT id FROM attempts WHERE worker=? AND state='running' ORDER BY started DESC LIMIT 1",[wid],|r|r.get(0)).optional()?;
-            let out = crate::executor::run_command(
+            let task = w["task"].as_str().context("worker task")?;
+            let values = crate::secrets::values(db, task)?;
+            let out = crate::executor::run_task_command_env(
+                db,
+                task,
                 &argv,
                 root,
                 settings.timeout_seconds,
-                attempt.as_deref().map(|a| (db, a)),
+                attempt.as_deref(),
+                &values,
             )
             .await?;
             let data_root = db.root.clone();
