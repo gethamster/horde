@@ -669,7 +669,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
                 .unwrap_or_else(|| json!({"error":format!("{e:#}")})),
         };
         let value = crate::secrets::redact(self, oid, &value);
-        let integrated_head = crate::decision::review::observed_head(&self.root, oid);
+        let integrated_head = crate::decision::review::observed_head(self, oid);
         let waiting = crate::delegation::has_question(self, worker)?;
         let success = success && !waiting;
         self.atomic(|| {

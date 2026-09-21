@@ -63,12 +63,15 @@ fn git_excerpt(repo: &Path, args: &[&str]) -> Result<(String, bool)> {
     Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
 }
 
-pub(super) fn workspace(root: &Path, task: &str) -> PathBuf {
-    root.join("workspaces").join(task).join("integrated")
+pub(super) fn workspace(db: &crate::store::Store, task: &str) -> Result<PathBuf> {
+    Ok(crate::project_runtime::task_root(db, task)?
+        .join("workspaces")
+        .join(task)
+        .join("integrated"))
 }
 
-pub(crate) fn observed_head(root: &Path, task: &str) -> Option<String> {
-    let path = workspace(root, task);
+pub(crate) fn observed_head(db: &crate::store::Store, task: &str) -> Option<String> {
+    let path = workspace(db, task).ok()?;
     path.exists()
         .then(|| git_text(&path, &["rev-parse", "HEAD"], 128).ok())
         .flatten()
@@ -190,6 +193,41 @@ pub(super) fn manifest(repo: &Path, base: &str, head: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observed_head_uses_the_tasks_project_workspace() {
+        let data = tempfile::tempdir().unwrap();
+        let db = crate::store::Store::open(data.path()).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO projects VALUES('other','other','Other',4,'native',0)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tasks VALUES('task','objective','.','running','{}','{}',0)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute("INSERT INTO task_projects VALUES('task','other',NULL)", [])
+            .unwrap();
+        let path = workspace(&db, "task").unwrap();
+        std::fs::create_dir_all(&path).unwrap();
+        run(&path, &["init", "-q"]);
+        run(&path, &["config", "user.name", "Reviewer"]);
+        run(&path, &["config", "user.email", "reviewer@example.test"]);
+        std::fs::write(path.join("project.txt"), "review me\n").unwrap();
+        run(&path, &["add", "."]);
+        run(&path, &["commit", "-qm", "project head"]);
+        assert_eq!(
+            observed_head(&db, "task"),
+            Some(git_text(&path, &["rev-parse", "HEAD"], 128).unwrap())
+        );
+        assert!(!data.path().join("workspaces/task/integrated").exists());
+    }
+
     fn run(repo: &Path, args: &[&str]) {
         assert!(
             Command::new("git")

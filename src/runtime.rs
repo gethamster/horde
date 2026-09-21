@@ -484,7 +484,7 @@ fn settle(db: &Store, oid: &str) -> Result<()> {
             rusqlite::params![status, oid],
         )? > 0
         {
-            db.event(oid, "task.finished", json!({"status":status,"integrated_head":crate::decision::review::observed_head(&db.root,oid),"revision":crate::decision::review::current_revision(db,oid)?}))?;
+            db.event(oid, "task.finished", json!({"status":status,"integrated_head":crate::decision::review::observed_head(db,oid),"revision":crate::decision::review::current_revision(db,oid)?}))?;
         }
     }
     Ok(())
