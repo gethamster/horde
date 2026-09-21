@@ -146,7 +146,7 @@ pub async fn run(root: &Path, file: Option<&Path>, command: &KeyCommands) -> Res
                 Ok(invitation)
             })?;
             Ok(
-                json!({"key":invitation.key_id,"fleet":name,"credential_file":output,"enrollment_address":invitation.endpoint,"max_workers":max_workers,"next":"Run horde start on the controller. Supply the credential file to workers with HORDE_ENROLLMENT_FILE and start horde daemon."}),
+                json!({"key":invitation.key_id,"fleet":name,"credential_file":output,"enrollment_address":invitation.endpoint,"max_workers":max_workers,"next":"Run horde start on the controller. Supply the credential file to workers with HORDE_ENROLLMENT_FILE and start horde daemon. For a worker reachable over Tailscale SSH, `horde network add user@host` does this in one step instead."}),
             )
         }
     }
