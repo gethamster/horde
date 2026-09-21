@@ -147,3 +147,91 @@ fn remote_reconcile_recovers_exact_resource_and_observed_state() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn remote_lima_result_preserves_compact_project_and_runtime_identity() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let db = Store::open(temp.path())?;
+    let profile = Profile {
+        project: "hamster".into(),
+        provider: "lima".into(),
+        ..Default::default()
+    };
+    db.conn.execute("INSERT INTO managed_runtimes(id,profile,spec,state,created) VALUES('worker','test',?,'requested',0)", [serde_json::to_string(&profile)?])?;
+    let resource = crate::lima::resource_name(&profile, "worker")?;
+    project_host::record_host_result(
+        &db,
+        "worker",
+        "runtime_create",
+        &json!({"resource":resource}),
+    )?;
+    assert_eq!(
+        db.rows("SELECT resource FROM managed_runtimes", &[])?[0]["resource"],
+        resource
+    );
+    for foreign in [
+        crate::lima::resource_name(&profile, "another-worker")?,
+        crate::lima::resource_name(
+            &Profile {
+                project: "horde".into(),
+                ..profile
+            },
+            "worker",
+        )?,
+        "horde-worker".into(),
+    ] {
+        assert!(
+            project_host::record_host_result(
+                &db,
+                "worker",
+                "runtime_reconcile",
+                &json!({"guest":{"name":foreign},"state":"stopped"})
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(
+        db.rows("SELECT state FROM managed_runtimes", &[])?[0]["state"],
+        "provisioned"
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_lima_restart_and_reconcile_wait_for_guest_heartbeat() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let db = Store::open(temp.path())?;
+    db.conn.execute("INSERT INTO managed_runtimes(id,profile,spec,state,created) VALUES('worker','test','{}','stopped',0)", [])?;
+    db.conn.execute(
+        "INSERT INTO runtime_enrollments VALUES('worker','fingerprint','',9999999999,'active')",
+        [],
+    )?;
+    let status = json!({"pid":123,"version":"test","concurrency":2});
+    db.conn.execute(
+        "INSERT INTO runtime_presence VALUES('worker',?,?)",
+        rusqlite::params![now(), status.to_string()],
+    )?;
+    for action in ["runtime_start", "runtime_reconcile"] {
+        if action == "runtime_reconcile" {
+            db.conn.execute("UPDATE managed_runtimes SET error='prior lifecycle outcome uncertain' WHERE id='worker'", [])?;
+        }
+        project_host::record_host_result(
+            &db,
+            "worker",
+            action,
+            &json!({"guest":{"name":"horde-worker"},"state":"provisioned"}),
+        )?;
+        assert!(db.rows("SELECT error FROM managed_runtimes", &[])?[0]["error"].is_null());
+        assert_eq!(
+            db.rows("SELECT state FROM managed_runtimes", &[])?[0]["state"],
+            "provisioned",
+            "host state and old presence cannot establish guest readiness"
+        );
+        crate::enrollment::heartbeat(&db, "worker", &status)?;
+        assert_eq!(
+            db.rows("SELECT state FROM managed_runtimes", &[])?[0]["state"],
+            "ready"
+        );
+    }
+    Ok(())
+}

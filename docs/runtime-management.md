@@ -195,6 +195,17 @@ cannot be reassigned to another project. Resource intent survives uncertain
 management results; inspect the existing guest before reconciling it. Guest CPU
 and memory reservations are checked against the provisioning host's resources.
 
+Inspection reports the guest's actual resource name. New guests use compact
+names to fit the host's SSH socket path limit; existing guests retain their
+names and recorded configuration across upgrades. A failed create can be
+destroyed using its saved ownership record, but an unavailable guest inventory
+remains uncertain until the host can be inspected.
+
+Guest setup retries failed package downloads a bounded number of times. A guest
+becomes ready only after Docker and Compose work, its state directory exists,
+and it enrolls with the controller. If setup fails, inspect
+`/var/log/cloud-init-output.log` inside the retained guest before reconciling it.
+
 To provision on another authorized host, set the controller profile's `host` to
 that runtime's stable ID. Install the matching profile there without `host`, with
 the same immutable project ID and local prerequisites. Both runtimes need the

@@ -94,11 +94,16 @@ def main():
             wait(project, runtime, request)
             report = wait_ready(project,runtime)
             spec = json.loads(report["runtime"][0]["spec"])
+            resource = report["runtime"][0]["resource"]
+            if not isinstance(resource, str) or not resource:
+                raise RuntimeError("ready Lima runtime has no persisted guest resource")
             if spec.get("host"):
                 raise RuntimeError("run this suite on the provisioning host with local profiles")
+            # Lima opens its SSH control connection before Docker group creation.
+            # Refresh the horde user's supplementary groups for these commands.
             base = ["sudo", "-n", "-H", "-u", spec["lima_user"], "--", "/usr/bin/env",
                     "LIMA_HOME=" + spec["lima_home"], "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-                    "limactl", "shell", "horde-" + runtime]
+                    "limactl", "shell", resource, "sudo", "-u", "horde", "--"]
             marker = runtime + "-private"
             guests.append((runtime,spec,base))
             script = """set -eu
@@ -146,9 +151,12 @@ cmp marker copied-marker
                 call(project, action, payload)
                 call(project, action, payload)
                 wait(project, runtime, request)
+                if action == "runtime_start":
+                    wait_ready(project, runtime)
             request = "reconcile-" + runtime
-            call(project, "runtime_reconcile", {"id": runtime, "request_id": request, "resource": "horde-" + runtime})
+            call(project, "runtime_reconcile", {"id": runtime, "request_id": request, "resource": resource})
             wait(project, runtime, request)
+            wait_ready(project, runtime)
             run(base + ["test", "-f", "/home/horde/acceptance/marker"])
         assert len({guest[1]["lima_home"] for guest in guests}) == 2, "projects share a Lima disk directory"
         assert len({guest[1]["lima_user"] for guest in guests}) == 2, "projects share a host identity"

@@ -164,8 +164,18 @@ pub(super) fn record_host_result(
         .as_str()
         .or_else(|| guest["name"].as_str());
     if let Some(resource) = resource {
+        let rows = db.rows(
+            "SELECT spec,resource FROM managed_runtimes WHERE id=?",
+            &[&id],
+        )?;
+        let row = rows.first().context("managed runtime missing")?;
+        let profile: Profile = serde_json::from_str(row["spec"].as_str().context("runtime spec")?)?;
         ensure!(
-            resource == format!("horde-{id}"),
+            (resource == crate::lima::resource_name(&profile, id)?
+                || resource == format!("horde-{id}"))
+                && row["resource"]
+                    .as_str()
+                    .is_none_or(|previous| previous == resource),
             "remote guest resource ownership mismatch"
         );
     }
@@ -180,6 +190,9 @@ pub(super) fn record_host_result(
         _ => "provisioned",
     };
     db.atomic(|| {
+        if action == "runtime_reconcile" {
+            db.conn.execute("UPDATE managed_runtimes SET error=NULL WHERE id=?", [id])?;
+        }
         if action == "runtime_destroy" {
             db.conn.execute("UPDATE runtime_enrollments SET state='revoked',token_hash='' WHERE runtime=?", [id])?;
         }

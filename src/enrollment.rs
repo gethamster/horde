@@ -153,6 +153,31 @@ pub fn activate(db: &Store, id: &str, token: Option<&str>) -> Result<bool> {
         .execute("UPDATE managed_runtimes SET state='ready' WHERE id=?", [id])?;
     Ok(true)
 }
+
+/// Called only for a validated heartbeat on the peer's authenticated control stream.
+/// Provider lifecycle observations alone never establish guest readiness.
+pub(crate) fn heartbeat(db: &Store, peer: &str, status: &Value) -> Result<()> {
+    if !status["pid"].as_u64().is_some_and(|pid| pid > 0)
+        || !status["version"]
+            .as_str()
+            .is_some_and(|version| !version.is_empty())
+        || !status["concurrency"]
+            .as_u64()
+            .is_some_and(|limit| limit > 0)
+    {
+        return Ok(());
+    }
+    db.atomic(|| {
+        if crate::fleet_enrollment::authority::is_active(db, peer)? {
+            db.conn.execute(
+                "UPDATE managed_runtimes SET state='ready' WHERE id=? AND state='provisioned' AND error IS NULL",
+                [peer],
+            )?;
+        }
+        Ok(())
+    })
+}
+
 fn write_same_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     if path.exists() {

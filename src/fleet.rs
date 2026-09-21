@@ -525,7 +525,10 @@ pub async fn tick(db: &Store) -> Result<()> {
 
         }else{
             let input:Value=serde_json::from_str(op["args"].as_str().context("operation args")?)?;
-            let resource=if action=="runtime_reconcile"{input["resource"].as_str().context("resource required for reconciliation")?}else{row["resource"].as_str().context("resource ID unavailable; reconcile provisioning first")?};
+            let recovery_resource = if action == "runtime_destroy" && p.provider == "lima" && row["resource"].is_null() {
+                Some(crate::lima::owned_resource(&db.root, &p, id)?)
+            } else { None };
+            let resource=if action=="runtime_reconcile"{input["resource"].as_str().context("resource required for reconciliation")?}else{row["resource"].as_str().or(recovery_resource.as_deref()).context("resource ID unavailable; reconcile provisioning first")?};
             let result=if p.provider=="tailscale" {
                 ensure!(action=="runtime_destroy", "Tailscale hosts support update, restart, and destroy (unenroll); host power and provisioning remain user-owned");
                 json!({"unenrolled":true,"host_retained":true})

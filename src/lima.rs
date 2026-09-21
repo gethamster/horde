@@ -9,6 +9,10 @@ use std::{
 };
 use tokio::io::AsyncWriteExt;
 
+mod ownership;
+use ownership::{claim_resource, sync_directories};
+pub use ownership::{owned_resource, resource_name, validate_socket_path};
+
 /// Print this bundled helper for an administrator to install in a protected path.
 pub fn guard_script() -> &'static str {
     include_str!("../scripts/horde-lima-guard.py")
@@ -96,6 +100,24 @@ pub fn configuration(p: &Profile, id: &str, os: &str, arch: &str) -> Result<Valu
         ["aarch64", "x86_64"].contains(&arch),
         "unsupported Lima host architecture"
     );
+    let provision_script = r#"#!/bin/sh
+set -eu
+command -v apt-get >/dev/null
+export DEBIAN_FRONTEND=noninteractive
+retry_apt() {
+    attempt=1
+    until apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o APT::Update::Error-Mode=any "$@"; do
+        if [ "$attempt" -ge 3 ]; then return 1; fi
+        attempt=$((attempt + 1))
+        sleep 5
+    done
+}
+retry_apt update
+retry_apt install -y docker.io docker-compose-v2 ca-certificates git
+usermod -aG docker horde
+systemctl enable --now docker
+install -d -o horde -g horde -m 0700 /var/lib/horde
+"#;
     Ok(json!({
         "vmType":vm_type, "arch":arch, "cpus":p.cpus,
         "memory":format!("{}MiB",p.memory_mb), "disk":format!("{}GiB",p.disk_gb),
@@ -105,7 +127,8 @@ pub fn configuration(p: &Profile, id: &str, os: &str, arch: &str) -> Result<Valu
         "containerd":{"system":false,"user":false}, "hostResolver":{"enabled":false},
         "networks":[{"lima":"user-v2"}],
         "user":{"name":"horde","uid":10001,"home":"/home/horde","shell":"/bin/bash"},
-        "provision":[{"mode":"system","script":"#!/bin/sh\nset -eu\ncommand -v apt-get >/dev/null\nexport DEBIAN_FRONTEND=noninteractive\napt-get update\napt-get install -y docker.io docker-compose-v2 ca-certificates git\nusermod -aG docker horde\nsystemctl enable --now docker\ninstall -d -o horde -g horde -m 0700 /var/lib/horde\n"}]
+        "provision":[{"mode":"system","script":provision_script}],
+        "probes":[{"script":"#!/bin/sh\nset -eu\ncommand -v docker >/dev/null\nsudo docker compose version >/dev/null\nsudo systemctl is-active --quiet docker\nsudo test -d /var/lib/horde\nsudo docker info >/dev/null\n","hint":"Docker, Compose, and the Horde state directory must be ready. Inspect /var/log/cloud-init-output.log in the guest for package installation failures."}]
     }))
 }
 
@@ -114,20 +137,51 @@ pub fn prepare(root: &Path, p: &Profile, id: &str, os: &str, arch: &str) -> Resu
     let config = configuration(p, id, os, arch)?;
     let path = root.join("projects").join(&p.project).join("lima").join(id);
     std::fs::create_dir_all(&path)?;
-    let intent = json!({"project":p.project,"runtime":id,"profile":p,"config":config});
+    let mut intent = json!({"project":p.project,"runtime":id,"profile":p,"config":config});
     let manifest = path.join("ownership.json");
     if manifest.exists() {
         let metadata = std::fs::symlink_metadata(&manifest)?;
         ensure!(metadata.is_file(), "Lima ownership must be a regular file");
-        let prior: Value = serde_json::from_slice(&std::fs::read(&manifest)?)?;
+        let mut prior: Value = serde_json::from_slice(&std::fs::read(&manifest)?)?;
+        let resource = owned_resource(root, p, id)?;
+        // Program upgrades must not rewrite or invalidate a guest's recorded intent.
+        // Retried provisioning uses this same immutable configuration below.
+        ensure!(
+            prior["config"].is_object(),
+            "Lima stored configuration must be an object"
+        );
+        intent["config"] = prior["config"].clone();
+        prior
+            .as_object_mut()
+            .context("Lima ownership object required")?
+            .remove("resource");
         ensure!(
             prior == intent,
             "Lima project, resource and profile ownership are immutable"
         );
+        claim_resource(root, p, id, &resource)?;
     } else {
+        let resource = resource_name(p, id)?;
+        claim_resource(root, p, id, &resource)?;
+        intent["resource"] = json!(resource);
         crate::secrets::write_private(&manifest, intent.to_string().as_bytes())?;
     }
+    sync_directories(root, &path)?;
     Ok(path)
+}
+
+pub fn stored_configuration(owned: &Path) -> Result<Value> {
+    let manifest = owned.join("ownership.json");
+    ensure!(
+        std::fs::symlink_metadata(&manifest)?.is_file(),
+        "Lima ownership must be a regular file"
+    );
+    let intent: Value = serde_json::from_slice(&std::fs::read(manifest)?)?;
+    ensure!(
+        intent["config"].is_object(),
+        "Lima stored configuration must be an object"
+    );
+    Ok(intent["config"].clone())
 }
 
 pub fn firewall_rules(p: &Profile, uid: u32, os: &str) -> Result<String> {
@@ -258,8 +312,31 @@ async fn lima(p: &Profile, args: Vec<String>, input: Option<&[u8]>) -> Result<Va
     command(Path::new("/usr/bin/sudo"), &argv, input).await
 }
 
+async fn lookup_guest(p: &Profile, resource: &str) -> Result<Value> {
+    // A named lookup exits nonzero for absence. Only a successful complete list
+    // proves absence; command errors must retain the resource for reconciliation.
+    let inventory = lima(p, vec!["list".into(), "--quiet".into()], None).await?;
+    let names = inventory["output"]
+        .as_str()
+        .context("invalid Lima instance inventory")?;
+    ensure!(
+        names.lines().all(identifier),
+        "invalid Lima instance inventory"
+    );
+    if !names.lines().any(|name| name == resource) {
+        return Ok(json!([]));
+    }
+    lima(
+        p,
+        vec!["list".into(), "--json".into(), resource.into()],
+        None,
+    )
+    .await
+}
+
 async fn prerequisites(p: &Profile, install_guard: bool) -> Result<()> {
     validate(p)?;
+    validate_socket_path(&p.lima_home, "h00000000000", std::env::consts::OS)?;
     let identity = command(
         Path::new("/usr/bin/id"),
         &["-u".into(), p.lima_user.clone()],
@@ -427,8 +504,25 @@ pub async fn provision(
         std::env::consts::ARCH,
     )?;
     prerequisites(p, true).await?;
-    let name = format!("horde-{id}");
-    let config = configuration(p, id, std::env::consts::OS, std::env::consts::ARCH)?;
+    let name = owned_resource(&db.root, p, id)?;
+    validate_socket_path(&p.lima_home, &name, std::env::consts::OS)?;
+    let authorization = owned.join("creation-authorized");
+    let identity = json!({"project":p.project,"runtime":id,"resource":name});
+    if authorization.exists() {
+        ensure!(
+            serde_json::from_slice::<Value>(&std::fs::read(&authorization)?)? == identity,
+            "Lima creation authorization ownership mismatch"
+        );
+    } else {
+        let observed = lookup_guest(p, &name).await?;
+        ensure!(
+            observed == json!([]),
+            "Lima resource name collision: existing guest has no durable creation authorization"
+        );
+        crate::secrets::write_private(&authorization, identity.to_string().as_bytes())?;
+        sync_directories(&db.root, &owned)?;
+    }
+    let config = stored_configuration(&owned)?;
     lima(
         p,
         vec![
@@ -511,7 +605,7 @@ pub async fn lifecycle(
     action: &str,
 ) -> Result<Value> {
     ensure!(
-        resource == format!("horde-{id}"),
+        resource == resource_name(p, id)? || resource == format!("horde-{id}"),
         "Lima resource ownership mismatch"
     );
     let owned = db
@@ -525,6 +619,10 @@ pub async fn lifecycle(
         owned.is_file(),
         "Lima resource has no durable ownership intent"
     );
+    ensure!(
+        resource == owned_resource(&db.root, p, id)?,
+        "Lima resource ownership mismatch"
+    );
     prepare(
         &db.root,
         p,
@@ -535,12 +633,30 @@ pub async fn lifecycle(
     if ["runtime_start", "runtime_reconcile"].contains(&action) {
         guard(p, "verify").await?;
     }
-    let object = lima(
-        p,
-        vec!["list".into(), "--json".into(), resource.into()],
-        None,
-    )
-    .await?;
+    if action == "runtime_start" {
+        validate_socket_path(&p.lima_home, resource, std::env::consts::OS)?;
+    }
+    let object = lookup_guest(p, resource).await;
+    let object = match existing_guest(object, resource, action)? {
+        Some(object) => object,
+        None => {
+            return Ok(
+                json!({"project":p.project,"resource":resource,"state":"removed","already_absent":true}),
+            );
+        }
+    };
+    if resource != format!("horde-{id}") {
+        let authorization = owned
+            .parent()
+            .context("Lima ownership directory")?
+            .join("creation-authorized");
+        let identity = json!({"project":p.project,"runtime":id,"resource":resource});
+        ensure!(
+            authorization.is_file()
+                && serde_json::from_slice::<Value>(&std::fs::read(authorization)?)? == identity,
+            "Lima resource name collision: existing guest has no durable creation authorization"
+        );
+    }
     ensure!(
         object["name"] == resource
             || object
@@ -586,6 +702,26 @@ pub async fn lifecycle(
     }
 }
 
+fn existing_guest(result: Result<Value>, resource: &str, action: &str) -> Result<Option<Value>> {
+    let object = result?;
+    let absent = object.as_array().is_some_and(Vec::is_empty) || object == json!({"output":""});
+    if absent {
+        ensure!(
+            action == "runtime_destroy",
+            "Lima owned guest is absent; only destroy may release its reservation"
+        );
+        return Ok(None);
+    }
+    ensure!(
+        object["name"] == resource
+            || object
+                .as_array()
+                .is_some_and(|items| items.len() == 1 && items[0]["name"] == resource),
+        "Lima instance identity mismatch"
+    );
+    Ok(Some(object))
+}
+
 async fn verify_running(p: &Profile, name: &str) -> Result<()> {
     if let Err(error) = guard(p, "verify").await {
         let stopped = lima(p, vec!["stop".into(), "--force".into(), name.into()], None).await;
@@ -596,4 +732,35 @@ async fn verify_running(p: &Profile, name: &str) -> Result<()> {
         return Err(error.context("host network verification failed; guest stopped"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[test]
+    fn only_confirmed_absence_can_complete_destroy() {
+        assert!(
+            existing_guest(Ok(json!([])), "h123", "runtime_destroy")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            existing_guest(Ok(json!({"output":""})), "h123", "runtime_destroy")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            existing_guest(
+                Err(anyhow::anyhow!("list failed")),
+                "h123",
+                "runtime_destroy"
+            )
+            .is_err()
+        );
+        assert!(
+            existing_guest(Ok(json!({"output":"warning"})), "h123", "runtime_destroy").is_err()
+        );
+        assert!(existing_guest(Ok(json!([])), "h123", "runtime_start").is_err());
+        assert!(existing_guest(Ok(json!({"name":"other"})), "h123", "runtime_destroy").is_err());
+    }
 }

@@ -384,6 +384,9 @@ fn presence(root: &std::path::Path, peer: &str, packet: &str) -> Result<Option<S
         }
         crate::capacity::observe(&db, &snapshot)?;
     }
+    if let Some(status) = value.get("status") {
+        crate::enrollment::heartbeat(&db, peer, status)?;
+    }
     Ok(value
         .get("name")
         .and_then(Value::as_str)
@@ -418,6 +421,97 @@ fn account_visible(db: &crate::store::Store, peer: &str, account: &str) -> Resul
 #[cfg(test)]
 mod connection_presence_tests {
     use super::*;
+    #[test]
+    fn authenticated_heartbeat_restores_only_active_provisioned_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let db = crate::store::Store::open(root.path()).unwrap();
+        for id in ["worker", "other"] {
+            db.conn.execute("INSERT INTO managed_runtimes(id,profile,spec,state,created) VALUES(?,'test','{}','provisioned',0)", [id]).unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO runtime_enrollments VALUES(?1,?1,'',9999999999,'active')",
+                    [id],
+                )
+                .unwrap();
+        }
+        let packet =
+            json!({"runtime":"other","status":{"pid":123,"version":"test","concurrency":2}})
+                .to_string();
+        let state = |id: &str| {
+            db.rows("SELECT state FROM managed_runtimes WHERE id=?", &[&id])
+                .unwrap()[0]["state"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(
+            state("worker"),
+            "provisioned",
+            "stored enrollment alone is not readiness"
+        );
+        presence(root.path(), "worker", &packet).unwrap();
+        assert_eq!(state("worker"), "ready");
+        assert_eq!(
+            state("other"),
+            "provisioned",
+            "packet identity cannot replace authenticated peer"
+        );
+        for held in ["stopped", "removed", "uncertain", "requested"] {
+            db.conn
+                .execute(
+                    "UPDATE managed_runtimes SET state=? WHERE id='worker'",
+                    [held],
+                )
+                .unwrap();
+            presence(root.path(), "worker", &packet).unwrap();
+            assert_eq!(state("worker"), held);
+        }
+        db.conn
+            .execute(
+                "UPDATE managed_runtimes SET state='provisioned' WHERE id='worker'",
+                [],
+            )
+            .unwrap();
+        for enrollment in ["pending", "revoked"] {
+            db.conn
+                .execute(
+                    "UPDATE runtime_enrollments SET state=? WHERE runtime='worker'",
+                    [enrollment],
+                )
+                .unwrap();
+            presence(root.path(), "worker", &packet).unwrap();
+            assert_eq!(state("worker"), "provisioned");
+        }
+        db.conn
+            .execute(
+                "UPDATE runtime_enrollments SET state='active' WHERE runtime='worker'",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE managed_runtimes SET error='lifecycle outcome uncertain' WHERE id='worker'",
+                [],
+            )
+            .unwrap();
+        presence(root.path(), "worker", &packet).unwrap();
+        assert_eq!(
+            state("worker"),
+            "provisioned",
+            "heartbeat cannot resolve a provider operation error"
+        );
+        db.conn
+            .execute(
+                "UPDATE managed_runtimes SET error=NULL WHERE id='worker'",
+                [],
+            )
+            .unwrap();
+        presence(root.path(), "worker", r#"{"status":{}}"#).unwrap();
+        assert_eq!(state("worker"), "provisioned");
+        let malformed = json!({"status":{"pid":123,"version":"test","concurrency":2},"accounts":[{"snapshot":false}]}).to_string();
+        assert!(presence(root.path(), "worker", &malformed).is_err());
+        assert_eq!(state("worker"), "provisioned");
+    }
     #[test]
     fn connection_status_is_process_bound_and_removed_on_disconnect() {
         let root = tempfile::tempdir().unwrap();
