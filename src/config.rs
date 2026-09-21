@@ -55,6 +55,16 @@ pub enum NativeContextMode {
     Active,
 }
 
+/// Operator authorization for Jev-guided browser tests.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserTestMode {
+    #[default]
+    Disabled,
+    Shadow,
+    Active,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct CapabilityGuidance {
@@ -70,6 +80,7 @@ pub struct Decision {
     /// Opt in to advisory review of durable workflow checkpoints.
     pub review_enabled: bool,
     pub native_context_mode: NativeContextMode,
+    pub browser_test_mode: BrowserTestMode,
     /// Optional hard ceiling for serialized native requests, in bytes.
     pub native_context_max_request_bytes: usize,
     pub native_context_trigger_bytes: usize,
@@ -92,6 +103,7 @@ impl Default for Decision {
             mode: DecisionMode::Disabled,
             review_enabled: false,
             native_context_mode: NativeContextMode::Disabled,
+            browser_test_mode: BrowserTestMode::Disabled,
             native_context_max_request_bytes: 0,
             native_context_trigger_bytes: 64 * 1024,
             native_context_min_savings_bytes: 16 * 1024,
@@ -114,6 +126,9 @@ impl Decision {
         if self.mode == DecisionMode::Disabled {
             if self.native_context_mode != NativeContextMode::Disabled {
                 bail!("native context pruning requires decision.mode=shadow");
+            }
+            if self.browser_test_mode != BrowserTestMode::Disabled {
+                bail!("browser testing requires decision.mode=shadow");
             }
             return Ok(());
         }
@@ -565,6 +580,7 @@ provider = "simulated"
 # mode = "shadow"
 # review_enabled = true # advisory work-product reviews; false by default
 # native_context_mode = "shadow" # disabled by default; active applies verified pruning
+# browser_test_mode = "shadow" # disabled by default; active runs observed actions
 # native_context_min_savings_bytes = 16384
 # native_context_trigger_bytes = 65536
 # native_context_min_savings_ratio_percent = 15

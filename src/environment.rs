@@ -22,6 +22,8 @@ pub struct Environment {
     /// Test command argv; required for both process and Compose runners.
     #[schemars(length(min = 1))]
     pub test: Vec<String>,
+    /// Optional checked-in browser test spec. `test` remains the fallback command.
+    pub browser_test: Option<String>,
     pub ready_url: String,
     pub compose_file: String,
     pub services: Vec<String>,
@@ -45,6 +47,7 @@ impl Default for Environment {
             runner: "process".into(),
             start: vec![],
             test: vec![],
+            browser_test: None,
             ready_url: "http://127.0.0.1:${PORT}/".into(),
             compose_file: "compose.yaml".into(),
             services: vec![],
@@ -71,6 +74,9 @@ impl Environment {
             "invalid app timeout"
         );
         ensure!(!self.test.is_empty(), "environment requires a test command");
+        if let Some(path) = &self.browser_test {
+            crate::store::scope(path)?;
+        }
         ensure!(
             self.runner != "process" || !self.start.is_empty(),
             "process environment requires a start command"
@@ -217,6 +223,7 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
     // port during the window between closing the listener and the app binding.
     let (listener, port, _reserved) = reserve_port()?;
     let mut values = secrets::values(i.db, i.task)?;
+    let bundle_values = values.clone();
     if spec.runner == "process" {
         values.insert("PORT".into(), port.to_string());
     }
@@ -246,6 +253,13 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
     let mut compose = None;
     let mut child = None;
     let mut logs = None;
+    let browser_authorized = spec.browser_test.is_some()
+        && i.settings.decision.mode == crate::config::DecisionMode::Shadow
+        && i.settings.decision.browser_test_mode != crate::config::BrowserTestMode::Disabled
+        && crate::projects::task_project(i.db, i.task)
+            .and_then(|project| crate::config::Settings::load_project_user(i.db, &project))
+            .is_ok_and(|current| current.decision == i.settings.decision);
+    let mut tested_commit = None;
     let operation = async {
         tokio::time::timeout(Duration::from_secs(spec.timeout_seconds), async {
             loop {
@@ -504,8 +518,15 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
             "UPDATE app_environments SET state='testing' WHERE id=?",
             [&eid],
         )?;
+        let browser_evidence = scratch.join("browser-evidence");
+        std::fs::create_dir_all(&browser_evidence)?;
+        std::fs::set_permissions(&browser_evidence, std::fs::Permissions::from_mode(0o700))?;
         let mut test_values = values.clone();
         test_values.insert("HORDE_APP_URL".into(), endpoint.clone());
+        test_values.insert(
+            "HORDE_BROWSER_EVIDENCE_DIR".into(),
+            browser_evidence.to_string_lossy().into_owned(),
+        );
         test_values.insert("HORDE_COMPOSE_PROJECT".into(), eid.clone());
         if let Some(base) = &compose {
             test_values.insert(
@@ -513,14 +534,72 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
                 base.last().cloned().unwrap_or_default(),
             );
         }
-        let result = invocation_command(
-            i,
-            &substitute(&spec.test, port),
-            i.workspace,
-            &test_values,
-            spec.timeout_seconds,
-        )
-        .await?;
+        tested_commit = if browser_authorized {
+            Some(crate::browser::verified_commit(i.workspace)?)
+        } else {
+            clean_command("git")
+                .args(["rev-parse", "--verify", "HEAD"])
+                .current_dir(i.workspace)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map(|value| value.trim().to_owned())
+        };
+        let browser_evidence = scratch.join("browser-evidence");
+        let browser_outcome = if let Some(path) = &spec.browser_test
+            && browser_authorized
+        {
+            ensure!(
+                !endpoint.is_empty(),
+                "browser test requires a published app URL"
+            );
+            Some(
+                crate::browser::run(
+                    i,
+                    &eid,
+                    std::path::Path::new(path),
+                    &endpoint,
+                    &browser_evidence,
+                    &bundle_values,
+                    tested_commit.as_deref().context("tested commit")?,
+                )
+                .await?,
+            )
+        } else if spec.browser_test.is_some() {
+            Some(crate::browser::BrowserOutcome::Fallback(
+                "operator browser decisions disabled".into(),
+            ))
+        } else {
+            None
+        };
+        let result = match browser_outcome {
+            Some(crate::browser::BrowserOutcome::Passed(report)) => {
+                json!({"success":true,"browser":report})
+            }
+            Some(crate::browser::BrowserOutcome::Fallback(reason)) => {
+                let mut report = invocation_command(
+                    i,
+                    &substitute(&spec.test, port),
+                    i.workspace,
+                    &test_values,
+                    spec.timeout_seconds,
+                )
+                .await?;
+                report["browser_fallback_reason"] = json!(reason);
+                report
+            }
+            None => {
+                invocation_command(
+                    i,
+                    &substitute(&spec.test, port),
+                    i.workspace,
+                    &test_values,
+                    spec.timeout_seconds,
+                )
+                .await?
+            }
+        };
         ensure!(
             result["success"] == true,
             "application test failed: {}",
@@ -528,15 +607,42 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
         );
         Ok::<_, anyhow::Error>(result)
     };
-    let result = tokio::time::timeout(Duration::from_secs(spec.timeout_seconds), operation)
+    let mut result = tokio::time::timeout(Duration::from_secs(spec.timeout_seconds), operation)
         .await
         .map_err(|_| anyhow::anyhow!("application environment lifetime expired"))
         .and_then(|r| r);
+    if browser_authorized {
+        match crate::browser::verified_commit(i.workspace) {
+            Ok(after) if Some(after.as_str()) == tested_commit.as_deref() => {}
+            Ok(_) => {
+                result = Err(anyhow::anyhow!(
+                    "browser workspace commit changed during test"
+                ))
+            }
+            Err(error) => result = Err(error),
+        }
+    }
     i.db.conn.execute(
         "UPDATE app_environments SET state='cleanup_pending' WHERE id=?",
         [&eid],
     )?;
-    let mut evidence = json!({"test":match &result{Ok(v)=>v.clone(),Err(e)=>json!({"error":e.to_string()})},"endpoint":endpoint});
+    let mut evidence = json!({"test":match &result{Ok(v)=>v.clone(),Err(e)=>json!({"error":e.to_string()})},"endpoint":endpoint,"tested_commit":tested_commit});
+    match collect_browser_evidence(
+        i,
+        &scratch.join("browser-evidence"),
+        &bundle_values,
+        tested_commit.as_deref(),
+        &eid,
+    ) {
+        Ok(Some(browser)) => evidence["browser"] = browser,
+        Ok(None) => {}
+        Err(error) => {
+            evidence["browser_evidence_error"] = json!(error.to_string());
+            if result.is_ok() {
+                result = Err(error);
+            }
+        }
+    }
     if let Some(mut c) = child {
         if let Some(pid) = owned.pid {
             unsafe {
@@ -595,6 +701,69 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
     Ok(
         json!({"accepted":true,"result":"Application started, became ready, passed tests, and was removed","environment":eid,"evidence":evidence}),
     )
+}
+fn collect_browser_evidence(
+    i: &Invocation<'_>,
+    dir: &std::path::Path,
+    values: &BTreeMap<String, String>,
+    commit: Option<&str>,
+    environment_id: &str,
+) -> Result<Option<Value>> {
+    let trace = dir.join("trace.json");
+    let screenshot = dir.join("screenshot.png");
+    if !trace.exists() {
+        ensure!(!screenshot.exists(), "browser screenshot has no trace");
+        return Ok(None);
+    }
+    let metadata = std::fs::symlink_metadata(&trace)?;
+    ensure!(
+        metadata.is_file() && metadata.len() <= 64 * 1024,
+        "invalid browser trace file"
+    );
+    let mut report: Value = serde_json::from_slice(&std::fs::read(&trace)?)?;
+    ensure!(report["trace"].is_array(), "browser trace requires steps");
+    if let Some(commit) = commit {
+        ensure!(
+            report["tested_commit"] == commit,
+            "browser trace tested a different commit"
+        );
+    }
+    report = secrets::redact_json(&report, values);
+    let inputs = json!({"tested_commit":commit,"attempt":i.attempt});
+    let trace_hash = i.db.artifact(
+        i.task,
+        None,
+        &format!("browser.{environment_id}.trace.json"),
+        &serde_json::to_vec(&report)?,
+        &inputs,
+        true,
+    )?;
+    crate::browser::link_trace(i.db, i.task, environment_id, i.attempt, &trace_hash)?;
+    let mut result = json!({"trace_hash":trace_hash,"tested_commit":commit});
+    if screenshot.exists() && values.values().any(|value| !value.is_empty()) {
+        result["screenshot"] = json!("withheld_because_application_bundle_contains_secrets");
+    } else if screenshot.exists() {
+        let metadata = std::fs::symlink_metadata(&screenshot)?;
+        ensure!(
+            metadata.is_file() && metadata.len() <= 4 * 1024 * 1024,
+            "invalid browser screenshot file"
+        );
+        let bytes = std::fs::read(&screenshot)?;
+        ensure!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "browser screenshot is not PNG"
+        );
+        let hash = i.db.artifact(
+            i.task,
+            None,
+            &format!("browser.{environment_id}.screenshot.png"),
+            &bytes,
+            &inputs,
+            true,
+        )?;
+        result["screenshot_hash"] = json!(hash);
+    }
+    Ok(Some(result))
 }
 pub fn validate_compose(config: &Value, spec: &Environment) -> Result<()> {
     for service in config["services"]

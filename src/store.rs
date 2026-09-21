@@ -168,6 +168,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         crate::decision::store::migrate(&conn)?;
         crate::decision::review::migrate(&conn)?;
         crate::native_context::migrate(&conn)?;
+        crate::browser::migrate(&conn)?;
         if version < 5 {
             crate::knowledge::migrate(&conn)?;
         }

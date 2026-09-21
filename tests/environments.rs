@@ -104,6 +104,69 @@ async fn process_environment_injects_secrets_tests_and_removes_resources() {
     );
 }
 #[tokio::test]
+async fn browser_trace_and_screenshot_are_saved_even_when_test_fails() {
+    for exit_code in [0, 2] {
+        let f = Fixture::new();
+        let has_secret = exit_code == 2;
+        let mut spec = process();
+        spec.test = vec![
+            "python3".into(),
+            "-c".into(),
+            format!(
+                "import json,os,pathlib,sys\np=pathlib.Path(os.environ['HORDE_BROWSER_EVIDENCE_DIR'])\np.joinpath('trace.json').write_text(json.dumps({{'trace':[{{'action':'click c1','secret':'{}'}}]}}))\np.joinpath('screenshot.png').write_bytes(b'\\x89PNG\\r\\n\\x1a\\nmock')\nsys.exit({exit_code})",
+                if has_secret {
+                    "fixture-sensitive-token"
+                } else {
+                    "public"
+                }
+            ),
+        ];
+        if has_secret {
+            let secret_dir = f.db.root.join("remote-secrets").join(&f.oid);
+            std::fs::create_dir_all(&secret_dir).unwrap();
+            horde::secrets::write_private(
+                &secret_dir.join(horde::store::hash(b"app")),
+                json!({"version":"pinned","values":{"APP_SECRET":"fixture-sensitive-token"}})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+            f.db.conn
+                .execute(
+                    "INSERT INTO task_bundles VALUES(?,'app','pinned')",
+                    [&f.oid],
+                )
+                .unwrap();
+        }
+        let outcome = f.run(&spec).await;
+        assert_eq!(outcome.is_ok(), exit_code == 0);
+        let rows =
+            f.db.rows("SELECT state,evidence FROM app_environments", &[])
+                .unwrap();
+        assert_eq!(rows[0]["state"], "removed");
+        let evidence: serde_json::Value =
+            serde_json::from_str(rows[0]["evidence"].as_str().unwrap()).unwrap();
+        let trace_hash = evidence["browser"]["trace_hash"].as_str().unwrap();
+        let screenshot_hash = evidence["browser"]["screenshot_hash"].as_str();
+        assert!(!evidence.to_string().contains("fixture-sensitive-token"));
+        let trace = std::fs::read_to_string(f.db.root.join("artifacts").join(trace_hash)).unwrap();
+        assert!(!trace.contains("fixture-sensitive-token"));
+        if has_secret {
+            assert!(screenshot_hash.is_none());
+            assert_eq!(
+                evidence["browser"]["screenshot"],
+                "withheld_because_application_bundle_contains_secrets"
+            );
+        } else {
+            assert_eq!(
+                &std::fs::read(f.db.root.join("artifacts").join(screenshot_hash.unwrap())).unwrap()
+                    [..8],
+                b"\x89PNG\r\n\x1a\n"
+            );
+        }
+    }
+}
+#[tokio::test]
 // The allocated port is released just before the app starts, so a busy machine
 // can take it in between. That is not a defect in the app, and the error must
 // not read like one. Hand the port to a process that outlives the app to make

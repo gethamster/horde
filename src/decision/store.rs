@@ -219,7 +219,11 @@ pub fn list(db: &Store, task: &str, after: i64, limit: i64) -> Result<Vec<Value>
         "decision limit must be between 1 and 200"
     );
     db.rows(
-        "SELECT d.*, CASE WHEN e.state='used' THEN 1 ELSE d.applied END AS effective_applied FROM decisions d LEFT JOIN native_context_epochs e ON e.decision=d.id WHERE d.task=? AND d.seq>? ORDER BY d.seq LIMIT ?",
+        "SELECT d.*, CASE WHEN e.state='used' OR b.state='confirmed' THEN 1 ELSE d.applied END AS effective_applied,
+         CASE WHEN b.decision IS NULL THEN NULL ELSE json_object('state',b.state,'environment',b.environment,'attempt',b.attempt,'tested_commit',b.tested_commit,'context_version',b.context_version,'observation_version',b.observation_version,'action',b.action,'target_id',b.target_id,'trace_hash',b.trace_hash) END AS browser_action
+         FROM decisions d LEFT JOIN native_context_epochs e ON e.decision=d.id
+         LEFT JOIN browser_action_receipts b ON b.decision=d.id
+         WHERE d.task=? AND d.seq>? ORDER BY d.seq LIMIT ?",
         &[&task, &after, &limit],
     )?
     .into_iter()
@@ -227,6 +231,9 @@ pub fn list(db: &Store, task: &str, after: i64, limit: i64) -> Result<Vec<Value>
         let mut row = parse(row)?;
         let applied = row.as_object_mut().context("decision row")?.remove("effective_applied").context("effective applied state")?;
         row["applied"] = applied;
+        if let Some(raw) = row["browser_action"].as_str() {
+            row["browser_action"] = serde_json::from_str(raw).context("invalid browser action receipt")?;
+        }
         Ok(row)
     })
     .collect()
