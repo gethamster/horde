@@ -381,6 +381,7 @@ mod capacity_failure_tests {
 }
 
 async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
+    let generation = crate::capacity::credential_generation(i.db, config)?;
     if !i.settings.allow_commands {
         bail!(
             "external harnesses require allow_commands=true; use the native executor for file-only authority"
@@ -533,7 +534,7 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     let mut usage = Value::Null;
     if config.kind == "claude" {
         let event: Value = serde_json::from_str(stdout).context("malformed Claude output")?;
-        crate::capacity::ingest(i.db, config, &event)?;
+        crate::capacity::ingest_current(i.db, config, generation.as_deref(), &event)?;
         if event["is_error"] == true {
             let reason = event["result"].as_str().unwrap_or("").trim().to_owned();
             if is_capacity_message(&reason) {
@@ -549,7 +550,7 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     } else {
         for line in stdout.lines().filter(|x| !x.trim().is_empty()) {
             let event: Value = serde_json::from_str(line).context("malformed Codex JSONL")?;
-            crate::capacity::ingest(i.db, config, &event)?;
+            crate::capacity::ingest_current(i.db, config, generation.as_deref(), &event)?;
             match event["type"].as_str() {
                 Some("item.completed") if event["item"]["type"] == "agent_message" => {
                     result = event["item"]["text"].as_str().map(str::to_owned)
@@ -803,6 +804,7 @@ pub fn record_tool_completed(
 
 async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     let catalog = probe(config).await?;
+    let generation = crate::capacity::credential_generation(i.db, config)?;
     let key = crate::config::credential(&config.api_key_env)?;
     let model = catalog["model"].as_str().context("resolved model")?;
     i.db.event(
@@ -928,9 +930,10 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         if i.settings.decision.native_context_mode == crate::config::NativeContextMode::Active {
             crate::native_context::mark_used(i.db, i.task, i.attempt, &messages.hash()?)?;
         }
-        crate::capacity::ingest_headers(
+        crate::capacity::ingest_headers_current(
             i.db,
             config,
+            generation.as_deref(),
             response.headers(),
             response.status().as_u16(),
         )?;
