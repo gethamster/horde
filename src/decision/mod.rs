@@ -1,6 +1,7 @@
 //! Tool-free, advisory decisions. A decision can record a proposal, but it has
 //! no authority to change an executor, consume a worker attempt, or perform an
 //! external mutation.
+pub mod review;
 pub mod shadow;
 pub mod store;
 pub mod typesafe;

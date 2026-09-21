@@ -88,6 +88,14 @@ enum Commands {
         #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(i64).range(1..=200))]
         limit: i64,
     },
+    /// Inspect advisory work-product reviews and their current freshness.
+    Reviews {
+        task: String,
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(i64).range(1..=200))]
+        limit: i64,
+    },
     /// Print a task's durable events; with --follow, stream them as NDJSON until the task ends.
     Events {
         task: String,
@@ -761,6 +769,11 @@ async fn main() -> Result<()> {
         Commands::Decisions { task, after, limit } => request(
             &root,
             "decisions",
+            json!({"task":task,"after":after,"limit":limit}),
+        )?,
+        Commands::Reviews { task, after, limit } => request(
+            &root,
+            "reviews",
             json!({"task":task,"after":after,"limit":limit}),
         )?,
         Commands::List { all_projects } => {
