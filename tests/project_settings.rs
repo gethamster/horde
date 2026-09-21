@@ -38,6 +38,17 @@ fn repository_cannot_replace_project_credentials_or_enable_delivery() {
             .to_string()
             .contains("delivery")
     );
+    std::fs::write(
+        repo.join(".horde/horde.toml"),
+        "[decision]\nmode='disabled'\n",
+    )
+    .unwrap();
+    assert!(
+        Settings::load_project(&db, &project, &repo)
+            .unwrap_err()
+            .to_string()
+            .contains("decision")
+    );
 }
 
 #[test]

@@ -310,6 +310,12 @@ fn additive_storage_is_paginated_cache_scoped_and_interrupts_running_rows() {
             [serde_json::to_string(&Settings::default()).unwrap()],
         )
         .unwrap();
+    db.conn
+        .execute(
+            "INSERT INTO task_projects VALUES('task','default',NULL)",
+            [],
+        )
+        .unwrap();
     horde::decision::store::enqueue(
         &db,
         &horde::decision::store::QueuedDecision {
@@ -388,6 +394,12 @@ fn decision_inspection_and_metrics_are_bounded_and_keep_unknown_cost_null() {
         .execute(
             "INSERT INTO tasks VALUES('task','objective','.','running',?,'{}',0)",
             [serde_json::to_string(&Settings::default()).unwrap()],
+        )
+        .unwrap();
+    db.conn
+        .execute(
+            "INSERT INTO task_projects VALUES('task','default',NULL)",
+            [],
         )
         .unwrap();
     let row = horde::decision::store::QueuedDecision {
@@ -616,6 +628,107 @@ async fn missing_operator_guidance_abstains_without_a_provider_request() {
             assert_eq!(decision["proposed"], "abstain");
             assert_eq!(decision["abstention"], 1);
             assert_eq!(decision["provider_attempts"], 0);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), bodies.recv())
+                    .await
+                    .is_err()
+            );
+            unsafe { std::env::remove_var(key) };
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shadow_routing_uses_only_the_tasks_project_runtime_grants() {
+    let _lock = CONFIG_LOCK.lock().await;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (base_url, mut bodies) = server(vec![
+                ("200 OK", shadow_response(), 0),
+                ("200 OK", shadow_response(), 0),
+            ])
+            .await;
+            let key = format!("HORDE_DECISION_PROJECT_KEY_{}", std::process::id());
+            unsafe { std::env::set_var(&key, "project-test-secret") };
+            let decision = Decision {
+                mode: DecisionMode::Shadow,
+                base_url,
+                api_key_env: key.clone(),
+                capability_guidance: vec![CapabilityGuidance {
+                    runtime: "local".into(),
+                    capability: "simulated".into(),
+                    description: "Deterministic project work".into(),
+                }],
+                ..Decision::default()
+            };
+            let _host = OperatorConfig::install(&Decision::default());
+            let data = tempfile::tempdir().unwrap();
+            let db = Store::open(data.path()).unwrap();
+            let settings = Settings {
+                decision: decision.clone(),
+                default_template: "simulated".into(),
+                ..Settings::default()
+            };
+            let mut tasks = Vec::new();
+            for (slug, grant) in [("allowed", true), ("blocked", false)] {
+                let project =
+                    horde::projects::dispatch(&db, "project_create", &json!({"slug":slug}))
+                        .unwrap()
+                        .unwrap()["id"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned();
+                let root = horde::projects::storage_root(&db, &project).unwrap();
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(
+                    root.join("config.toml"),
+                    toml::to_string(&settings).unwrap(),
+                )
+                .unwrap();
+                if grant {
+                    horde::projects::dispatch(
+                        &db,
+                        "project_runtime_grant",
+                        &json!({"project":project,"runtime":"local"}),
+                    )
+                    .unwrap();
+                }
+                let repo = tempfile::tempdir().unwrap();
+                let plan = horde::template::compile(
+                    "simulated",
+                    &horde::template::load_templates(repo.path()).unwrap(),
+                    BTreeMap::from([("task".into(), "project work".into())]),
+                )
+                .unwrap();
+                let task = db
+                    .submit_project(&project, "project work", repo.path(), &settings, &plan)
+                    .unwrap();
+                tasks.push((task, repo));
+            }
+            let mut queue = horde::decision::shadow::Queue::default();
+            for (task, _) in &tasks {
+                let row = db.steps(task).unwrap().remove(0);
+                queue
+                    .enqueue(
+                        &db,
+                        horde::decision::shadow::Job::new(
+                            data.path().to_path_buf(),
+                            task.clone(),
+                            row,
+                            None,
+                            "simulated".into(),
+                            decision.clone(),
+                        ),
+                    )
+                    .unwrap();
+            }
+            drain(&mut queue, &db).await;
+            let allowed = horde::decision::store::list(&db, &tasks[0].0, 0, 10).unwrap();
+            let blocked = horde::decision::store::list(&db, &tasks[1].0, 0, 10).unwrap();
+            assert_eq!(allowed[0]["state"], "succeeded");
+            assert_eq!(blocked[0]["state"], "skipped");
+            let body = String::from_utf8(bodies.recv().await.unwrap()).unwrap();
+            assert!(body.contains("local/simulated"));
             assert!(
                 tokio::time::timeout(std::time::Duration::from_millis(100), bodies.recv())
                     .await
