@@ -430,6 +430,9 @@ enum RuntimeCommands {
 #[derive(Subcommand)]
 enum NetworkCommands {
     /// Create, inspect, or revoke credentials for automatic fleet enrollment.
+    ///
+    /// If the worker is reachable over Tailscale SSH, `network add user@host`
+    /// enrolls it in one command instead.
     Key {
         #[command(subcommand)]
         command: horde::fleet_enrollment::cli::KeyCommands,

@@ -12,6 +12,12 @@ Do not run `horde network listen` on an address already used by the daemon.
 
 ## Automatic fleet enrollment
 
+If the worker is reachable over Tailscale SSH, skip this manual flow and run
+`horde network add user@host` instead — see [Remote installation over
+SSH](#remote-installation-over-ssh) below. It installs Horde, enrolls, and
+starts the worker in one command. Use the credential-file flow here for
+Docker, Kubernetes, E2B, Daytona, VMs, or any worker without SSH access.
+
 A fleet credential lets workers join from Docker, Kubernetes, E2B, Daytona,
 VMs, or individual machines. Each worker generates its own private key and
 connects outbound to the controller. SSH is optional and is used only by the
