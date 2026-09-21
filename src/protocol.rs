@@ -110,6 +110,9 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             crate::orchestration::plan(db, &args)
         };
     }
+    if name == "provider_login" {
+        return crate::provider_login::dispatch(db, &args);
+    }
     if name == "agent_setup" {
         return crate::agent_setup::dispatch(db, &args);
     }

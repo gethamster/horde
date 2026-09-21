@@ -125,6 +125,30 @@ This is a cooperative, single-user runtime, not a hostile-code sandbox. The data
 
 Provider credentials are read by the daemon. Child commands receive an explicit environment allowlist, omitting API keys. Subscription harness authentication uses the installed CLI's credential store. API-backed harnesses use an invocation-scoped loopback broker that injects the real provider key upstream, restricts paths and configured models, and revokes its temporary token at invocation completion. Native arbitrary commands and external harness edits cannot be completely enforced before execution; their changes are inspected before integration. For stronger isolation, run the service under a dedicated OS account or inside an externally managed sandbox.
 
+Administrative `agent_setup` accepts an API key value or an environment/file
+reference and writes the credential separately from provider configuration.
+Explicit updates persist file priority for the named variable in private
+`credential-overrides.json`, so later invocations use the replacement even when
+the daemon inherited an older environment value. This file contains no keys.
+`provider_login` supervises an installed Codex or Claude login process without
+calling a model. Login sessions and bounded CLI output live in daemon memory;
+client disconnects do not end them. The calling agent relays login instructions
+and submits any requested authorization code. Deadline expiry, cancellation, and
+daemon shutdown stop the child process group. Private recovery receipts contain
+process identity only, so restart can clean up an interrupted process without
+replaying login input or persisting the conversation. Tuara uses the same session
+interface with an API key handoff: the agent relays the key-page URL, then submits
+the key for a bounded, non-redirecting account introspection request. Horde saves
+the key only after confirming API-key identity and `router:invoke` scope. The
+handoff uses no Tuara CLI, and its output never contains the key or HTTP body.
+
+Login success requires a successful CLI authentication-status check or Tuara
+key introspection. Effective
+API key changes and verified logins invalidate affected provider capacity
+observations while preserving local budgets. Unknown capacity permits another
+invocation but does not prove access or available quota. Account changes preserve
+task provider bindings, ownership, and recovery state.
+
 The native loop offers file reads, search, full-file writes, unified patches, command execution, and coordination. File tools reject path traversal and symlink traversal. The external Codex adapter uses workspace-write sandboxing and preapproves only the supplied coordination MCP server. Claude receives explicit allowed tools and its scoped MCP configuration. The runtime does not disable the harnesses' managed restrictions.
 
 ## Source map
@@ -138,6 +162,7 @@ The native loop offers file reads, search, full-file writes, unified patches, co
 - `template.rs`: composition, pinning, output references and contracts.
 - `delivery.rs`: GitHub/Actions/health reconciliation.
 - `metrics.rs`: reported usage, costs, latency and coordination counts.
+- `agent_setup.rs` / `provider_login.rs`: administrative setup and supervised provider sign-in.
 
 - `delegation.rs`: root limits, context sources, questions, caller receipts.
 - `secrets.rs` / `environment.rs`: app bundle inheritance, redaction, owned lifecycles.

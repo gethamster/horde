@@ -11,6 +11,7 @@ mod native_protocol;
 pub mod network;
 pub mod notify;
 pub mod protocol;
+pub mod provider_login;
 pub mod provisioning;
 pub mod runtime;
 pub mod store;
