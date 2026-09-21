@@ -235,7 +235,9 @@ pub fn task_workspace(db: &Store, oid: &str) -> Result<PathBuf> {
     use fs2::FileExt;
     let o = db.task(oid)?;
     let repo = Path::new(o["repo"].as_str().context("repo")?);
-    let dir = db.root.join("workspaces").join(oid);
+    let dir = crate::project_runtime::task_root(db, oid)?
+        .join("workspaces")
+        .join(oid);
     let path = dir.join("integrated");
     std::fs::create_dir_all(&dir)?;
     // Keep fetching, creation, recovery, and provenance under one task lock.
@@ -286,7 +288,10 @@ pub fn allocate(db: &Store, oid: &str, wid: &str) -> Result<PathBuf> {
         return Ok(path);
     }
     let integrated = task_workspace(db, oid)?;
-    let path = db.root.join("workspaces").join(oid).join(wid);
+    let path = crate::project_runtime::task_root(db, oid)?
+        .join("workspaces")
+        .join(oid)
+        .join(wid);
     let branch = format!("workers/{oid}/{wid}");
     if !path.exists() {
         let exists = run(

@@ -2,6 +2,7 @@ use horde::{
     config::Settings,
     environment::{self, Environment},
     executor::Invocation,
+    projects,
     store::Store,
     template,
 };
@@ -133,6 +134,15 @@ struct Fixture {
 }
 impl Fixture {
     fn new(base_url: &str, browser_mode: &str, budget: usize) -> Self {
+        Self::new_with_project(base_url, browser_mode, budget, false)
+    }
+
+    fn new_with_project(
+        base_url: &str,
+        browser_mode: &str,
+        budget: usize,
+        separate_project: bool,
+    ) -> Self {
         let repo = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         let config = tempfile::tempdir().unwrap();
@@ -145,9 +155,13 @@ impl Fixture {
         std::fs::create_dir_all(&horde_config).unwrap();
         std::fs::write(
             horde_config.join("config.toml"),
-            format!(
-                "[decision]\nmode='shadow'\nbrowser_test_mode='{browser_mode}'\nmax_decisions_per_task={budget}\nbackend='typesafe'\nbase_url='{base_url}'\napi_key_env='TYPESAFE_API_KEY'\n"
-            ),
+            if separate_project {
+                "[decision]\nmode='disabled'\n".to_owned()
+            } else {
+                format!(
+                    "[decision]\nmode='shadow'\nbrowser_test_mode='{browser_mode}'\nmax_decisions_per_task={budget}\nbase_url='{base_url}'\napi_key_env='TYPESAFE_API_KEY'\n"
+                )
+            },
         )
         .unwrap();
         let credential = horde_config.join("credentials.env");
@@ -179,16 +193,42 @@ impl Fixture {
             ],
         );
         let db = Store::open(&data.path().join("data")).unwrap();
-        let settings = Settings::load_user().unwrap();
+        let project = separate_project.then(|| {
+            let project = projects::dispatch(&db, "project_create", &json!({"slug":"browser"}))
+                .unwrap()
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let directory = projects::storage_root(&db, &project).unwrap();
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join("config.toml"),
+                format!(
+                    "[decision]\nmode='shadow'\nbrowser_test_mode='{browser_mode}'\nmax_decisions_per_task={budget}\nbase_url='{base_url}'\napi_key_env='TYPESAFE_API_KEY'\n"
+                ),
+            )
+            .unwrap();
+            project
+        });
+        let settings = match project.as_deref() {
+            Some(project) => Settings::load_project_user(&db, project).unwrap(),
+            None => Settings::load_user().unwrap(),
+        };
         let plan = template::compile(
             "simulated",
             &template::load_templates(workspace).unwrap(),
             BTreeMap::from([("task".into(), "browser test".into())]),
         )
         .unwrap();
-        let task = db
-            .submit("browser test", workspace, &settings, &plan)
-            .unwrap();
+        let task = match project.as_deref() {
+            Some(project) => db
+                .submit_project(project, "browser test", workspace, &settings, &plan)
+                .unwrap(),
+            None => db
+                .submit("browser test", workspace, &settings, &plan)
+                .unwrap(),
+        };
         let worker = db.register(&task, None).unwrap();
         let step = serde_json::from_value(json!({"id":"app","kind":"environment"})).unwrap();
         Self {
@@ -552,5 +592,48 @@ async fn browser_environment_success_false_done_and_fallback() {
     assert_eq!(listed[0]["applied"], 0);
     assert_eq!(listed[0]["browser_action"]["state"], "pending");
     assert!(listed[0]["browser_action"]["trace_hash"].is_string());
+    server.join().unwrap();
+
+    // Project-owned browser decisions must work even when the default project
+    // has disabled them. A pinned task must stop when its own project
+    // authorization is removed, regardless of global settings.
+    let (url, server) = decision_server(vec![("click c0", 0.95), ("DONE", 0.95)]);
+    let f = Fixture::new_with_project(&url, "active", 64, true);
+    assert_ne!(projects::task_project(&f.db, &f.task).unwrap(), "default");
+    assert_eq!(
+        Settings::load_user().unwrap().decision.mode,
+        horde::config::DecisionMode::Disabled
+    );
+    let result = f.run().await.unwrap();
+    assert!(result["evidence"]["browser"]["screenshot_hash"].is_string());
+    server.join().unwrap();
+
+    let (url, server) = decision_server(vec![]);
+    let f = Fixture::new_with_project(&url, "active", 64, true);
+    let project = projects::task_project(&f.db, &f.task).unwrap();
+    std::fs::write(
+        projects::storage_root(&f.db, &project)
+            .unwrap()
+            .join("config.toml"),
+        "[decision]\nmode='disabled'\n",
+    )
+    .unwrap();
+    std::fs::write(
+        f._config.path().join("horde/config.toml"),
+        format!("[decision]\nmode='shadow'\nbrowser_test_mode='active'\nbase_url='{url}'\napi_key_env='TYPESAFE_API_KEY'\n"),
+    )
+    .unwrap();
+    let result = f.run().await.unwrap();
+    assert!(
+        result["evidence"]["test"]["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("fallback ran")
+    );
+    assert!(
+        horde::decision::store::list(&f.db, &f.task, 0, 20)
+            .unwrap()
+            .is_empty()
+    );
     server.join().unwrap();
 }

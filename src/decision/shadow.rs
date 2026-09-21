@@ -399,7 +399,8 @@ fn prepare(job: &Job) -> Result<Prepared> {
         snapshot.decision == job.decision,
         "task decision pin changed"
     );
-    let current = Settings::load_user()?;
+    let project = crate::projects::task_project(&db, &job.task)?;
+    let current = Settings::load_project_user(&db, &project)?;
     ensure!(
         authorized(&snapshot, &current),
         "operator decision pin changed"
@@ -411,7 +412,11 @@ fn prepare(job: &Job) -> Result<Prepared> {
     ensure!(!credential.is_empty(), "decision credential unavailable");
     redactions.insert("__decision_credential".into(), credential);
 
-    let inventory = credit_own_attempt(&db, job, crate::capabilities::inventory(&db)?)?;
+    let inventory = credit_own_attempt(
+        &db,
+        job,
+        crate::capabilities::inventory_project(&db, &project)?,
+    )?;
     let policy = crate::execution_selection::policy(&db, &job.task)?;
     let baseline = baseline(policy.as_ref(), &inventory, &job.role)?;
     let catalog = candidates(&inventory, policy.as_ref(), &snapshot, &job.role)?;
@@ -562,7 +567,7 @@ async fn run(job: Job) {
         return;
     };
     let started = Instant::now();
-    let outcome = match DecisionHttpClient::new(*config) {
+    let outcome = match DecisionHttpClient::new_project(*config, &root, &task) {
         Ok(backend) => backend
             .decide_counted_with(&request, |_| {
                 if let Ok(db) = Store::open(&root) {

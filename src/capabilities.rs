@@ -38,6 +38,12 @@ struct Availability {
 struct Capability {
     id: String,
     configuration_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    endpoint_hash: Option<String>,
     executor: String,
     provider: String,
     model: Option<String>,
@@ -61,6 +67,14 @@ struct Protocol {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Platform {
+    os: String,
+    arch: String,
+    docker: bool,
+    isolation: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RuntimeInventory {
     runtime: String,
     name: Option<String>,
@@ -72,6 +86,8 @@ struct RuntimeInventory {
     protocol: Protocol,
     capacity: Capacity,
     capabilities: Vec<Capability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    platform: Option<Platform>,
 }
 
 fn label(value: &str, maximum: usize) -> Result<()> {
@@ -101,6 +117,14 @@ fn validate(record: &RuntimeInventory) -> Result<()> {
     );
     label(&record.runtime, 256)?;
     label(&record.version, 64)?;
+    if let Some(platform) = &record.platform {
+        label(&platform.os, 32)?;
+        label(&platform.arch, 32)?;
+        ensure!(
+            ["native", "lima"].contains(&platform.isolation.as_str()),
+            "unsupported runtime isolation"
+        );
+    }
     if let Some(name) = &record.name {
         crate::runtime_directory::validate_name(name)?;
     }
@@ -109,7 +133,7 @@ fn validate(record: &RuntimeInventory) -> Result<()> {
         "capability inventory too large"
     );
     ensure!(
-        (1..=64).contains(&record.capacity.concurrency)
+        record.capacity.concurrency <= 64
             && record.capacity.active <= 1024
             && record.capacity.available <= record.capacity.concurrency,
         "invalid capability capacity"
@@ -146,6 +170,21 @@ fn validate(record: &RuntimeInventory) -> Result<()> {
             &capability.kind,
         ] {
             label(value, 128)?;
+        }
+        if let Some(account) = &capability.account {
+            label(account, 128)?;
+        }
+        if let Some(mode) = &capability.auth_mode {
+            ensure!(
+                ["api", "login"].contains(&mode.as_str()),
+                "invalid capability authentication mode"
+            );
+        }
+        if let Some(hash) = &capability.endpoint_hash {
+            ensure!(
+                hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "invalid capability endpoint fingerprint"
+            );
         }
         if let Some(model) = &capability.model {
             label(model, 256)?;
@@ -264,6 +303,9 @@ fn capability(
     Ok(Capability {
         id: id.into(),
         configuration_hash: configuration_hash(config)?,
+        account: config.account.clone(),
+        auth_mode: Some(config.auth_mode.clone()),
+        endpoint_hash: Some(crate::store::hash(config.base_url.as_bytes())),
         executor: id.into(),
         provider: provider.into(),
         model: config.model.clone(),
@@ -281,18 +323,9 @@ fn local_from(
     settings: &Settings,
     credential: impl Fn(&str) -> Evidence,
 ) -> Result<RuntimeInventory> {
-    let path = db.root.join("network-runtime.toml");
-    let runtime = if path.exists() {
-        crate::network::NetworkConfig::load(Some(&path))?.runtime_id
-    } else {
-        "local".into()
-    };
-    let concurrency = management::limit(db)?;
-    let active: usize = db.conn.query_row(
-        "SELECT COUNT(*) FROM attempts WHERE state='running'",
-        [],
-        |row| row.get(0),
-    )?;
+    let runtime = crate::projects::local_runtime(db)?;
+    let concurrency = crate::project_runtime::host_limit(db)?;
+    let active = crate::project_runtime::host_active(db)?;
     let draining = management::draining(db)?;
     let capabilities = settings
         .executors
@@ -301,7 +334,16 @@ fn local_from(
             let resolved = settings
                 .executor(id)
                 .context("capability provider is not configured")?;
-            capability(id, executor.provider(), &resolved, &credential)
+            let mut record = capability(id, executor.provider(), &resolved, &credential)?;
+            if let Some(account) = resolved.account.as_deref() {
+                let profiles = db.rows("SELECT a.authenticated,p.credential_version,p.expires_at FROM accounts a JOIN auth_profiles p ON p.account=a.id WHERE a.id=?", &[&account])?;
+                if let Some(profile) = profiles.first() {
+                    let usable = profile["authenticated"] == 1 && profile["credential_version"].as_i64().is_some_and(|version| version > 0) && profile["expires_at"].as_i64().is_none_or(|expiry| expiry > now());
+                    record.availability.authentication = if usable { Evidence::CredentialPresent } else { Evidence::Missing };
+                    record.available = available(&record.kind, record.availability.executable, record.availability.authentication);
+                }
+            }
+            Ok(record)
         })
         .collect::<Result<Vec<_>>>()?;
     let record = RuntimeInventory {
@@ -318,6 +360,8 @@ fn local_from(
                 "heartbeat_ack".into(),
                 "capability_inventory".into(),
                 "execution_selection".into(),
+                "projects".into(),
+                "lima_host_operations".into(),
                 "runtime_skills_update".into(),
             ],
         },
@@ -332,12 +376,21 @@ fn local_from(
             draining,
         },
         capabilities,
+        platform: Some(Platform {
+            os: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+            docker: executable("docker") == Evidence::Available,
+            isolation: management::value(db, "isolation")?.unwrap_or_else(|| "native".into()),
+        }),
     };
     validate(&record)?;
     Ok(record)
 }
 
 pub fn local(db: &Store) -> Result<Value> {
+    if let Some(project) = management::value(db, "bootstrap_project")? {
+        return local_project(db, &project);
+    }
     Ok(serde_json::to_value(local_from(
         db,
         &Settings::load_user()?,
@@ -419,6 +472,7 @@ fn unknown(row: &Value) -> Result<RuntimeInventory> {
             draining,
         },
         capabilities: vec![],
+        platform: None,
     })
 }
 fn inventory_from(db: &Store, local: RuntimeInventory) -> Result<Value> {
@@ -521,10 +575,169 @@ fn safe_pack_report(value: &Value) -> Option<Value> {
 }
 
 pub fn inventory(db: &Store) -> Result<Value> {
+    if let Some(project) = management::value(db, "bootstrap_project")? {
+        let local =
+            local_project_record(db, &project, &Settings::load_project_user(db, &project)?)?;
+        return inventory_from(db, local);
+    }
     inventory_from(
         db,
         local_from(db, &Settings::load_user()?, credential_evidence)?,
     )
+}
+
+/// Project reports resolve managed account metadata without inspecting ambient credentials.
+fn local_project_record(
+    db: &Store,
+    project: &str,
+    settings: &Settings,
+) -> Result<RuntimeInventory> {
+    let mut report = local_from(db, settings, |name| {
+        if project == crate::projects::DEFAULT_PROJECT {
+            credential_evidence(name)
+        } else {
+            Evidence::Missing
+        }
+    })?;
+    for capability in &mut report.capabilities {
+        let config = settings
+            .executor(&capability.id)
+            .context("project executor")?;
+        let managed: bool = config
+            .account
+            .as_deref()
+            .map(|id| {
+                db.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?)",
+                    [id],
+                    |row| row.get(0),
+                )
+            })
+            .transpose()?
+            .unwrap_or(false);
+        if config.kind != "simulated" && (project != crate::projects::DEFAULT_PROJECT || managed) {
+            let usable: bool = db.conn.query_row("SELECT EXISTS(SELECT 1 FROM accounts a JOIN auth_profiles p ON p.account=a.id JOIN account_grants g ON g.account=a.id WHERE g.project=? AND a.provider=? AND a.auth_mode=? AND a.base_url=? AND a.state='active' AND a.authenticated=1 AND p.credential_version>0 AND (p.expires_at IS NULL OR p.expires_at>?) AND (? IS NULL OR a.id=?))", rusqlite::params![project,config.kind,config.auth_mode,config.base_url,now(),config.account,config.account], |row| row.get(0))?;
+            capability.availability.authentication = if usable {
+                Evidence::CredentialPresent
+            } else {
+                Evidence::Missing
+            };
+            capability.available = available(
+                &capability.kind,
+                capability.availability.executable,
+                capability.availability.authentication,
+            );
+        }
+    }
+    validate(&report)?;
+    Ok(report)
+}
+pub fn local_project(db: &Store, project: &str) -> Result<Value> {
+    let project = crate::projects::resolve(db, project)?;
+    Ok(serde_json::to_value(local_project_record(
+        db,
+        &project,
+        &Settings::load_project_user(db, &project)?,
+    )?)?)
+}
+
+pub fn observe_project(db: &Store, runtime: &str, project: &str, packet: &Value) -> Result<()> {
+    ensure!(
+        crate::projects::runtime_allowed(db, project, runtime)?,
+        "runtime is not granted this project"
+    );
+    let report: RuntimeInventory =
+        serde_json::from_value(packet.clone()).context("invalid project capability report")?;
+    validate(&report)?;
+    ensure!(
+        report.runtime == runtime,
+        "project capability identity mismatch"
+    );
+    let record = RuntimeInventory {
+        local: false,
+        fresh: true,
+        observed_at: now(),
+        ..report
+    };
+    management::set(
+        db,
+        &format!("runtime_project_capabilities:{runtime}:{project}"),
+        &serde_json::to_string(&record)?,
+    )
+}
+
+pub fn inventory_project(db: &Store, project: &str) -> Result<Value> {
+    let project = crate::projects::resolve(db, project)?;
+    let local = local_project_record(db, &project, &Settings::load_project_user(db, &project)?)?;
+    let supplied = local.capabilities.clone();
+    let inventory = inventory_from(db, local)?;
+    let isolation: String = db.conn.query_row(
+        "SELECT isolation FROM projects WHERE id=?",
+        [&project],
+        |row| row.get(0),
+    )?;
+    let mut runtimes = Vec::new();
+    for record in inventory["runtimes"]
+        .as_array()
+        .context("runtime inventory")?
+    {
+        let runtime = record["runtime"].as_str().context("runtime identity")?;
+        if crate::projects::runtime_allowed(db, &project, runtime)? {
+            let mut record = record.clone();
+            if project != crate::projects::DEFAULT_PROJECT
+                && let Some(fields) = record.as_object_mut()
+            {
+                fields.remove("skill_pack");
+                fields.remove("skill_pack_error");
+            }
+            if record["local"] != true && project != crate::projects::DEFAULT_PROJECT {
+                let cached = management::value(
+                    db,
+                    &format!("runtime_project_capabilities:{runtime}:{project}"),
+                )?;
+                if let Some(cached) = cached {
+                    let report: RuntimeInventory = serde_json::from_str(&cached)?;
+                    validate(&report)?;
+                    record["capabilities"] = serde_json::to_value(report.capabilities)?;
+                    if !(now() - FRESH_SECONDS..=now() + 1).contains(&report.observed_at) {
+                        record["fresh"] = json!(false);
+                        record["ready"] = json!(false);
+                    }
+                } else {
+                    record["capabilities"] = json!([]);
+                    record["ready"] = json!(false);
+                }
+            }
+            if record["local"] != true {
+                for capability in record["capabilities"].as_array_mut().into_iter().flatten() {
+                    let controller = supplied.iter().find(|candidate| {
+                        capability["id"] == candidate.id
+                            && capability["configuration_hash"] == candidate.configuration_hash
+                    });
+                    if controller.is_some_and(|candidate| {
+                        candidate.availability.authentication == Evidence::CredentialPresent
+                    }) && capability["availability"]["executable"] != "missing"
+                    {
+                        capability["availability"]["authentication"] = json!("credential_present");
+                        capability["available"] = Value::Null;
+                    }
+                }
+            }
+            if isolation == "vm" && record["platform"]["isolation"] != "lima" {
+                record["ready"] = json!(false);
+            }
+            // Old peers remain visible as unavailable, never eligible for new scoped work.
+            if record["local"] != true
+                && !record["protocol"]["features"]
+                    .as_array()
+                    .is_some_and(|features| features.iter().any(|feature| feature == "projects"))
+            {
+                record["ready"] = json!(false);
+            }
+            runtimes.push(record);
+        }
+    }
+    Ok(json!({"project":project,"observed_at":inventory["observed_at"],"runtimes":runtimes}))
 }
 
 #[cfg(test)]
@@ -582,6 +795,76 @@ mod tests {
         crate::management::set(&db, "concurrency", "3").unwrap();
         crate::runtime_directory::set_local_name(&db, "test-host").unwrap();
         db
+    }
+    #[test]
+    fn project_authentication_uses_granted_profiles_without_ambient_keys() {
+        let root = tempfile::tempdir().unwrap();
+        let db = store(root.path());
+        let project = crate::projects::dispatch(&db, "project_create", &json!({"slug":"hamster"}))
+            .unwrap()
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let settings = Settings::default();
+        let config = settings.executor("worker").unwrap();
+        let before = local_project_record(&db, &project, &settings).unwrap();
+        assert!(
+            before
+                .capabilities
+                .iter()
+                .find(|cap| cap.id == "worker")
+                .unwrap()
+                .availability
+                .authentication
+                == Evidence::Missing
+        );
+        let account = crate::accounts::dispatch(&db, "account_create", &json!({"project":project,"name":"project-account","provider":config.kind,"auth_mode":config.auth_mode,"base_url":config.base_url})).unwrap().unwrap()["id"].as_str().unwrap().to_owned();
+        crate::accounts::set_credential(
+            &db,
+            &project,
+            &account,
+            &crate::accounts::Credential {
+                kind: "api_key".into(),
+                secret: "test-only-key".into(),
+                expires_at: None,
+                metadata: json!({}),
+            },
+        )
+        .unwrap();
+        let after = local_project_record(&db, &project, &settings).unwrap();
+        assert!(
+            after
+                .capabilities
+                .iter()
+                .find(|cap| cap.id == "worker")
+                .unwrap()
+                .availability
+                .authentication
+                == Evidence::CredentialPresent
+        );
+        assert!(
+            !serde_json::to_string(&after)
+                .unwrap()
+                .contains("test-only-key")
+        );
+        crate::accounts::dispatch(
+            &db,
+            "account_revoke",
+            &json!({"project":project,"account":account}),
+        )
+        .unwrap();
+        let revoked = local_project_record(&db, &project, &settings).unwrap();
+        assert!(
+            revoked
+                .capabilities
+                .iter()
+                .find(|cap| cap.id == "worker")
+                .unwrap()
+                .availability
+                .authentication
+                == Evidence::Missing
+        );
     }
     #[test]
     fn inventory_distinguishes_configuration_from_verified_auth_and_omits_secrets() {

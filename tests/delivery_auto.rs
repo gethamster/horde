@@ -36,6 +36,8 @@ enum Scenario {
     BaseRace,
     CancelAtIntent,
     WrongPrOnRestart,
+    ForeignProject,
+    ManualProject,
 }
 
 fn fake_gh(path: &Path, ledger: &Path, base: &str, head: &str, merge: &str, scenario: Scenario) {
@@ -104,6 +106,8 @@ print('unexpected command',args,file=sys.stderr); sys.exit(3)
                 Scenario::BaseRace => "base_race",
                 Scenario::CancelAtIntent => "cancel_at_intent",
                 Scenario::WrongPrOnRestart => "wrong_pr",
+                Scenario::ForeignProject => "foreign_project",
+                Scenario::ManualProject => "manual_project",
             })
             .unwrap(),
         );
@@ -224,6 +228,36 @@ async fn cancellation_after_merge_intent_stops_external_merge() {
     result.unwrap();
 }
 
+#[tokio::test]
+async fn automatic_delivery_rejects_a_non_default_project_before_external_writes() {
+    let _lock = support::CONFIG_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let prior = std::env::var_os("XDG_CONFIG_HOME");
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config")) };
+    let result = run_case(dir.path(), Scenario::ForeignProject).await;
+    if let Some(value) = prior {
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", value) };
+    } else {
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+    }
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn manual_delivery_keeps_its_pr_body_in_the_task_project() {
+    let _lock = support::CONFIG_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let prior = std::env::var_os("XDG_CONFIG_HOME");
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config")) };
+    let result = run_case(dir.path(), Scenario::ManualProject).await;
+    if let Some(value) = prior {
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", value) };
+    } else {
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+    }
+    result.unwrap();
+}
+
 async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
     let repo = root.join("repo");
     std::fs::create_dir(&repo)?;
@@ -252,13 +286,36 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
         pins: BTreeMap::new(),
         outputs: BTreeMap::new(),
     };
-    let task = db.submit(
-        "test automatic delivery",
-        &repo,
-        &Settings::default(),
-        &plan,
-    )?;
-    let workspace = db.root.join("workspaces").join(&task).join("integrated");
+    let foreign = matches!(scenario, Scenario::ForeignProject | Scenario::ManualProject);
+    let project = if foreign {
+        Some(
+            horde::projects::dispatch(&db, "project_create", &json!({"slug":"other"}))?
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        )
+    } else {
+        None
+    };
+    let task = if let Some(project) = &project {
+        db.submit_project(
+            project,
+            "test delivery in another project",
+            &repo,
+            &Settings::default(),
+            &plan,
+        )?
+    } else {
+        db.submit(
+            "test automatic delivery",
+            &repo,
+            &Settings::default(),
+            &plan,
+        )?
+    };
+    let task_root = horde::project_runtime::task_root(&db, &task)?;
+    let workspace = task_root.join("workspaces").join(&task).join("integrated");
     std::fs::create_dir_all(workspace.parent().unwrap())?;
     git(
         root,
@@ -321,10 +378,14 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
             enabled: true,
             repository: "test/repo".into(),
             base: "main".into(),
-            merge: true,
+            merge: scenario != Scenario::ManualProject,
             deploy_workflow: Some("deploy.yml".into()),
             environment: Some("staging".into()),
-            program: Some("/does/not/exist".into()),
+            program: Some(if scenario == Scenario::ManualProject {
+                gh_path.to_string_lossy().into_owned()
+            } else {
+                "/does/not/exist".into()
+            }),
             ..Default::default()
         },
         decision: decision.clone(),
@@ -412,6 +473,31 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
         context: json!({}),
     };
     let first = horde::delivery::execute(&invocation).await;
+    if scenario == Scenario::ForeignProject {
+        assert!(
+            first
+                .unwrap_err()
+                .to_string()
+                .contains("automatic delivery is limited to the default project")
+        );
+        let calls = std::fs::read_to_string(ledger.with_extension("calls"))?;
+        assert!(!calls.contains("pr create"));
+        assert!(!calls.contains("pr merge"));
+        assert!(!task_root.join(format!("pr-{task}.md")).exists());
+        assert!(jev_requests.try_recv().is_err());
+        unsafe { std::env::remove_var(key_name) };
+        return Ok(());
+    }
+    if scenario == Scenario::ManualProject {
+        assert_eq!(first?["delivery"], "pr_ready");
+        assert!(task_root.join(format!("pr-{task}.md")).exists());
+        assert!(!db.root.join(format!("pr-{task}.md")).exists());
+        let calls = std::fs::read_to_string(ledger.with_extension("calls"))?;
+        assert!(!calls.contains("pr merge"));
+        assert!(jev_requests.try_recv().is_err());
+        unsafe { std::env::remove_var(key_name) };
+        return Ok(());
+    }
     if matches!(
         scenario,
         Scenario::FailedCheck | Scenario::BaseRace | Scenario::CancelAtIntent

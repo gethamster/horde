@@ -32,6 +32,71 @@ fn fixture(decision: &Decision) -> (tempfile::TempDir, tempfile::TempDir, Store,
     (data, repo, db, task)
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn project_review_reads_its_own_settings_and_workspace() {
+    let _lock = CONFIG_LOCK.lock().await;
+    tokio::task::LocalSet::new().run_until(async {
+        let (base_url, mut bodies) = server(vec![("200 OK", REVIEW_RESPONSE, 0)]).await;
+        let key = format!("HORDE_REVIEW_PROJECT_KEY_{}", std::process::id());
+        unsafe { std::env::set_var(&key, "project-review-secret") };
+        let _operator = OperatorConfig::install(&Decision::default());
+        let decision = Decision { mode: DecisionMode::Shadow, review_enabled: true, base_url, api_key_env: key.clone(), ..Decision::default() };
+        let data = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let db = Store::open(data.path()).unwrap();
+        let project = horde::projects::dispatch(&db, "project_create", &json!({"slug":"review-project"})).unwrap().unwrap()["id"].as_str().unwrap().to_owned();
+        let project_root = horde::projects::storage_root(&db, &project).unwrap();
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(project_root.join("config.toml"), toml::to_string(&Settings { decision: decision.clone(), ..Settings::default() }).unwrap()).unwrap();
+
+        let git = |path: &std::path::Path, args: &[&str]| {
+            assert!(Command::new("git").current_dir(path).args(args).status().unwrap().success());
+        };
+        git(repo.path(), &["init", "-q"]);
+        let plan = horde::template::compile("simulated", &horde::template::load_templates(repo.path()).unwrap(), BTreeMap::from([("task".into(), "review project patch".into())])).unwrap();
+        let settings = Settings { decision, ..Settings::default() };
+        let task = db.submit_project(&project, "review project patch", repo.path(), &settings, &plan).unwrap();
+        db.conn.execute("UPDATE review_scan_cursor SET seq=(SELECT MAX(seq) FROM events) WHERE id=1", []).unwrap();
+
+        let project_path = project_root.join("workspaces").join(&task).join("integrated");
+        let default_path = data.path().join("workspaces").join(&task).join("integrated");
+        let commits = |path: &std::path::Path, filename: &str| {
+            std::fs::create_dir_all(path).unwrap();
+            git(path, &["init", "-q"]);
+            git(path, &["config", "user.name", "Reviewer"]);
+            git(path, &["config", "user.email", "reviewer@example.test"]);
+            std::fs::write(path.join(filename), "base\n").unwrap();
+            git(path, &["add", "."]);
+            git(path, &["commit", "-qm", "base"]);
+            let head = || String::from_utf8(Command::new("git").current_dir(path).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_owned();
+            let base = head();
+            std::fs::write(path.join(filename), "changed\n").unwrap();
+            git(path, &["add", "."]);
+            git(path, &["commit", "-qm", "patch"]);
+            (base, head())
+        };
+        let (base, project_head) = commits(&project_path, "project.txt");
+        let _ = commits(&default_path, "other-project.txt");
+        db.conn.execute("INSERT INTO workspace_bases(task,start,source,fetched,created) VALUES(?,?,?,0,0)", rusqlite::params![task,base,"test"]).unwrap();
+        let step = horde::store::id();
+        db.conn.execute("INSERT INTO steps(id,task,name,spec,state) VALUES(?,?,?,?,?)", rusqlite::params![step,task,"implementation",r#"{"id":"implementation","kind":"agent"}"#,"succeeded"]).unwrap();
+        db.event(&task, "step.finished", json!({"step":step,"state":"succeeded","result":{"integration":{"integrated_head":project_head}},"revision":1,"context_version":1})).unwrap();
+
+        let mut queue = review::Queue::default();
+        queue.scan(&db).unwrap();
+        drain(&mut queue, &db, &task).await;
+        let result = review::list(&db, &task, 0, 50).unwrap().remove(0);
+        assert_eq!(result["coverage"]["complete"], true, "{result}");
+        assert_eq!(result["state"], "succeeded", "{result}");
+        let wire: serde_json::Value = serde_json::from_slice(&tokio::time::timeout(std::time::Duration::from_secs(2), bodies.recv()).await.unwrap().unwrap()).unwrap();
+        assert_eq!(wire["state"]["manifest"]["paths"][0]["path"], "project.txt");
+        assert_eq!(result["fresh"], true);
+        std::fs::write(project_path.join("project.txt"), "uncommitted\n").unwrap();
+        assert_eq!(review::list(&db, &task, 0, 50).unwrap()[0]["fresh"], false);
+        unsafe { std::env::remove_var(key) };
+    }).await;
+}
+
 async fn drain(queue: &mut review::Queue, db: &Store, task: &str) {
     for _ in 0..100 {
         queue.tick(db).await.unwrap();

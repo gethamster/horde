@@ -24,6 +24,18 @@ pub fn policy(db: &Store, task: &str) -> Result<Option<Value>> {
 
 pub fn pin(db: &Store, task: &str, value: &Value) -> Result<()> {
     validate_policy(value)?;
+    let project = crate::projects::task_project(db, task)?;
+    if let Some(bound) = value["project"].as_str() {
+        ensure!(
+            bound == project,
+            "execution selection belongs to another project"
+        );
+    } else {
+        ensure!(
+            project == crate::projects::DEFAULT_PROJECT,
+            "project execution context required"
+        );
+    }
     db.atomic(|| {
         if let Some(existing) = policy(db, task)? {
             ensure!(
@@ -42,6 +54,19 @@ pub fn pin(db: &Store, task: &str, value: &Value) -> Result<()> {
 
 pub fn prepare(db: &Store, input: &Value, parent: Option<&Value>) -> Result<Value> {
     prepare_inventory(&crate::capabilities::inventory(db)?, input, parent)
+}
+
+pub fn prepare_project(
+    db: &Store,
+    project: &str,
+    input: &Value,
+    parent: Option<&Value>,
+) -> Result<Value> {
+    prepare_inventory(
+        &crate::capabilities::inventory_project(db, project)?,
+        input,
+        parent,
+    )
 }
 
 fn runtime<'a>(inventory: &'a Value, selector: &str) -> Result<&'a Value> {
@@ -69,6 +94,14 @@ fn runtime<'a>(inventory: &'a Value, selector: &str) -> Result<&'a Value> {
 
 fn binding(inventory: &Value, selector: &str, capability: &str, selected: bool) -> Result<Value> {
     let runtime = runtime(inventory, selector)?;
+    if inventory["project"].is_string() && runtime["local"] != true {
+        ensure!(
+            runtime["protocol"]["features"]
+                .as_array()
+                .is_some_and(|features| features.iter().any(|feature| feature == "projects")),
+            "runtime does not advertise project isolation support"
+        );
+    }
     if selected {
         ensure!(
             runtime["fresh"] == true
@@ -116,9 +149,16 @@ fn binding(inventory: &Value, selector: &str, capability: &str, selected: bool) 
             "capability {capability} on {selector} is missing its executable or authentication"
         );
     }
-    Ok(
-        json!({"runtime":runtime["runtime"],"capability":capability,"provider":candidate["provider"],"model":candidate["model"],"kind":candidate["kind"],"configuration_hash":candidate["configuration_hash"]}),
-    )
+    let mut value = json!({"runtime":runtime["runtime"],"capability":capability,"provider":candidate["provider"],"model":candidate["model"],"kind":candidate["kind"],"configuration_hash":candidate["configuration_hash"]});
+    if let Some(account) = candidate["account"].as_str() {
+        value["account"] = json!(account);
+    }
+    for field in ["auth_mode", "endpoint_hash"] {
+        if let Some(value_field) = candidate[field].as_str() {
+            value[field] = json!(value_field);
+        }
+    }
+    Ok(value)
 }
 
 fn same_pair(a: &Value, b: &Value) -> bool {
@@ -143,6 +183,31 @@ pub fn prepare_inventory(
     ensure!(input.is_object(), "execution selection must be an object");
     if let Some(parent) = parent {
         validate_policy(parent)?;
+    }
+    if let Some(parent) = parent {
+        ensure!(
+            parent["project"]
+                .as_str()
+                .unwrap_or(crate::projects::DEFAULT_PROJECT)
+                == inventory["project"]
+                    .as_str()
+                    .unwrap_or(crate::projects::DEFAULT_PROJECT),
+            "child execution selection belongs to another project"
+        );
+    }
+    let requirements = input
+        .get("requirements")
+        .or_else(|| parent.and_then(|parent| parent.get("requirements")))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    validate_requirements(&requirements)?;
+    if let Some(inherited) = parent.and_then(|parent| parent.get("requirements")) {
+        for (key, value) in inherited.as_object().context("requirements object")? {
+            ensure!(
+                requirements.get(key) == Some(value),
+                "child execution selection weakens its parent's requirements"
+            );
+        }
     }
     let selected_input = input
         .get("selected")
@@ -173,7 +238,9 @@ pub fn prepare_inventory(
             !caps.is_empty() && caps.len() <= 64,
             "allowed capability pool must contain 1..64 entries"
         );
-        let resolved = runtime(inventory, selector)?["runtime"].clone();
+        let target = runtime(inventory, selector)?;
+        check_requirements(target, &requirements)?;
+        let resolved = target["runtime"].clone();
         for cap in caps {
             let next = binding(
                 inventory,
@@ -219,12 +286,68 @@ pub fn prepare_inventory(
             Ok::<Value, anyhow::Error>(next)
         })
         .transpose()?;
-    let result = json!({"version":1,"allowed":allowed,"bindings":bindings,"selected":selected});
+    let mut result = json!({"version":1,"allowed":allowed,"bindings":bindings,"selected":selected});
+    if let Some(project) = inventory["project"].as_str() {
+        result["project"] = json!(project);
+    }
+    if requirements
+        .as_object()
+        .is_some_and(|fields| !fields.is_empty())
+    {
+        result["requirements"] = requirements;
+    }
     validate_policy(&result)?;
     Ok(result)
 }
 
+fn validate_requirements(requirements: &Value) -> Result<()> {
+    for (key, value) in requirements
+        .as_object()
+        .context("execution requirements must be an object")?
+    {
+        match key.as_str() {
+            "os" => ensure!(
+                value
+                    .as_str()
+                    .is_some_and(|os| ["macos", "linux"].contains(&os)),
+                "unsupported execution OS"
+            ),
+            "arch" => ensure!(
+                value
+                    .as_str()
+                    .is_some_and(|arch| ["aarch64", "x86_64"].contains(&arch)),
+                "unsupported execution architecture"
+            ),
+            "docker" => ensure!(value.is_boolean(), "docker requirement must be boolean"),
+            "isolation" => ensure!(
+                value
+                    .as_str()
+                    .is_some_and(|mode| ["native", "lima"].contains(&mode)),
+                "unsupported execution isolation"
+            ),
+            _ => anyhow::bail!("unknown execution requirement {key}"),
+        }
+    }
+    Ok(())
+}
+pub(crate) fn check_requirements(runtime: &Value, requirements: &Value) -> Result<()> {
+    validate_requirements(requirements)?;
+    for (key, expected) in requirements.as_object().context("execution requirements")? {
+        if key == "docker" && expected == false {
+            continue;
+        }
+        ensure!(
+            runtime["platform"][key] == *expected,
+            "runtime does not satisfy execution requirement {key}"
+        );
+    }
+    Ok(())
+}
+
 fn validate_policy(value: &Value) -> Result<()> {
+    if let Some(requirements) = value.get("requirements") {
+        validate_requirements(requirements)?;
+    }
     ensure!(
         value["version"] == 1,
         "unsupported execution policy version"
@@ -309,7 +432,8 @@ pub fn inherit(db: &Store, parent_task: &str, child: &str, args: &Value) -> Resu
         return Ok(());
     }
     let requested = args.get("execution").cloned().unwrap_or_else(|| json!({}));
-    let selected = prepare(db, &requested, parent.as_ref())?;
+    let project = crate::projects::task_project(db, parent_task)?;
+    let selected = prepare_project(db, &project, &requested, parent.as_ref())?;
     pin(db, child, &selected)?;
     validate_target(
         db,
@@ -319,10 +443,16 @@ pub fn inherit(db: &Store, parent_task: &str, child: &str, args: &Value) -> Resu
 }
 
 pub fn validate_target(db: &Store, task: &str, target: Option<&str>) -> Result<()> {
+    let project = crate::projects::task_project(db, task)?;
+    let target_id = target.unwrap_or("local");
+    ensure!(
+        crate::projects::runtime_allowed(db, &project, target_id)?,
+        "runtime is not granted this project"
+    );
     let Some(policy) = policy(db, task)? else {
         return Ok(());
     };
-    let inventory = crate::capabilities::inventory(db)?;
+    let inventory = crate::capabilities::inventory_project(db, &project)?;
     let target = runtime(&inventory, target.unwrap_or("local"))?;
     ensure!(
         policy["selected"].is_null() || policy["selected"]["runtime"] == target["runtime"],
@@ -338,15 +468,37 @@ pub fn validate_received(db: &Store, value: &Value, local_runtime_id: &str) -> R
         selected["runtime"] == local_runtime_id,
         "execution selection belongs to another runtime"
     );
-    let local = crate::capabilities::local(db)?;
-    let current = binding(
-        &json!({"runtimes":[local]}),
+    let inventory = if let Some(project) = value["project"].as_str() {
+        crate::capabilities::inventory_project(db, project)?
+    } else {
+        json!({"runtimes":[crate::capabilities::local(db)?]})
+    };
+    let local = runtime(&inventory, local_runtime_id)?;
+    if let Some(requirements) = value.get("requirements") {
+        check_requirements(local, requirements)?;
+    }
+    let mut current = binding(
+        &inventory,
         local_runtime_id,
         selected["capability"]
             .as_str()
             .context("selected capability required")?,
         true,
     )?;
+    if selected.get("account").is_none() {
+        current
+            .as_object_mut()
+            .context("capability binding")?
+            .remove("account");
+    }
+    for field in ["auth_mode", "endpoint_hash"] {
+        if selected.get(field).is_none() {
+            current
+                .as_object_mut()
+                .context("capability binding")?
+                .remove(field);
+        }
+    }
     ensure!(
         current == *selected,
         "selected model/provider configuration changed on the worker; refresh capabilities and submit a new task"
@@ -359,13 +511,9 @@ pub fn apply(db: &Store, task: &str, settings: &Settings) -> Result<Settings> {
     let Some(policy) = policy(db, task)? else {
         return Ok(settings.clone());
     };
-    let configured = Settings::load_user()?;
-    let path = db.root.join("network-runtime.toml");
-    let local = if path.exists() {
-        crate::network::NetworkConfig::load(Some(&path))?.runtime_id
-    } else {
-        "local".into()
-    };
+    let project = crate::projects::task_project(db, task)?;
+    let configured = Settings::load_project_user(db, &project)?;
+    let local = crate::projects::local_runtime(db)?;
     let roles = db
         .steps(task)?
         .iter()
@@ -405,7 +553,18 @@ pub fn apply_settings(
     let resolved = configured
         .executor(selected)
         .context("selected local executor disappeared")?;
-    let actual = json!({"runtime":local,"capability":selected,"provider":executor.provider(),"kind":resolved.kind,"model":resolved.model,"configuration_hash":crate::capabilities::configuration_hash(&resolved)?});
+    let mut actual = json!({"runtime":local,"capability":selected,"provider":executor.provider(),"kind":resolved.kind,"model":resolved.model,"configuration_hash":crate::capabilities::configuration_hash(&resolved)?});
+    if policy["selected"].get("auth_mode").is_some() {
+        actual["auth_mode"] = json!(resolved.auth_mode);
+    }
+    if policy["selected"].get("endpoint_hash").is_some() {
+        actual["endpoint_hash"] = json!(crate::store::hash(resolved.base_url.as_bytes()));
+    }
+    if policy["selected"].get("account").is_some()
+        && let Some(account) = &resolved.account
+    {
+        actual["account"] = json!(account);
+    }
     ensure!(
         policy["selected"] == actual,
         "selected model/provider configuration changed; refresh capabilities and submit a new task"

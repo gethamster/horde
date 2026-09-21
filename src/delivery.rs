@@ -124,7 +124,8 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         if out["success"] != true {
             bail!("push failed: {}", out["stderr"]);
         }
-        let body = i.db.root.join(format!("pr-{}.md", i.task));
+        let body =
+            crate::project_runtime::task_root(i.db, i.task)?.join(format!("pr-{}.md", i.task));
         std::fs::write(
             &body,
             format!(

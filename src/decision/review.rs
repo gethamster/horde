@@ -337,7 +337,8 @@ fn prepare(job: &Job) -> Result<Prepared> {
     let task = db.task(&job.task)?;
     let settings: Settings =
         serde_json::from_str(task["settings"].as_str().context("task settings")?)?;
-    let current = Settings::load_user()?;
+    let project = crate::projects::task_project(&db, &job.task)?;
+    let current = Settings::load_project_user(&db, &project)?;
     ensure!(
         settings.decision == job.decision
             && current.decision == job.decision
@@ -371,7 +372,7 @@ fn prepare(job: &Job) -> Result<Prepared> {
         .into_iter()
         .next()
         .and_then(|row| row["start"].as_str().map(str::to_owned));
-    let path = workspace(&job.root, &job.task);
+    let path = workspace(&db, &job.task)?;
     let head = if path.exists() {
         Some(git_text(&path, &["rev-parse", "HEAD"], 128)?)
     } else {
@@ -583,7 +584,7 @@ async fn run(job: Job) {
         return;
     };
     let start = Instant::now();
-    let outcome = match DecisionHttpClient::new(prepared.config) {
+    let outcome = match DecisionHttpClient::new_project(prepared.config, &root, &task) {
         Ok(backend) => {
             backend
                 .decide_counted_with(&request, |_| {
@@ -665,7 +666,7 @@ pub fn list(db: &Store, task: &str, after: i64, limit: i64) -> Result<Vec<Value>
     let context_version = crate::delegation::mandatory(db, task)?["version"]
         .as_i64()
         .context("context version")?;
-    let path = workspace(&db.root, task);
+    let path = workspace(db, task)?;
     let head = if path.exists() {
         git_text(&path, &["rev-parse", "HEAD"], 128).ok()
     } else {

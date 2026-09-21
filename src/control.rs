@@ -290,7 +290,7 @@ pub async fn connect(root: PathBuf, config: NetworkConfig) -> Result<()> {
                     let current = NetworkConfig::load(Some(&root.join("managed-network.toml")))?;
                     ensure!(current.identity_cert == config.identity_cert, "worker certificate renewed; reconnecting");
                 }
-                send.send(wire::CallRequest{method:"heartbeat".into(),json:heartbeat_packet(&root).unwrap_or_else(|_|"{}".into())}).await?;
+                send.send(wire::CallRequest{method:"heartbeat".into(),json:heartbeat_packet(&root, &peer).unwrap_or_else(|_|"{}".into())}).await?;
             },
             frame=stream.message()=>{
                 let frame=frame?.context("controller disconnected")?;let packet:Value=serde_json::from_str(&frame.json)?;
@@ -310,7 +310,7 @@ pub async fn connect(root: PathBuf, config: NetworkConfig) -> Result<()> {
     }
 }
 
-fn heartbeat_packet(root: &std::path::Path) -> Result<String> {
+fn heartbeat_packet(root: &std::path::Path, peer: &str) -> Result<String> {
     let db = crate::store::Store::open(root)?;
     let configured = crate::config::Settings::load_user()?;
     let explicit: std::collections::BTreeSet<_> = configured
@@ -321,9 +321,27 @@ fn heartbeat_packet(root: &std::path::Path) -> Result<String> {
     let mut accounts = vec![];
     for row in db.rows("SELECT * FROM account_capacity", &[])? {
         let id = row["account"].as_str().context("account")?;
-        accounts.push(json!({"snapshot":{"account":id,"provider":row["provider"],"window":row["window"],"used_percent":row["used"],"reset_at":row["reset"],"observed_at":row["observed"],"source":row["source"]},"shared":explicit.contains(id)}));
+        if !account_visible(&db, peer, id)? {
+            continue;
+        }
+        let managed: bool = db.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?)",
+            [id],
+            |row| row.get(0),
+        )?;
+        accounts.push(json!({"snapshot":{"account":id,"provider":row["provider"],"window":row["window"],"used_percent":row["used"],"reset_at":row["reset"],"observed_at":row["observed"],"source":row["source"]},"shared":managed || explicit.contains(id)}));
     }
-    Ok(json!({"status":crate::management::status(&db)?,"accounts":accounts,"name":crate::runtime_directory::local_name(&db)?,"capabilities":crate::capabilities::local(&db)?}).to_string())
+    let mut projects = serde_json::Map::new();
+    for row in db.rows("SELECT id FROM projects", &[])? {
+        let project = row["id"].as_str().context("project ID")?;
+        if crate::projects::runtime_allowed(&db, project, peer)? {
+            projects.insert(
+                project.into(),
+                crate::capabilities::local_project(&db, project)?,
+            );
+        }
+    }
+    Ok(json!({"projects":projects,"status":crate::management::status(&db)?,"accounts":accounts,"name":crate::runtime_directory::local_name(&db)?,"capabilities":crate::capabilities::local(&db)?}).to_string())
 }
 fn presence(root: &std::path::Path, peer: &str, packet: &str) -> Result<Option<String>> {
     ensure!(packet.len() <= 128 * 1024, "heartbeat too large");
@@ -334,6 +352,17 @@ fn presence(root: &std::path::Path, peer: &str, packet: &str) -> Result<Option<S
     }
     if let Some(capabilities) = value.get("capabilities") {
         crate::capabilities::observe(&db, peer, capabilities)?;
+    }
+    if let Some(projects) = value["projects"].as_object() {
+        ensure!(projects.len() <= 128, "too many project capability reports");
+        for (project, report) in projects {
+            // Reports for ungranted projects reveal no local data and cannot expand grants.
+            if crate::projects::resolve(&db, project).is_ok()
+                && crate::projects::runtime_allowed(&db, project, peer)?
+            {
+                crate::capabilities::observe_project(&db, peer, project, report)?;
+            }
+        }
     }
     if let Some(status) = value.get("status") {
         db.conn.execute("INSERT INTO runtime_presence VALUES(?,?,?) ON CONFLICT(runtime) DO UPDATE SET observed=excluded.observed,status=excluded.status",rusqlite::params![peer,crate::store::now(),status.to_string()])?;
@@ -347,10 +376,16 @@ fn presence(root: &std::path::Path, peer: &str, packet: &str) -> Result<Option<S
     for entry in value["accounts"].as_array().into_iter().flatten().take(128) {
         let mut snapshot: crate::capacity::Snapshot =
             serde_json::from_value(entry["snapshot"].clone())?;
+        if !account_visible(&db, peer, &snapshot.account)? {
+            continue;
+        }
         if entry["shared"] != true {
             snapshot.account = format!("remote:{peer}:{}", snapshot.account);
         }
         crate::capacity::observe(&db, &snapshot)?;
+    }
+    if let Some(status) = value.get("status") {
+        crate::enrollment::heartbeat(&db, peer, status)?;
     }
     Ok(value
         .get("name")
@@ -359,9 +394,124 @@ fn presence(root: &std::path::Path, peer: &str, packet: &str) -> Result<Option<S
         .map(str::to_owned))
 }
 
+fn account_visible(db: &crate::store::Store, peer: &str, account: &str) -> Result<bool> {
+    let managed: bool = db.conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?)",
+        [account],
+        |row| row.get(0),
+    )?;
+    if !managed {
+        return crate::projects::runtime_allowed(db, crate::projects::DEFAULT_PROJECT, peer);
+    }
+    for row in db.rows(
+        "SELECT project FROM account_grants WHERE account=?",
+        &[&account],
+    )? {
+        if crate::projects::runtime_allowed(
+            db,
+            row["project"].as_str().context("account project")?,
+            peer,
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod connection_presence_tests {
     use super::*;
+    #[test]
+    fn authenticated_heartbeat_restores_only_active_provisioned_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let db = crate::store::Store::open(root.path()).unwrap();
+        for id in ["worker", "other"] {
+            db.conn.execute("INSERT INTO managed_runtimes(id,profile,spec,state,created) VALUES(?,'test','{}','provisioned',0)", [id]).unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO runtime_enrollments VALUES(?1,?1,'',9999999999,'active')",
+                    [id],
+                )
+                .unwrap();
+        }
+        let packet =
+            json!({"runtime":"other","status":{"pid":123,"version":"test","concurrency":2}})
+                .to_string();
+        let state = |id: &str| {
+            db.rows("SELECT state FROM managed_runtimes WHERE id=?", &[&id])
+                .unwrap()[0]["state"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(
+            state("worker"),
+            "provisioned",
+            "stored enrollment alone is not readiness"
+        );
+        presence(root.path(), "worker", &packet).unwrap();
+        assert_eq!(state("worker"), "ready");
+        assert_eq!(
+            state("other"),
+            "provisioned",
+            "packet identity cannot replace authenticated peer"
+        );
+        for held in ["stopped", "removed", "uncertain", "requested"] {
+            db.conn
+                .execute(
+                    "UPDATE managed_runtimes SET state=? WHERE id='worker'",
+                    [held],
+                )
+                .unwrap();
+            presence(root.path(), "worker", &packet).unwrap();
+            assert_eq!(state("worker"), held);
+        }
+        db.conn
+            .execute(
+                "UPDATE managed_runtimes SET state='provisioned' WHERE id='worker'",
+                [],
+            )
+            .unwrap();
+        for enrollment in ["pending", "revoked"] {
+            db.conn
+                .execute(
+                    "UPDATE runtime_enrollments SET state=? WHERE runtime='worker'",
+                    [enrollment],
+                )
+                .unwrap();
+            presence(root.path(), "worker", &packet).unwrap();
+            assert_eq!(state("worker"), "provisioned");
+        }
+        db.conn
+            .execute(
+                "UPDATE runtime_enrollments SET state='active' WHERE runtime='worker'",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE managed_runtimes SET error='lifecycle outcome uncertain' WHERE id='worker'",
+                [],
+            )
+            .unwrap();
+        presence(root.path(), "worker", &packet).unwrap();
+        assert_eq!(
+            state("worker"),
+            "provisioned",
+            "heartbeat cannot resolve a provider operation error"
+        );
+        db.conn
+            .execute(
+                "UPDATE managed_runtimes SET error=NULL WHERE id='worker'",
+                [],
+            )
+            .unwrap();
+        presence(root.path(), "worker", r#"{"status":{}}"#).unwrap();
+        assert_eq!(state("worker"), "provisioned");
+        let malformed = json!({"status":{"pid":123,"version":"test","concurrency":2},"accounts":[{"snapshot":false}]}).to_string();
+        assert!(presence(root.path(), "worker", &malformed).is_err());
+        assert_eq!(state("worker"), "provisioned");
+    }
     #[test]
     fn connection_status_is_process_bound_and_removed_on_disconnect() {
         let root = tempfile::tempdir().unwrap();

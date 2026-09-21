@@ -320,7 +320,8 @@ fn fallback(reason: impl Into<String>) -> Result<BrowserOutcome> {
     Ok(BrowserOutcome::Fallback(reason.into()))
 }
 fn operator_mode(i: &Invocation<'_>) -> Result<BrowserTestMode> {
-    let current = Settings::load_user()?;
+    let project = crate::projects::task_project(i.db, i.task)?;
+    let current = Settings::load_project_user(i.db, &project)?;
     ensure!(
         current.decision == i.settings.decision,
         "operator decision settings changed during browser test"
@@ -369,7 +370,7 @@ pub async fn run(
     if operator_mode(i).unwrap_or(BrowserTestMode::Disabled) == BrowserTestMode::Disabled {
         return fallback("operator browser decisions disabled");
     }
-    let client = DecisionHttpClient::new(i.settings.decision.clone())?;
+    let client = DecisionHttpClient::new_project(i.settings.decision.clone(), &i.db.root, i.task)?;
     let dir = tempfile::tempdir()?;
     let driver = dir.path().join("driver.mjs");
     std::fs::write(&driver, DRIVER)?;
