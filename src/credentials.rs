@@ -17,6 +17,7 @@ use std::sync::{
 };
 struct Backend {
     observer: Option<std::path::PathBuf>,
+    generation: Option<String>,
     config: ExecutorConfig,
     client: reqwest::Client,
     base: String,
@@ -49,7 +50,7 @@ impl Broker {
         key: String,
         timeout: u64,
     ) -> Result<Self> {
-        Self::with_observer(config, token, key, timeout, None).await
+        Self::with_observer(config, token, key, timeout, None, None).await
     }
     pub async fn start_observed(
         config: &ExecutorConfig,
@@ -57,9 +58,19 @@ impl Broker {
         timeout: u64,
         root: &std::path::Path,
     ) -> Result<Self> {
+        let db = crate::store::Store::open(root)?;
+        let generation = crate::capacity::credential_generation(&db, config)?;
         let key = crate::config::credential(&config.api_key_env)
             .with_context(|| format!("missing {} in daemon environment", config.api_key_env))?;
-        Self::with_observer(config, token, key, timeout, Some(root.to_owned())).await
+        Self::with_observer(
+            config,
+            token,
+            key,
+            timeout,
+            Some(root.to_owned()),
+            generation,
+        )
+        .await
     }
     async fn with_observer(
         config: &ExecutorConfig,
@@ -67,6 +78,7 @@ impl Broker {
         key: String,
         timeout: u64,
         observer: Option<std::path::PathBuf>,
+        generation: Option<String>,
     ) -> Result<Self> {
         if !["codex", "claude"].contains(&config.kind.as_str()) {
             bail!("credential broker supports codex and claude");
@@ -88,6 +100,7 @@ impl Broker {
         let active = Arc::new(AtomicBool::new(true));
         let state = Arc::new(Backend {
             observer,
+            generation,
             config: config.clone(),
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -183,9 +196,10 @@ async fn forward(
     if let Some(root) = &state.observer
         && let Ok(db) = crate::store::Store::open(root)
     {
-        let _ = crate::capacity::ingest_headers(
+        let _ = crate::capacity::ingest_headers_current(
             &db,
             &state.config,
+            state.generation.as_deref(),
             response.headers(),
             response.status().as_u16(),
         );

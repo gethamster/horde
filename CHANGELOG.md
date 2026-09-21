@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.6.4 - 2026-09-21
+
+- Add or replace provider API keys through a connected agent without terminal
+  access. Explicit replacements apply to the next invocation, including when the
+  daemon inherited an older key, and preserve other accounts and task settings.
+- Sign in to Codex or Claude through agent-mediated browser handoffs. Sessions
+  survive client disconnects, accept requested authorization codes, and verify
+  authentication before reporting success. Cancellation, expiry, and daemon
+  recovery stop interrupted login processes.
+- Connect Tuara through its key page and submit an inference API key through the
+  same handoff. Horde verifies inference access before saving the key, preserving
+  the current model and role assignments without requiring a Tuara CLI.
+- Invalidate affected provider quota observations after an account change while
+  preserving local budgets. Discard late observations from the previous
+  credentials; login verification does not claim available model quota.
+
 ## 0.6.3 - 2026-09-17
 
 - Ship the default skills pack as `horde-skills.tar`. The public release
