@@ -80,6 +80,8 @@ impl MockAccount {
                     }
                     Err(error) => panic!("mock accept: {error}"),
                 };
+                // macOS can inherit the listener's nonblocking flag on accept.
+                connection.set_nonblocking(false).unwrap();
                 connection
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
