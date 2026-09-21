@@ -246,7 +246,8 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
     let browser_authorized = spec.browser_test.is_some()
         && i.settings.decision.mode == crate::config::DecisionMode::Shadow
         && i.settings.decision.browser_test_mode != crate::config::BrowserTestMode::Disabled
-        && crate::config::Settings::load_user()
+        && crate::projects::task_project(i.db, i.task)
+            .and_then(|project| crate::config::Settings::load_project_user(i.db, &project))
             .is_ok_and(|current| current.decision == i.settings.decision);
     let mut tested_commit = None;
     let operation = async {
