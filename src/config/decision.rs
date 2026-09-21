@@ -18,7 +18,7 @@ pub enum NativeContextMode {
     Active,
 }
 
-/// Operator authorization for Jev-guided browser tests.
+/// Operator authorization for decision-model-guided browser tests.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserTestMode {
@@ -53,6 +53,8 @@ pub struct Decision {
     pub base_url: String,
     pub api_key_env: String,
     pub model: String,
+    /// Wire contract spoken by the configured decision service.
+    pub protocol: String,
     pub policy: String,
     pub deadline_ms: u64,
     pub max_attempts: usize,
@@ -71,10 +73,11 @@ impl Default for Decision {
             native_context_trigger_bytes: 64 * 1024,
             native_context_min_savings_bytes: 16 * 1024,
             native_context_min_savings_ratio_percent: 15,
-            backend: "typesafe".into(),
-            base_url: "https://api.typesafe.ai".into(),
-            api_key_env: "TYPESAFE_API_KEY".into(),
+            backend: "tuara".into(),
+            base_url: String::new(),
+            api_key_env: String::new(),
             model: "jev-1.13.0".into(),
+            protocol: "systemone-v1".into(),
             policy: "routing-v1".into(),
             deadline_ms: 5_000,
             max_attempts: 2,
@@ -95,10 +98,27 @@ impl Decision {
             }
             return Ok(());
         }
-        if self.backend != "typesafe" || self.model != "jev-1.13.0" || self.policy != "routing-v1" {
-            bail!(
-                "decision backend, model, and policy must be typesafe, jev-1.13.0, and routing-v1"
-            );
+        if self.backend.is_empty()
+            || self.backend.len() > 64
+            || !self.backend.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+            })
+        {
+            bail!("decision.backend must name a provider");
+        }
+        if self.model.is_empty()
+            || self.model.len() > 128
+            || !self.model.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/')
+            })
+        {
+            bail!("decision.model must be a bounded model identifier");
+        }
+        if self.protocol != "systemone-v1" {
+            bail!("decision.protocol must be systemone-v1");
+        }
+        if self.policy != "routing-v1" {
+            bail!("decision.policy must be routing-v1");
         }
         if !(100..=30_000).contains(&self.deadline_ms)
             || !(1..=3).contains(&self.max_attempts)
@@ -119,6 +139,12 @@ impl Decision {
         }
         if !(5..=90).contains(&self.native_context_min_savings_ratio_percent) {
             bail!("native context minimum savings ratio is outside the supported range");
+        }
+        if self.base_url.is_empty() {
+            bail!(
+                "decision provider {} needs a configured Jev-compatible base_url before it can be enabled",
+                self.backend
+            );
         }
         if self.api_key_env.is_empty()
             || self.api_key_env.len() > 128
@@ -147,5 +173,19 @@ impl Decision {
             }
         }
         Ok(())
+    }
+
+    /// Stable service identity used for decision evidence and qualifications.
+    /// Credential values are never included.
+    pub fn fingerprint(&self) -> Result<String> {
+        let endpoint = crate::decision::typesafe::endpoint(&self.base_url)?;
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "backend": self.backend,
+            "endpoint": endpoint.as_str(),
+            "api_key_env": self.api_key_env,
+            "model": self.model,
+            "protocol": self.protocol,
+        }))?;
+        Ok(crate::store::hash(&bytes))
     }
 }

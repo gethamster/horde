@@ -1,7 +1,7 @@
-//! Bounded browser-test controller. The checked-in assertions, not Jev, decide success.
+//! Bounded browser-test controller. Checked-in assertions decide success.
 use crate::{
     config::{BrowserTestMode, DecisionMode, Settings},
-    decision::{Answer, ChoiceQuestion, DecisionRequest, Question, store, typesafe::TypeSafe},
+    decision::{Answer, ChoiceQuestion, DecisionHttpClient, DecisionRequest, Question, store},
     executor::{Invocation, clean_command},
     secrets,
 };
@@ -173,10 +173,10 @@ fn catalog(observation: &Observation, values: &BTreeMap<String, String>) -> Resu
             }
         }
     }
-    // TypeSafe accepts at most 64 labels. Escalate rather than silently omit controls.
+    // The SystemOne contract accepts at most 64 labels. Escalate rather than omit controls.
     ensure!(
         options.len() <= 63,
-        "browser action catalog exceeds Jev's 64-choice limit"
+        "browser action catalog exceeds the decision protocol's 64-choice limit"
     );
     options.push("DONE".into());
     Ok(options)
@@ -296,6 +296,10 @@ fn redactions(values: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     }
     augmented
 }
+
+fn screenshot_allowed(bundle_values: &BTreeMap<String, String>) -> bool {
+    bundle_values.values().all(String::is_empty)
+}
 fn write_trace(
     dir: &Path,
     trace: &[Value],
@@ -324,7 +328,7 @@ fn operator_mode(i: &Invocation<'_>) -> Result<BrowserTestMode> {
     );
     ensure!(
         current.decision.mode == DecisionMode::Shadow,
-        "operator Jev decisions disabled"
+        "operator decision-model service disabled"
     );
     Ok(current.decision.browser_test_mode)
 }
@@ -366,7 +370,7 @@ pub async fn run(
     if operator_mode(i).unwrap_or(BrowserTestMode::Disabled) == BrowserTestMode::Disabled {
         return fallback("operator browser decisions disabled");
     }
-    let client = TypeSafe::new_project(i.settings.decision.clone(), &i.db.root, i.task)?;
+    let client = DecisionHttpClient::new_project(i.settings.decision.clone(), &i.db.root, i.task)?;
     let dir = tempfile::tempdir()?;
     let driver = dir.path().join("driver.mjs");
     std::fs::write(&driver, DRIVER)?;
@@ -397,8 +401,13 @@ pub async fn run(
         )?;
     }
     let mut reader = BufReader::new(child.stdout.take().context("browser driver stdout")?);
-    let redactions = redactions(bundle_values);
-    let capture = bundle_values.values().all(String::is_empty);
+    let decision_key = crate::config::credential(&i.settings.decision.api_key_env)
+        .context("decision credential unavailable")?;
+    ensure!(!decision_key.is_empty(), "decision credential unavailable");
+    let mut secret_values = bundle_values.clone();
+    secret_values.insert("__decision_credential".into(), decision_key);
+    let redactions = redactions(&secret_values);
+    let capture = screenshot_allowed(bundle_values);
     let screenshot = capture.then(|| evidence.join("screenshot.png"));
     let operation = async {
         send(&mut child, &json!({"cmd":"start","url":url,"values":spec.values,"assertions":spec.assertions,"screenshot":screenshot})).await?;
@@ -438,7 +447,7 @@ pub async fn run(
                         );
                     }
                     return Ok(BrowserOutcome::Passed(
-                        json!({"accepted":true,"mode":"jev","tested_commit":commit,"steps":step,"assertions":message["assertions"]}),
+                        json!({"accepted":true,"mode":"decision_model","tested_commit":commit,"steps":step,"assertions":message["assertions"]}),
                     ));
                 }
                 Some("observation") => {
@@ -470,7 +479,9 @@ pub async fn run(
                         questions:vec![Question::Choice(ChoiceQuestion { id:"action".into(), question:"Choose the next operation and observed target. DONE only requests independent assertions.".into(), options:options.clone() })],
                     };
                     if request.validate().is_err() {
-                        return fallback("browser observation exceeds Jev request limits");
+                        return fallback(
+                            "browser observation exceeds decision-model request limits",
+                        );
                     }
                     let decision_id = crate::store::id();
                     let has_step: bool = i.db.conn.query_row(
@@ -521,13 +532,7 @@ pub async fn run(
                                     .map(|control| crate::store::hash(control.id.as_bytes()))
                                     .collect::<Vec<_>>()
                             ),
-                            backend_fingerprint: crate::store::hash(&serde_json::to_vec(&json!(
-                                [
-                                    i.settings.decision.backend,
-                                    i.settings.decision.base_url,
-                                    i.settings.decision.model
-                                ]
-                            ))?),
+                            backend_fingerprint: i.settings.decision.fingerprint()?,
                             evidence_hash: state_hash,
                             request_hash,
                             cache_hash: String::new(),
@@ -545,7 +550,7 @@ pub async fn run(
                                 "provider_unavailable",
                                 error.attempts,
                             )?;
-                            return fallback("Jev decision unavailable");
+                            return fallback("decision model unavailable");
                         }
                     };
                     let selected_action = selected(&response, &options);
@@ -732,6 +737,16 @@ mod tests {
                 .unwrap()
                 .contains("private")
         );
+    }
+    #[test]
+    fn daemon_decision_key_is_redacted_without_disabling_app_screenshots() {
+        let bundle = BTreeMap::new();
+        let mut values = bundle.clone();
+        values.insert("__decision_credential".into(), "mock-private-key".into());
+        assert!(screenshot_allowed(&bundle));
+        assert!(!screenshot_allowed(&values));
+        let safe = secrets::redact_json(&json!({"text":"mock-private-key"}), &redactions(&values));
+        assert!(!safe.to_string().contains("mock-private-key"));
     }
     #[test]
     fn dirty_or_untracked_workspace_cannot_claim_a_commit() {

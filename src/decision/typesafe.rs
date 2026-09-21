@@ -58,7 +58,7 @@ pub fn endpoint(base: &str) -> Result<Url> {
 }
 
 #[derive(Clone)]
-pub struct TypeSafe {
+pub struct DecisionHttpClient {
     client: Client,
     config: Decision,
     endpoint: Url,
@@ -68,10 +68,15 @@ pub struct TypeSafe {
 #[derive(Clone)]
 enum Authority {
     User,
-    Task { root: PathBuf, task: String },
+    Task {
+        root: PathBuf,
+        task: String,
+        allow_completed_review: bool,
+    },
 }
 
-impl TypeSafe {
+/// Jev-compatible SystemOne HTTP transport, independent of provider identity.
+impl DecisionHttpClient {
     pub fn new(config: Decision) -> Result<Self> {
         Self::new_with_authority(config, Authority::User)
     }
@@ -87,6 +92,23 @@ impl TypeSafe {
             Authority::Task {
                 root: root.as_ref().to_path_buf(),
                 task: task.into(),
+                allow_completed_review: false,
+            },
+        )
+    }
+
+    /// Review evidence may be evaluated after a task succeeds or fails.
+    pub fn new_project_review(
+        config: Decision,
+        root: impl AsRef<Path>,
+        task: impl Into<String>,
+    ) -> Result<Self> {
+        Self::new_with_authority(
+            config,
+            Authority::Task {
+                root: root.as_ref().to_path_buf(),
+                task: task.into(),
+                allow_completed_review: true,
             },
         )
     }
@@ -94,13 +116,26 @@ impl TypeSafe {
     fn new_with_authority(config: Decision, authority: Authority) -> Result<Self> {
         config.validate()?;
         let endpoint = endpoint(&config.base_url)?;
-        static CLIENT: OnceLock<Client> = OnceLock::new();
-        let client = if let Some(client) = CLIENT.get() {
+        static HOSTED_CLIENT: OnceLock<Client> = OnceLock::new();
+        static LOCAL_CLIENT: OnceLock<Client> = OnceLock::new();
+        let slot = if endpoint.scheme() == "http" {
+            &LOCAL_CLIENT
+        } else {
+            &HOSTED_CLIENT
+        };
+        let client = if let Some(client) = slot.get() {
             client.clone()
         } else {
-            let built = Client::builder().redirect(Policy::none()).build()?;
-            let _ = CLIENT.set(built.clone());
-            CLIENT.get().cloned().unwrap_or(built)
+            // A loopback request must not carry the key through an HTTP proxy.
+            let builder = Client::builder().redirect(Policy::none());
+            let built = if endpoint.scheme() == "http" {
+                builder.no_proxy()
+            } else {
+                builder
+            }
+            .build()?;
+            let _ = slot.set(built.clone());
+            slot.get().cloned().unwrap_or(built)
         };
         Ok(Self {
             client,
@@ -114,13 +149,26 @@ impl TypeSafe {
         let current = match &self.authority {
             Authority::User => crate::config::Settings::load_user()
                 .context("current operator decision configuration unavailable")?,
-            Authority::Task { root, task } => {
+            Authority::Task {
+                root,
+                task,
+                allow_completed_review,
+            } => {
                 let db = crate::store::Store::open(root)
                     .context("current project decision configuration unavailable")?;
-                ensure!(
-                    db.task(task)?["status"] == "running",
-                    "task is no longer running for a decision request"
-                );
+                let current_task = db.task(task)?;
+                let status = current_task["status"].as_str().unwrap_or_default();
+                if *allow_completed_review {
+                    ensure!(
+                        matches!(status, "running" | "succeeded" | "failed"),
+                        "task is no longer reviewable for a decision request"
+                    );
+                } else {
+                    ensure!(
+                        status == "running",
+                        "task is no longer running for a decision request"
+                    );
+                }
                 let project = crate::projects::task_project(&db, task)
                     .context("current task project unavailable")?;
                 crate::config::Settings::load_project_user(&db, &project)
@@ -281,7 +329,7 @@ impl TypeSafe {
 }
 
 #[tonic::async_trait]
-impl DecisionBackend for TypeSafe {
+impl DecisionBackend for DecisionHttpClient {
     async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResponse> {
         self.decide_counted(request)
             .await
@@ -289,3 +337,6 @@ impl DecisionBackend for TypeSafe {
             .map_err(|failure| failure.error)
     }
 }
+
+/// Compatibility alias for callers compiled against the launch transport.
+pub type TypeSafe = DecisionHttpClient;

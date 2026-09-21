@@ -366,6 +366,7 @@ async fn non_default_project_authorization_follows_its_current_operator_config()
     let decision = Decision {
         mode: DecisionMode::Shadow,
         native_context_mode: NativeContextMode::Active,
+        base_url: "https://tuara.com/router/v1".into(),
         api_key_env: "HORDE_NATIVE_CONTEXT_TEST_KEY".into(),
         ..Decision::default()
     };
@@ -437,6 +438,7 @@ async fn active_pruning_archives_exact_bytes_and_preserves_attempt_state() {
         native_context_trigger_bytes: 8192,
         native_context_min_savings_bytes: 1024,
         native_context_min_savings_ratio_percent: 5,
+        backend: "typesafe".into(),
         base_url,
         api_key_env: "HORDE_NATIVE_CONTEXT_TEST_KEY".into(),
         ..Decision::default()
@@ -646,6 +648,7 @@ async fn operator_revocation_after_jev_reply_preserves_the_old_conversation() {
         native_context_trigger_bytes: 8192,
         native_context_min_savings_bytes: 1024,
         native_context_min_savings_ratio_percent: 5,
+        backend: "typesafe".into(),
         base_url,
         api_key_env: "HORDE_NATIVE_CONTEXT_TEST_KEY".into(),
         ..Decision::default()

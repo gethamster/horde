@@ -116,11 +116,10 @@ async fn project_authorization_rechecks_its_configuration_before_retry() {
     let failure = call.await.unwrap().unwrap_err();
     assert_eq!(failure.attempts, 1);
     assert!(failure.to_string().contains("no longer authorizes"));
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(200), bodies.recv())
-            .await
-            .is_err()
-    );
+    assert!(!matches!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), bodies.recv()).await,
+        Ok(Some(_))
+    ));
     unsafe { std::env::remove_var(key) };
 }
 
@@ -161,5 +160,58 @@ async fn project_authorization_stops_retries_after_task_cancellation() {
             .await
             .is_err()
     );
+    unsafe { std::env::remove_var(key) };
+}
+
+#[tokio::test]
+async fn completed_tasks_authorize_reviews_only_and_cancelled_tasks_authorize_neither() {
+    let _lock = CONFIG_LOCK.lock().await;
+    let _default_operator = OperatorConfig::install(&Decision::default());
+    let root = tempfile::tempdir().unwrap();
+    let db = Store::open(root.path()).unwrap();
+    let (project, task) = project_task(&db);
+    let (base_url, mut bodies) = server(vec![("200 OK", response_json(), 0)]).await;
+    let key = format!("HORDE_PROJECT_COMPLETED_REVIEW_KEY_{}", std::process::id());
+    unsafe { std::env::set_var(&key, "project-secret") };
+    let decision = Decision {
+        mode: DecisionMode::Shadow,
+        base_url,
+        api_key_env: key.clone(),
+        deadline_ms: 2_000,
+        max_attempts: 1,
+        ..Decision::default()
+    };
+    configure_project(&db, &project, &decision);
+    db.conn
+        .execute("UPDATE tasks SET status='succeeded' WHERE id=?", [&task])
+        .unwrap();
+
+    let ordinary = TypeSafe::new_project(decision.clone(), root.path(), &task).unwrap();
+    assert_eq!(
+        ordinary
+            .decide_counted(&request())
+            .await
+            .unwrap_err()
+            .attempts,
+        0
+    );
+    let review = TypeSafe::new_project_review(decision, root.path(), &task).unwrap();
+    assert_eq!(review.decide_counted(&request()).await.unwrap().1, 1);
+    bodies.recv().await.unwrap();
+    db.conn
+        .execute("UPDATE tasks SET status='cancelled' WHERE id=?", [&task])
+        .unwrap();
+    assert_eq!(
+        review
+            .decide_counted(&request())
+            .await
+            .unwrap_err()
+            .attempts,
+        0
+    );
+    assert!(!matches!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), bodies.recv()).await,
+        Ok(Some(_))
+    ));
     unsafe { std::env::remove_var(key) };
 }

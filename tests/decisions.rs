@@ -9,6 +9,148 @@ use std::collections::BTreeMap;
 mod support;
 use support::*;
 
+#[test]
+fn fresh_decision_model_defaults_to_unconfigured_tuara() {
+    let fresh = Decision::default();
+    assert_eq!(fresh.backend, "tuara");
+    assert_eq!(fresh.model, "jev-1.13.0");
+    assert_eq!(fresh.protocol, "systemone-v1");
+    assert!(fresh.base_url.is_empty());
+    assert!(fresh.api_key_env.is_empty());
+    fresh.validate().unwrap();
+    let enabled = Decision {
+        mode: DecisionMode::Shadow,
+        ..fresh
+    };
+    assert!(
+        enabled
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("tuara needs a configured")
+    );
+}
+
+#[test]
+fn legacy_typesafe_settings_load_but_custom_endpoints_require_explicit_provider() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    std::fs::write(&path, "[decision]\nmode='shadow'\n").unwrap();
+    let legacy = Settings::load_dir(directory.path()).unwrap();
+    assert_eq!(legacy.decision.backend, "typesafe");
+    assert_eq!(legacy.decision.base_url, "https://api.typesafe.ai");
+    assert_eq!(legacy.decision.api_key_env, "TYPESAFE_API_KEY");
+    std::fs::write(
+        &path,
+        "[decision]\nmode='shadow'\nbase_url='https://other.example'\n",
+    )
+    .unwrap();
+    let error = Settings::load_dir(directory.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("backend must be explicit"), "{error}");
+    std::fs::write(&path, "[decision]\nmode='shadow'\nbackend='tuara'\nbase_url='https://other.example'\napi_key_env='OTHER_KEY'\n").unwrap();
+    let generic = Settings::load_dir(directory.path()).unwrap();
+    assert_eq!(generic.decision.backend, "tuara");
+    assert_eq!(generic.decision.api_key_env, "OTHER_KEY");
+}
+
+#[test]
+fn service_identity_binds_provider_endpoint_protocol_and_model() {
+    let base = Decision {
+        mode: DecisionMode::Shadow,
+        backend: "typesafe".into(),
+        base_url: "https://api.typesafe.ai/".into(),
+        api_key_env: "TYPESAFE_API_KEY".into(),
+        ..Default::default()
+    };
+    base.validate().unwrap();
+    assert_eq!(
+        base.fingerprint().unwrap(),
+        Decision {
+            base_url: "https://api.typesafe.ai".into(),
+            ..base.clone()
+        }
+        .fingerprint()
+        .unwrap()
+    );
+    for changed in [
+        Decision {
+            backend: "tuara".into(),
+            ..base.clone()
+        },
+        Decision {
+            base_url: "https://other.example".into(),
+            ..base.clone()
+        },
+        Decision {
+            api_key_env: "OTHER_KEY".into(),
+            ..base.clone()
+        },
+        Decision {
+            model: "next-model.1".into(),
+            ..base.clone()
+        },
+        Decision {
+            protocol: "systemone-v2".into(),
+            ..base.clone()
+        },
+    ] {
+        assert_ne!(base.fingerprint().unwrap(), changed.fingerprint().unwrap());
+    }
+    let incompatible = Decision {
+        protocol: "unknown".into(),
+        ..base
+    };
+    assert!(incompatible.validate().is_err());
+}
+
+#[test]
+fn generic_request_accepts_a_pinned_nonlaunch_model_and_rejects_a_stale_reply() {
+    let mut request = request();
+    request.model = "later-model.2".into();
+    request.validate().unwrap();
+    let mut response: serde_json::Value = serde_json::from_str(response_json()).unwrap();
+    assert!(validate_response(&request, &response).is_err());
+    response["model"] = json!("later-model.2");
+    assert!(validate_response(&request, &response).is_ok());
+}
+
+#[tokio::test]
+async fn explicit_tuara_compatible_mock_supports_operator_opted_in_actions() {
+    let _lock = CONFIG_LOCK.lock().await;
+    let (base_url, mut bodies) = server(vec![("200 OK", response_json(), 0)]).await;
+    let key = format!("HORDE_DECISION_GENERIC_KEY_{}", std::process::id());
+    unsafe { std::env::set_var(&key, "mock-generic-key") };
+    let decision = Decision {
+        mode: DecisionMode::Shadow,
+        backend: "tuara".into(),
+        base_url,
+        api_key_env: key.clone(),
+        ..Default::default()
+    };
+    let _operator = OperatorConfig::install(&decision);
+    let client = horde::decision::DecisionHttpClient::new(decision.clone()).unwrap();
+    client.decide_counted(&request()).await.unwrap();
+    assert!(bodies.recv().await.is_some());
+    let active = Decision {
+        native_context_mode: horde::config::NativeContextMode::Active,
+        ..decision.clone()
+    };
+    active.validate().unwrap();
+    let browser_active = Decision {
+        browser_test_mode: horde::config::BrowserTestMode::Active,
+        ..decision
+    };
+    browser_active.validate().unwrap();
+    let incompatible = Decision {
+        protocol: "unsupported-v2".into(),
+        ..browser_active
+    };
+    assert!(incompatible.validate().is_err());
+    unsafe { std::env::remove_var(key) };
+}
+
 #[tokio::test]
 async fn typesafe_uses_the_official_wire_shape_and_retries_only_retryable_statuses() {
     let _lock = CONFIG_LOCK.lock().await;
@@ -168,6 +310,8 @@ fn decision_configuration_is_disabled_by_default_and_repository_cannot_enable_it
 fn validates_decision_configuration_ranges_and_endpoint_policy() {
     let valid = Decision {
         mode: DecisionMode::Shadow,
+        backend: "typesafe".into(),
+        base_url: "https://api.typesafe.ai".into(),
         api_key_env: "JEV_KEY".into(),
         ..Decision::default()
     };

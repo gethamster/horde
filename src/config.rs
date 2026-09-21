@@ -443,7 +443,7 @@ provider = "simulated"
 # timeout_seconds = 15
 # children = false # also notify for delegated child tasks
 
-# Optional daemon-owned advisory routing. Repository files cannot set this.
+# Optional daemon-owned decision models. Repository files cannot set this.
 # [decision]
 # mode = "shadow"
 # review_enabled = true # advisory work-product reviews; false by default
@@ -453,10 +453,13 @@ provider = "simulated"
 # native_context_trigger_bytes = 65536
 # native_context_min_savings_ratio_percent = 15
 # native_context_max_request_bytes = 0 # 0 disables the optional hard byte ceiling
-# backend = "typesafe"
-# base_url = "https://api.typesafe.ai"
-# api_key_env = "TYPESAFE_API_KEY"
+# backend = "tuara" # default provider; no decision endpoint is published yet
+# base_url = "" # required before enabling a Jev-compatible service
+# api_key_env = "" # environment variable holding that service's key
 # model = "jev-1.13.0"
+# protocol = "systemone-v1"
+# For explicit TypeSafe development use, set backend = "typesafe",
+# base_url = "https://api.typesafe.ai", and api_key_env = "TYPESAFE_API_KEY".
 # policy = "routing-v1"
 # deadline_ms = 5000
 # max_attempts = 2
@@ -558,11 +561,59 @@ impl Settings {
         let mut value = toml::Value::try_from(Self::default())?;
         for file in files {
             if file.exists() {
-                merge(
-                    &mut value,
-                    toml::from_str::<toml::Value>(&std::fs::read_to_string(file)?)
-                        .with_context(|| format!("invalid {}", file.display()))?,
-                );
+                let mut overlay = toml::from_str::<toml::Value>(&std::fs::read_to_string(file)?)
+                    .with_context(|| format!("invalid {}", file.display()))?;
+                // Before the provider-neutral default, an enabled decision
+                // section without a backend meant TypeSafe. Preserve the
+                // official endpoint default, but require explicit identity for
+                // custom endpoints so the old key cannot be sent elsewhere.
+                if let Some(decision) = overlay
+                    .get_mut("decision")
+                    .and_then(toml::Value::as_table_mut)
+                {
+                    let legacy_enabled = decision.get("mode").and_then(toml::Value::as_str)
+                        == Some("shadow")
+                        || decision
+                            .get("review_enabled")
+                            .and_then(toml::Value::as_bool)
+                            == Some(true)
+                        || matches!(
+                            decision
+                                .get("native_context_mode")
+                                .and_then(toml::Value::as_str),
+                            Some("shadow" | "active")
+                        )
+                        || matches!(
+                            decision
+                                .get("browser_test_mode")
+                                .and_then(toml::Value::as_str),
+                            Some("shadow" | "active")
+                        );
+                    let explicit_endpoint = decision.get("base_url").and_then(toml::Value::as_str);
+                    let known_typesafe_endpoint = explicit_endpoint.is_some_and(|url| {
+                        crate::decision::typesafe::endpoint(url).is_ok_and(|endpoint| {
+                            endpoint.as_str() == "https://api.typesafe.ai/v1/systemone"
+                        })
+                    });
+                    if !decision.contains_key("backend")
+                        && explicit_endpoint.is_some()
+                        && !known_typesafe_endpoint
+                    {
+                        bail!("decision.backend must be explicit for a custom decision endpoint");
+                    }
+                    if !decision.contains_key("backend")
+                        && (legacy_enabled || known_typesafe_endpoint)
+                    {
+                        decision.insert("backend".into(), toml::Value::String("typesafe".into()));
+                        decision.entry("base_url").or_insert_with(|| {
+                            toml::Value::String("https://api.typesafe.ai".into())
+                        });
+                        decision
+                            .entry("api_key_env")
+                            .or_insert_with(|| toml::Value::String("TYPESAFE_API_KEY".into()));
+                    }
+                }
+                merge(&mut value, overlay);
             }
         }
         moved_to_provider(&value)?;

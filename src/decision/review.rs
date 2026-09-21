@@ -1,6 +1,6 @@
 //! Opt-in, advisory review of durable workflow checkpoints. Reviews never
 //! authorize delivery or substitute for a generative reviewer step.
-use super::{ChoiceQuestion, DecisionRequest, NoulQuestion, Question, store, typesafe::TypeSafe};
+use super::{ChoiceQuestion, DecisionHttpClient, DecisionRequest, NoulQuestion, Question, store};
 use crate::{
     config::{Decision, DecisionMode, Settings},
     store::{Store, id},
@@ -516,9 +516,7 @@ fn prepare(job: &Job) -> Result<Prepared> {
         false,
     )?;
     let request_hash = hash_json(&super::wire_request(&request))?;
-    let backend_fingerprint = hash_json(
-        &json!({"backend":job.decision.backend,"base_url":job.decision.base_url,"api_key_env":job.decision.api_key_env,"model":job.decision.model}),
-    )?;
+    let backend_fingerprint = job.decision.fingerprint()?;
     store::start(
         &db,
         &job.id,
@@ -528,11 +526,11 @@ fn prepare(job: &Job) -> Result<Prepared> {
             policy_hash: hash_json(&json!("review-v1"))?,
             catalog_hash: hash_json(&json!(questions()))?,
             candidate_hashes: json!({}),
-            backend_fingerprint,
+            backend_fingerprint: backend_fingerprint.clone(),
             evidence_hash,
             request_hash,
             cache_hash: hash_json(
-                &json!({"event_seq":job.event_seq,"evidence_hash":hash_json(&request.state)?}),
+                &json!({"event_seq":job.event_seq,"evidence_hash":hash_json(&request.state)?,"backend_fingerprint":backend_fingerprint}),
             )?,
             artifact_hash: Some(artifact_hash),
         },
@@ -586,7 +584,7 @@ async fn run(job: Job) {
         return;
     };
     let start = Instant::now();
-    let outcome = match TypeSafe::new_project(prepared.config, &root, &task) {
+    let outcome = match DecisionHttpClient::new_project_review(prepared.config, &root, &task) {
         Ok(backend) => {
             backend
                 .decide_counted_with(&request, |_| {

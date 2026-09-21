@@ -159,7 +159,7 @@ impl Fixture {
                 "[decision]\nmode='disabled'\n".to_owned()
             } else {
                 format!(
-                    "[decision]\nmode='shadow'\nbrowser_test_mode='{browser_mode}'\nmax_decisions_per_task={budget}\nbase_url='{base_url}'\napi_key_env='TYPESAFE_API_KEY'\n"
+                    "[decision]\nmode='shadow'\nbrowser_test_mode='{browser_mode}'\nmax_decisions_per_task={budget}\nbackend='typesafe'\nbase_url='{base_url}'\napi_key_env='TYPESAFE_API_KEY'\n"
                 )
             },
         )
@@ -205,7 +205,7 @@ impl Fixture {
             std::fs::write(
                 directory.join("config.toml"),
                 format!(
-                    "[decision]\nmode='shadow'\nbrowser_test_mode='{browser_mode}'\nmax_decisions_per_task={budget}\nbase_url='{base_url}'\napi_key_env='TYPESAFE_API_KEY'\n"
+                    "[decision]\nmode='shadow'\nbrowser_test_mode='{browser_mode}'\nmax_decisions_per_task={budget}\nbackend='typesafe'\nbase_url='{base_url}'\napi_key_env='TYPESAFE_API_KEY'\n"
                 ),
             )
             .unwrap();

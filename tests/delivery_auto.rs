@@ -351,6 +351,7 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
     let decision = Decision {
         mode: DecisionMode::Shadow,
         review_enabled: true,
+        backend: "tuara".into(),
         base_url: jev_url,
         api_key_env: key_name.into(),
         ..Decision::default()
@@ -402,7 +403,7 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
         })?,
     )?;
     let policy_hash = hash(&serde_json::to_vec(&serde_json::to_value(&policy)?)?);
-    let report = json!({"backend":decision.backend,"model":decision.model,"policy":decision.policy,
+    let report = json!({"backend":decision.backend,"model":decision.model,"policy":decision.policy,"backend_fingerprint":decision.fingerprint()?,
         "purpose":"delivery:veto","catalog":"delivery-v1","delivery_policy_hash":policy_hash,
         "minimum_routine_probability":0.8,"held_out":{"cases":50,"baseline_quality":0.9,"candidate_quality":0.91,
         "baseline_critical_defect_recall":1.0,"candidate_critical_defect_recall":1.0,
@@ -447,7 +448,7 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
         )?;
     }
     let review = signals();
-    db.conn.execute("INSERT INTO decisions(id,task,purpose,state,policy,backend,model,queued,result) VALUES('review-decision',?,'review:integration','succeeded','review-v1','typesafe','jev-1.13.0',?,?)",
+    db.conn.execute("INSERT INTO decisions(id,task,purpose,state,policy,backend,model,queued,result) VALUES('review-decision',?,'review:integration','succeeded','review-v1','tuara','jev-1.13.0',?,?)",
         params![task,now(),review.to_string()])?;
     let external_hash = hash(b"[]");
     let event_seq: i64 =
