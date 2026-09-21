@@ -36,7 +36,7 @@ fn fixture(decision: &Decision) -> (tempfile::TempDir, tempfile::TempDir, Store,
 async fn project_review_reads_its_own_settings_and_workspace() {
     let _lock = CONFIG_LOCK.lock().await;
     tokio::task::LocalSet::new().run_until(async {
-        let (base_url, mut bodies) = server(vec![("200 OK", REVIEW_RESPONSE, 0)]).await;
+        let (base_url, mut bodies) = server(vec![("200 OK", REVIEW_RESPONSE, 0), ("200 OK", REVIEW_RESPONSE, 0)]).await;
         let key = format!("HORDE_REVIEW_PROJECT_KEY_{}", std::process::id());
         unsafe { std::env::set_var(&key, "project-review-secret") };
         let _operator = OperatorConfig::install(&Decision::default());
@@ -91,6 +91,13 @@ async fn project_review_reads_its_own_settings_and_workspace() {
         let wire: serde_json::Value = serde_json::from_slice(&tokio::time::timeout(std::time::Duration::from_secs(2), bodies.recv()).await.unwrap().unwrap()).unwrap();
         assert_eq!(wire["state"]["manifest"]["paths"][0]["path"], "project.txt");
         assert_eq!(result["fresh"], true);
+        db.conn.execute("UPDATE tasks SET status='succeeded' WHERE id=?", [&task]).unwrap();
+        db.event(&task, "task.finished", json!({"status":"succeeded","integrated_head":project_head,"revision":1})).unwrap();
+        queue.scan(&db).unwrap();
+        drain(&mut queue, &db, &task).await;
+        let final_review = review::list(&db, &task, 0, 50).unwrap().into_iter().find(|row| row["kind"] == "final_evidence").unwrap();
+        assert_eq!(final_review["state"], "succeeded", "{final_review}");
+        tokio::time::timeout(std::time::Duration::from_secs(2), bodies.recv()).await.unwrap().unwrap();
         std::fs::write(project_path.join("project.txt"), "uncommitted\n").unwrap();
         assert_eq!(review::list(&db, &task, 0, 50).unwrap()[0]["fresh"], false);
         unsafe { std::env::remove_var(key) };

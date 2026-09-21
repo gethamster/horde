@@ -47,6 +47,10 @@ fn validate_repository_settings(
         patch.get("decision").is_none(),
         "repository decision configuration must be set by the project administrator"
     );
+    ensure!(
+        patch.get("automatic_delivery").is_none(),
+        "repository automatic delivery configuration must be set by the project administrator"
+    );
     if let Some(value) = patch.get("allow_commands").and_then(toml::Value::as_bool) {
         ensure!(
             !value || approved.allow_commands,

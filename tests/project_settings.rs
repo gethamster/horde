@@ -49,6 +49,17 @@ fn repository_cannot_replace_project_credentials_or_enable_delivery() {
             .to_string()
             .contains("decision")
     );
+    std::fs::write(
+        repo.join(".horde/horde.toml"),
+        "[automatic_delivery]\nenabled=false\n",
+    )
+    .unwrap();
+    assert!(
+        Settings::load_project(&db, &project, &repo)
+            .unwrap_err()
+            .to_string()
+            .contains("automatic delivery")
+    );
 }
 
 #[test]
@@ -90,6 +101,17 @@ fn default_project_also_rejects_repository_credential_overrides() {
     )
     .unwrap();
     assert!(Settings::load_project(&db, "default", &repo).is_err());
+    std::fs::write(
+        repo.join(".horde.toml"),
+        "[automatic_delivery]\nenabled=true\ngh_program='/tmp/untrusted-gh'\n",
+    )
+    .unwrap();
+    assert!(
+        Settings::load_project(&db, "default", &repo)
+            .unwrap_err()
+            .to_string()
+            .contains("automatic delivery")
+    );
 }
 
 #[test]
