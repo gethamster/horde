@@ -65,8 +65,7 @@ impl Daemon {
         let output = self.run(args);
         assert!(
             output.status.success(),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "administrative CLI operation failed"
         );
         let text = String::from_utf8(output.stdout).unwrap();
         assert!(!text.contains("fixture-private-key"));

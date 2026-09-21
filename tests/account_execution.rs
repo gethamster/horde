@@ -137,8 +137,14 @@ for line in sys.stdin:
         horde::account_auth::access_tokens(&db, "default", &account, false, Some(program))
     );
     let (a, b) = (a.unwrap(), b.unwrap());
-    assert_eq!(a.access_token, "worker-access");
-    assert_eq!(b.access_token, "worker-access");
+    assert!(
+        a.access_token == "worker-access",
+        "first worker token mismatch"
+    );
+    assert!(
+        b.access_token == "worker-access",
+        "second worker token mismatch"
+    );
     assert!(
         !serde_json::to_string(&a)
             .unwrap()
@@ -542,6 +548,6 @@ fn runtime_revoked_while_waiting_for_refresh_cannot_receive_access_token() {
     let error = call.join().unwrap().unwrap_err();
     assert!(
         error.to_string().contains("runtime grant revoked"),
-        "{error}"
+        "expected a revoked runtime grant rejection"
     );
 }

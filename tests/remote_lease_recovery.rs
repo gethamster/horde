@@ -67,7 +67,10 @@ impl federation::wire::federation_server::Federation for Controller {
         )
         .unwrap_or_else(|error| json!({"error":error.to_string()}));
         if request.method == self.lose_method && !self.lost.swap(true, Ordering::SeqCst) {
-            assert!(response.get("error").is_none(), "{response}");
+            assert!(
+                response.get("error").is_none(),
+                "controller operation failed before simulated reply loss"
+            );
             rotate(
                 &Store::open(&self.root).unwrap(),
                 &self.account,

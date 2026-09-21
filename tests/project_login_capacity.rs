@@ -335,9 +335,7 @@ fn managed_pin_fixture(action: &str) {
         .unwrap();
     assert!(
         output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        "managed account authentication preflight failed"
     );
 }
 #[test]
@@ -405,7 +403,10 @@ async fn child_managed_pin_preflight() {
     } else {
         horde::agent_setup::run(&root,&json!({"action":"configure_provider","provider":selected,"credential":"fixture-key-no-write"})).await.unwrap_err().to_string()
     };
-    assert!(error.contains("managed account"), "{error}");
+    assert!(
+        error.contains("managed account"),
+        "expected a managed account rejection"
+    );
     assert_eq!(std::fs::read_to_string(path).unwrap(), text);
     assert!(!horde::config::Settings::credentials_path().exists());
     assert!(!config_dir.join("credential-overrides.json").exists());
