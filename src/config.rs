@@ -42,6 +42,16 @@ pub enum DecisionMode {
     Shadow,
 }
 
+/// Native conversation pruning is authorized separately from advisory routing.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeContextMode {
+    #[default]
+    Disabled,
+    Shadow,
+    Active,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct CapabilityGuidance {
@@ -56,6 +66,12 @@ pub struct Decision {
     pub mode: DecisionMode,
     /// Opt in to advisory review of durable workflow checkpoints.
     pub review_enabled: bool,
+    pub native_context_mode: NativeContextMode,
+    /// Optional hard ceiling for serialized native requests, in bytes.
+    pub native_context_max_request_bytes: usize,
+    pub native_context_trigger_bytes: usize,
+    pub native_context_min_savings_bytes: usize,
+    pub native_context_min_savings_ratio_percent: usize,
     pub backend: String,
     pub base_url: String,
     pub api_key_env: String,
@@ -72,6 +88,11 @@ impl Default for Decision {
         Self {
             mode: DecisionMode::Disabled,
             review_enabled: false,
+            native_context_mode: NativeContextMode::Disabled,
+            native_context_max_request_bytes: 0,
+            native_context_trigger_bytes: 64 * 1024,
+            native_context_min_savings_bytes: 16 * 1024,
+            native_context_min_savings_ratio_percent: 15,
             backend: "typesafe".into(),
             base_url: "https://api.typesafe.ai".into(),
             api_key_env: "TYPESAFE_API_KEY".into(),
@@ -88,6 +109,9 @@ impl Default for Decision {
 impl Decision {
     pub fn validate(&self) -> Result<()> {
         if self.mode == DecisionMode::Disabled {
+            if self.native_context_mode != NativeContextMode::Disabled {
+                bail!("native context pruning requires decision.mode=shadow");
+            }
             return Ok(());
         }
         if self.backend != "typesafe" || self.model != "jev-1.13.0" || self.policy != "routing-v1" {
@@ -100,6 +124,20 @@ impl Decision {
             || !(1..=256).contains(&self.max_decisions_per_task)
         {
             bail!("decision deadline, attempts, or per-task limit is outside the supported range");
+        }
+        if self.native_context_max_request_bytes != 0
+            && !(8 * 1024..=16 * 1024 * 1024).contains(&self.native_context_max_request_bytes)
+        {
+            bail!("native context request byte ceiling is outside the supported range");
+        }
+        if !(8 * 1024..=16 * 1024 * 1024).contains(&self.native_context_trigger_bytes) {
+            bail!("native context trigger byte threshold is outside the supported range");
+        }
+        if !(1024..=1024 * 1024).contains(&self.native_context_min_savings_bytes) {
+            bail!("native context minimum savings is outside the supported range");
+        }
+        if !(5..=90).contains(&self.native_context_min_savings_ratio_percent) {
+            bail!("native context minimum savings ratio is outside the supported range");
         }
         if self.api_key_env.is_empty()
             || self.api_key_env.len() > 128
@@ -520,6 +558,11 @@ provider = "simulated"
 # [decision]
 # mode = "shadow"
 # review_enabled = true # advisory work-product reviews; false by default
+# native_context_mode = "shadow" # disabled by default; active applies verified pruning
+# native_context_min_savings_bytes = 16384
+# native_context_trigger_bytes = 65536
+# native_context_min_savings_ratio_percent = 15
+# native_context_max_request_bytes = 0 # 0 disables the optional hard byte ceiling
 # backend = "typesafe"
 # base_url = "https://api.typesafe.ai"
 # api_key_env = "TYPESAFE_API_KEY"

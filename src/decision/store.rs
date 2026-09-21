@@ -219,11 +219,16 @@ pub fn list(db: &Store, task: &str, after: i64, limit: i64) -> Result<Vec<Value>
         "decision limit must be between 1 and 200"
     );
     db.rows(
-        "SELECT * FROM decisions WHERE task=? AND seq>? ORDER BY seq LIMIT ?",
+        "SELECT d.*, CASE WHEN e.state='used' THEN 1 ELSE d.applied END AS effective_applied FROM decisions d LEFT JOIN native_context_epochs e ON e.decision=d.id WHERE d.task=? AND d.seq>? ORDER BY d.seq LIMIT ?",
         &[&task, &after, &limit],
     )?
     .into_iter()
-    .map(parse)
+    .map(|row| {
+        let mut row = parse(row)?;
+        let applied = row.as_object_mut().context("decision row")?.remove("effective_applied").context("effective applied state")?;
+        row["applied"] = applied;
+        Ok(row)
+    })
     .collect()
 }
 

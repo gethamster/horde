@@ -8,6 +8,7 @@ pub mod git;
 pub mod knowledge;
 pub mod metrics;
 pub mod native;
+mod native_context;
 mod native_protocol;
 pub mod network;
 pub mod notify;
