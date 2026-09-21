@@ -8,6 +8,47 @@
   "specVersion": "1.0",
   "tools": [
     {
+      "description": "Start, inspect, complete or cancel a provider sign-in through the agent; no model usage required",
+      "name": "provider_login",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "start",
+              "status",
+              "submit",
+              "cancel"
+            ],
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 600,
+            "maximum": 1800,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
       "description": "Inspect this runtime's file-based default skill pack and content hash",
       "name": "skill_pack_list",
       "parameters": {
@@ -137,6 +178,10 @@
           },
           "concurrency": {
             "type": "integer"
+          },
+          "credential": {
+            "description": "Provider API key supplied by the user through their trusted agent. Use exactly one of credential, credential_env, credential_file. Never repeat the value in responses.",
+            "type": "string"
           },
           "credential_env": {
             "type": "string"

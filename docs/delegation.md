@@ -23,6 +23,19 @@ credentials and start remote workers. Horde cannot create access to a machine or
 provider that the agent does not have. Fleet startup accepts the same secret
 reference across containers, Kubernetes, sandboxes, VMs, and individual machines.
 
+You can also ask your connected agent to change provider accounts without opening
+a terminal. For API keys, the agent passes the value as `credential` to
+`agent_setup` action `configure_provider`, or uses an existing environment/file
+reference. For Tuara, `provider_login` guides you to the key page and verifies the
+submitted inference key before saving it. For Codex or Claude subscription login,
+it starts `provider_login` and
+relays the provider's URL and any device code. You complete browser sign-in and
+return a manual authorization code only if the CLI requests one. The agent checks
+the session result and reports authentication and quota separately. These tools
+work without a model request, even when model usage is exhausted. See
+[account setup](configuration.md#add-or-change-an-account-through-your-agent)
+for activation, session lifetime, and shared CLI account behavior.
+
 After briefly explaining its work split, the parent submits or delegates with an
 `execution` policy. Each allowed entry binds a runtime to a set of capability IDs;
 `selected` chooses one pair for that task. Child policies may narrow their parent's

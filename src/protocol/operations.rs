@@ -1,5 +1,9 @@
 pub const OPERATIONS: &[(&str, &str)] = &[
     (
+        "provider_login",
+        "Start, inspect, complete or cancel a provider sign-in through the agent; no model usage required",
+    ),
+    (
         "skill_pack_list",
         "Inspect this runtime's file-based default skill pack and content hash",
     ),

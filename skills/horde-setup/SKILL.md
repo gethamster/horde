@@ -28,11 +28,43 @@ For providers, use action `configure_provider` with the requested provider and
 executor `roles`. Preserve existing settings outside the requested change. For a
 custom provider, discover its supported `kind`, authentication mode, `base_url`,
 concrete `model`, and `api_key_env` from existing configuration or official provider
-information. Supply `credential_env` or `credential_file` as a secret reference;
-never put a credential value in tool arguments, prompts, or logs. A preset is a
-starting point, not proof that its default model matches the user's request.
+information. When the user gives the trusted agent an API key, pass it as
+`credential`. Use `credential_env` or `credential_file` when a reference is already
+available; these three sources are mutually exclusive. Do not echo the key in
+responses. A preset does not prove that its default model matches the user's request.
 Install a missing harness through existing package or platform access when that
-installation is authorized. Subscription providers use their own login stores.
+installation is authorized. An explicitly supplied key applies to the next
+invocation, including when the daemon inherited an older value. Horde records
+file priority for that variable, so no restart is needed. Running invocations
+retain their credentials.
+
+For Tuara, use `provider_login` action `start` with provider `tuara` or the existing
+Tuara provider name and a stable `request_id`. Poll `status`, relay the key-page
+URL, and ask the user to sign in and create or copy an inference API key. Submit
+the key as `input` with the session ID, then poll until completion. Horde verifies
+the key's `router:invoke` access before saving it for the next invocation. Failed
+verification, cancellation, or expiry preserves the existing key. This flow needs
+no Tuara CLI and makes no inference request; Tuara account OAuth tokens do not
+grant inference access. A successful session verifies the key but leaves quota
+unknown. Preserve the existing model and role assignments.
+
+For Codex or Claude subscription accounts, use `provider_login` action `start`
+with `provider` and a stable `request_id`. The optional `timeout_seconds` defaults
+to 600 and accepts 1 through 1800. Poll `status` with the returned `session_id`.
+Relay the CLI's URL and device code to the user, who completes browser sign-in.
+If the CLI asks for a manual authorization code, ask only for that input and send
+it with action `submit`, `session_id`, and `input`. Continue checking status;
+use `cancel` if the user abandons sign-in. The user needs no terminal, and the
+login process makes no model request.
+
+Reuse the request ID after a lost reply. Sessions survive tool calls and client
+disconnects, but a daemon restart requires a new login. This changes the shared
+CLI account on the runtime; it does not create a separate subscription profile.
+Successful login verifies the CLI's authentication status, while quota remains
+unknown. A changed API key or verified login invalidates affected provider quota
+observations and preserves local budgets. Existing tasks retain their saved
+provider selection; changing role assignments affects new tasks. Reconcile
+uncertain work before resuming it.
 
 For a fleet, use `configure_controller`, then `create_fleet_key`. The returned
 `bootstrap` describes the daemon argv, environment, and private secret mount for
@@ -46,8 +78,9 @@ existing execution access, not an enrollment requirement. The setup tool does no
 create remote infrastructure; use the caller's authorized platform access.
 
 Check readiness from evidence. `configure_provider` means settings were saved;
-`credential:present` does not prove the provider accepts that credential. Execute
-returned harness authentication-status checks and report their actual result.
+`credential:present` does not prove the provider accepts that credential. Use the
+login session's authentication result or execute returned authentication-status
+checks and report their actual result.
 `verify` currently performs inspection: its `not_probed` checks remain unverified.
 A configured controller is not a confirmed listener, and successful enrollment is
 not proof that a worker can run its selected model. Start the requested daemon,
