@@ -6,11 +6,15 @@ use std::{
     path::PathBuf,
 };
 mod watch;
+static CLI_PROJECT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 #[derive(Parser)]
 #[command(name = "horde", version, about = "Durable local task orchestration")]
 struct Cli {
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
+    /// Select the project for task operations; MCP permanently binds this connection.
+    #[arg(long = "project", global = true)]
+    selected_project: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -57,7 +61,21 @@ enum Commands {
     Result {
         task: String,
     },
-    List,
+    List {
+        /// Administrator view across every project.
+        #[arg(long, conflicts_with = "selected_project")]
+        all_projects: bool,
+    },
+    /// Manage projects and their repository/runtime grants.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
+    },
+    /// Manage provider accounts and explicit project grants.
+    Account {
+        #[command(subcommand)]
+        command: AccountCommands,
+    },
     /// Summarize reported usage, cost, retries and coordination overhead.
     Metrics {
         task: String,
@@ -129,7 +147,11 @@ enum Commands {
         args: String,
     },
     /// Expose runtime tools to a personal agent over newline-delimited stdio MCP.
-    Mcp,
+    Mcp {
+        /// Expose fleet administration instead of binding to one project.
+        #[arg(long, conflicts_with = "selected_project")]
+        admin: bool,
+    },
     /// Validate a composed template without executing it.
     Validate {
         template: String,
@@ -175,6 +197,86 @@ enum Commands {
     Runtime {
         #[command(subcommand)]
         command: RuntimeCommands,
+    },
+}
+#[derive(Subcommand)]
+enum ProjectCommands {
+    Create {
+        name: String,
+        /// Reuse an immutable project UUID when configuring another host.
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        slug: Option<String>,
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
+        #[arg(long, default_value="native", value_parser=["native","vm"])]
+        isolation: String,
+    },
+    List,
+    Inspect {
+        project: String,
+    },
+    Update {
+        project: String,
+        #[arg(long)]
+        concurrency: Option<usize>,
+        #[arg(long, value_parser=["native","vm"])]
+        isolation: Option<String>,
+    },
+    Configure {
+        project: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
+    RepoAdd {
+        project: String,
+        path: PathBuf,
+    },
+    RuntimeGrant {
+        project: String,
+        runtime: String,
+        /// Reserve this runtime exclusively for this project.
+        #[arg(long)]
+        dedicated: bool,
+    },
+    RuntimeRevoke {
+        project: String,
+        runtime: String,
+    },
+}
+#[derive(Subcommand)]
+enum AccountCommands {
+    Create {
+        name: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long, default_value = "api")]
+        auth_mode: String,
+        #[arg(long, default_value = "")]
+        base_url: String,
+        #[arg(long, default_value_t = 1)]
+        concurrency: usize,
+    },
+    List,
+    Inspect {
+        account: String,
+    },
+    Grant {
+        account: String,
+        project: String,
+    },
+    Revoke {
+        account: String,
+        project: String,
+    },
+    /// Read credentials from a private JSON file; never place secrets on the command line.
+    CredentialSet {
+        account: String,
+        credential_file: PathBuf,
+    },
+    DeliveryList {
+        account: String,
     },
 }
 #[derive(Subcommand)]
@@ -249,6 +351,12 @@ enum ProviderCommands {
 }
 #[derive(Subcommand)]
 enum RuntimeCommands {
+    /// Print the bundled Lima network guard for administrator installation.
+    GuardScript,
+    /// Check a local Lima profile's isolation prerequisites without creating a VM.
+    Doctor {
+        profile: String,
+    },
     Reconcile {
         id: String,
         #[arg(long)]
@@ -263,6 +371,9 @@ enum RuntimeCommands {
         /// Emit the complete machine-readable runtime listing.
         #[arg(long)]
         json: bool,
+        /// Administrator view across every project.
+        #[arg(long, conflicts_with = "selected_project")]
+        all_projects: bool,
     },
     /// Give a connected runtime a memorable name.
     Rename {
@@ -375,7 +486,44 @@ enum NetworkCommands {
     /// Verify a discovered peer's certificate and authenticated health service.
     Probe { peer: String },
 }
-fn request(root: &std::path::Path, method: &str, args: Value) -> Result<Value> {
+fn project_settings(
+    root: &std::path::Path,
+    repo: &std::path::Path,
+) -> Result<(horde::store::Store, String, horde::config::Settings)> {
+    let db = horde::store::Store::open(root)?;
+    let project = match CLI_PROJECT.get() {
+        Some(project) => horde::projects::resolve(&db, project)?,
+        None => horde::projects::infer(&db, repo)?
+            .unwrap_or_else(|| horde::projects::DEFAULT_PROJECT.to_owned()),
+    };
+    if let Some(owner) = horde::projects::infer(&db, repo)? {
+        anyhow::ensure!(owner == project, "repository belongs to another project");
+    }
+    let settings = horde::config::Settings::load_project(&db, &project, repo)?;
+    Ok((db, project, settings))
+}
+
+async fn project_probe(
+    db: &horde::store::Store,
+    project: &str,
+    config: &horde::config::ExecutorConfig,
+    tools: bool,
+) -> Result<Value> {
+    let key = horde::account_auth::api_key(db, project, config)?;
+    if tools {
+        horde::executor::probe_tools_with_key(config, &key).await
+    } else {
+        horde::executor::probe_with_key(config, &key).await
+    }
+}
+
+fn request(root: &std::path::Path, method: &str, mut args: Value) -> Result<Value> {
+    if let Some(project) = CLI_PROJECT.get() {
+        if let Some(explicit) = args["project"].as_str() {
+            anyhow::ensure!(explicit == project, "conflicting project selection");
+        }
+        args["project"] = json!(project);
+    }
     let mut stream = std::os::unix::net::UnixStream::connect(root.join("daemon.sock"))
         .context("daemon unavailable; run `horde start`")?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(120)))?;
@@ -393,7 +541,7 @@ fn request(root: &std::path::Path, method: &str, args: Value) -> Result<Value> {
     }
     Ok(response["result"].clone())
 }
-fn mcp(root: &std::path::Path) -> Result<()> {
+fn mcp(root: &std::path::Path, project: Option<&str>) -> Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -402,12 +550,29 @@ fn mcp(root: &std::path::Path) -> Result<()> {
             bail!("MCP request too large");
         }
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(v) => horde::protocol::mcp_response(&v, |name, args| request(root, name, args)),
+            Ok(v) => horde::protocol::mcp_response(&v, |name, args| {
+                horde::daemon_client::request_scoped(root, name, args, project)
+            }),
             Err(e) => Some(
                 json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":e.to_string()}}),
             ),
         };
         if let Some(mut response) = response {
+            if project.is_some()
+                && let Some(tools) = response["result"]["tools"].as_array_mut()
+            {
+                tools.retain(|tool| {
+                    horde::protocol::project_allowed(tool["name"].as_str().unwrap_or(""))
+                });
+                for tool in tools {
+                    if let Some(properties) = tool["inputSchema"]["properties"].as_object_mut() {
+                        properties.remove("project");
+                    }
+                    if let Some(required) = tool["inputSchema"]["required"].as_array_mut() {
+                        required.retain(|field| field != "project");
+                    }
+                }
+            }
             if horde::branding::var_os("HORDE_WORKER_TOKEN").is_some()
                 && let Some(tools) = response["result"]["tools"].as_array_mut()
             {
@@ -434,6 +599,32 @@ async fn main() -> Result<()> {
         .name(horde::branding::cli_name())
         .get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
+    anyhow::ensure!(
+        cli.selected_project.is_none()
+            || !matches!(
+                &cli.command,
+                Commands::List { all_projects: true }
+                    | Commands::Runtime {
+                        command: RuntimeCommands::List {
+                            all_projects: true,
+                            ..
+                        }
+                    }
+                    | Commands::Mcp { admin: true }
+            ),
+        "--project cannot be used with --all-projects or mcp --admin"
+    );
+    anyhow::ensure!(
+        cli.selected_project.is_none()
+            || !matches!(
+                &cli.command,
+                Commands::Config { .. } | Commands::Network { .. } | Commands::Skills { .. }
+            ),
+        "this command manages host-wide configuration; omit --project, or use project configure PROJECT --file SETTINGS.toml and project runtime-grant"
+    );
+    if let Some(project) = &cli.selected_project {
+        let _ = CLI_PROJECT.set(project.clone());
+    }
     let explicit_root = cli.data_dir.is_some();
     if let Commands::Init { agent, repo, .. } = &cli.command {
         let report = horde::init::run(repo, *agent, cli.data_dir.as_deref())?;
@@ -559,7 +750,7 @@ async fn main() -> Result<()> {
                 .run_until(horde::runtime::daemon(&root))
                 .await;
         }
-        Commands::Mcp => return mcp(&root),
+        Commands::Mcp { admin: _ } => return mcp(&root, cli.selected_project.as_deref()),
         Commands::Stop => request(&root, "shutdown", json!({}))?,
         Commands::Start => horde::daemon_client::start(&root).await?,
         Commands::Submit {
@@ -585,7 +776,99 @@ async fn main() -> Result<()> {
             "reviews",
             json!({"task":task,"after":after,"limit":limit}),
         )?,
-        Commands::List => request(&root, "list_tasks", json!({}))?,
+        Commands::List { all_projects } => {
+            request(&root, "list_tasks", json!({"all_projects":all_projects}))?
+        }
+        Commands::Project { command } => {
+            let (name, args) = match command {
+                ProjectCommands::Create {
+                    name,
+                    id,
+                    slug,
+                    concurrency,
+                    isolation,
+                } => (
+                    "project_create",
+                    json!({"name":name,"id":id,"slug":slug,"concurrency":concurrency,"isolation":isolation}),
+                ),
+                ProjectCommands::List => ("project_list", json!({})),
+                ProjectCommands::Inspect { project } => {
+                    ("project_inspect", json!({"project":project}))
+                }
+                ProjectCommands::Update {
+                    project,
+                    concurrency,
+                    isolation,
+                } => {
+                    let mut args = json!({"project":project});
+                    if let Some(concurrency) = concurrency {
+                        args["concurrency"] = json!(concurrency);
+                    }
+                    if let Some(isolation) = isolation {
+                        args["isolation"] = json!(isolation);
+                    }
+                    ("project_update", args)
+                }
+                ProjectCommands::Configure { project, file } => (
+                    "project_configure",
+                    json!({"project":project,"file":file.canonicalize()?}),
+                ),
+                ProjectCommands::RepoAdd { project, path } => (
+                    "project_repo_add",
+                    json!({"project":project,"path":path.canonicalize()?}),
+                ),
+                ProjectCommands::RuntimeGrant {
+                    project,
+                    runtime,
+                    dedicated,
+                } => (
+                    "project_runtime_grant",
+                    json!({"project":project,"runtime":runtime,"dedicated":dedicated}),
+                ),
+                ProjectCommands::RuntimeRevoke { project, runtime } => (
+                    "project_runtime_revoke",
+                    json!({"project":project,"runtime":runtime}),
+                ),
+            };
+            request(&root, name, args)?
+        }
+        Commands::Account { command } => {
+            let (name, args) = match command {
+                AccountCommands::Create {
+                    name,
+                    provider,
+                    auth_mode,
+                    base_url,
+                    concurrency,
+                } => (
+                    "account_create",
+                    json!({"name":name,"provider":provider,"auth_mode":auth_mode,"base_url":base_url,"concurrency":concurrency}),
+                ),
+                AccountCommands::List => ("account_list", json!({})),
+                AccountCommands::Inspect { account } => {
+                    ("account_inspect", json!({"account":account}))
+                }
+                AccountCommands::Grant { account, project } => (
+                    "account_grant",
+                    json!({"account":account,"project":project}),
+                ),
+                AccountCommands::Revoke { account, project } => (
+                    "account_revoke",
+                    json!({"account":account,"project":project}),
+                ),
+                AccountCommands::CredentialSet {
+                    account,
+                    credential_file,
+                } => (
+                    "account_credential_set",
+                    json!({"account":account,"credential_file":credential_file.canonicalize()?}),
+                ),
+                AccountCommands::DeliveryList { account } => {
+                    ("account_delivery_list", json!({"account":account}))
+                }
+            };
+            request(&root, name, args)?
+        }
         Commands::Events {
             task,
             follow: false,
@@ -639,8 +922,13 @@ async fn main() -> Result<()> {
             // skill the catalog does not hold fails here and not at the first
             // `submit`. Validation stays structural when no pack resolves: the
             // catalog error is reported and the selection check is skipped.
-            let settings = horde::config::Settings::load(&repo)?;
-            match horde::skills::baseline_for_root(&root, &repo.canonicalize()?, &settings.skills) {
+            let (db, project, settings) = project_settings(&root, &repo)?;
+            let project_root = horde::projects::storage_root(&db, &project)?;
+            match horde::skills::baseline_for_root(
+                &project_root,
+                &repo.canonicalize()?,
+                &settings.skills,
+            ) {
                 Ok(catalog) => {
                     for (index, step) in plan["steps"]
                         .as_array()
@@ -671,7 +959,7 @@ async fn main() -> Result<()> {
             provider,
         } => {
             let skill_pack = horde::skill_catalog::check(&root)?;
-            let settings = horde::config::Settings::load(&repo)?;
+            let (db, project, settings) = project_settings(&root, &repo)?;
             let mut result = if probe || probe_tuara {
                 let config = if probe_tuara {
                     settings
@@ -686,7 +974,7 @@ async fn main() -> Result<()> {
                     config.kind == "tuara",
                     "streaming probe requires a native tuara provider"
                 );
-                horde::executor::probe_tools(&config).await?
+                project_probe(&db, &project, &config, true).await?
             } else {
                 let mut resolved_models = serde_json::Map::new();
                 if let Some(name) = &provider {
@@ -695,7 +983,10 @@ async fn main() -> Result<()> {
                         config.kind == "tuara",
                         "catalog resolution requires a native tuara provider"
                     );
-                    resolved_models.insert(name.clone(), horde::executor::probe(&config).await?);
+                    resolved_models.insert(
+                        name.clone(),
+                        project_probe(&db, &project, &config, false).await?,
+                    );
                 } else {
                     // Every auto-model provider is probed and REPORTED; one unreachable
                     // provider (a local server that is down) no longer aborts the whole
@@ -703,12 +994,14 @@ async fn main() -> Result<()> {
                     for (name, provider) in &settings.providers {
                         if provider.kind == "tuara" && provider.model.as_deref() == Some("auto") {
                             let entry = match settings.provider(name).context("provider missing") {
-                                Ok(config) => match horde::executor::probe(&config).await {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        json!({"error": format!("{e:#}"), "base_url": config.base_url})
+                                Ok(config) => {
+                                    match project_probe(&db, &project, &config, false).await {
+                                        Ok(v) => v,
+                                        Err(e) => {
+                                            json!({"error": format!("{e:#}"), "base_url": config.base_url})
+                                        }
                                     }
-                                },
+                                }
                                 Err(e) => json!({"error": format!("{e:#}")}),
                             };
                             resolved_models.insert(name.clone(), entry);
@@ -756,7 +1049,15 @@ async fn main() -> Result<()> {
                 ServiceCommands::Uninstall => "uninstall",
             },
         )?,
-        Commands::Usage => request(&root, "account_status", json!({}))?,
+        Commands::Usage => request(
+            &root,
+            if CLI_PROJECT.get().is_some() {
+                "account_usage"
+            } else {
+                "account_status"
+            },
+            json!({}),
+        )?,
         Commands::Skills { command } => match command {
             SkillCommands::List => request(&root, "skill_pack_list", json!({}))?,
             SkillCommands::Install { path } => request(
@@ -766,9 +1067,34 @@ async fn main() -> Result<()> {
             )?,
         },
         Commands::Runtime { command } => {
-            let human_list = matches!(&command, RuntimeCommands::List { json: false })
+            if matches!(command, RuntimeCommands::GuardScript) {
+                print!("{}", horde::lima::guard_script());
+                return Ok(());
+            }
+            if let RuntimeCommands::Doctor { profile } = &command {
+                let config = horde::fleet::load()?;
+                let profile = config
+                    .profiles
+                    .get(profile)
+                    .context("unknown runtime profile")?;
+                let db = horde::store::Store::open(&root)?;
+                if let Some(project) = CLI_PROJECT.get() {
+                    anyhow::ensure!(
+                        horde::projects::resolve(&db, project)?
+                            == horde::projects::resolve(&db, &profile.project)?,
+                        "runtime profile belongs to another project"
+                    );
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&horde::lima::doctor(profile).await?)?
+                );
+                return Ok(());
+            }
+            let human_list = matches!(&command, RuntimeCommands::List { json: false, .. })
                 && std::io::IsTerminal::is_terminal(&std::io::stdout());
             let (method, args) = match command {
+                RuntimeCommands::Doctor { .. } | RuntimeCommands::GuardScript => unreachable!(),
                 RuntimeCommands::Reconcile {
                     id,
                     resource,
@@ -780,7 +1106,9 @@ async fn main() -> Result<()> {
                 RuntimeCommands::Status => ("runtime_status", json!({})),
                 RuntimeCommands::Drain => ("runtime_drain", json!({})),
                 RuntimeCommands::Resume => ("runtime_resume", json!({})),
-                RuntimeCommands::List { .. } => ("runtime_list", json!({})),
+                RuntimeCommands::List { all_projects, .. } => {
+                    ("runtime_list", json!({"all_projects":all_projects}))
+                }
                 RuntimeCommands::Rename { id, name } => {
                     ("runtime_rename", json!({"id":id,"name":name}))
                 }

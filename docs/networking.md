@@ -390,6 +390,33 @@ This is a cooperative single-user network of enrolled runtimes. It does not
 provide a distributed scheduler, shared SQLite, transparent filesystem access,
 public bot API, or an isolation boundary against malicious same-user code.
 
+## Project authorization across hosts
+
+Certificate enrollment proves runtime identity. Each project separately grants
+which runtimes may execute its work. On the controller, grant the destination
+runtime with `horde project runtime-grant PROJECT RUNTIME_ID`. The receiver must
+have the same immutable project ID, approve the sending runtime for that project,
+and grant local execution. Existing network execution-client and delegation
+permissions remain required.
+
+An administrator can use the `project_create` MCP operation's optional `id` to
+register the controller's project UUID on a manually configured receiver. A slug
+alone is insufficient because independent creates generate different IDs.
+Managed Lima provisioning carries the controller's project identity during setup.
+
+Assignments, durable deduplication records, follow-up operations, and execution
+capabilities carry the project ID. Reusing an assignment ID with different
+project identity is rejected. Project support is an explicit peer capability;
+Horde does not send new project-scoped assignments to an older peer without it.
+
+Managed account grants and runtime grants both apply to credential delivery.
+The receiver gets only the selected project's authorized profile. Codex refresh
+credentials remain at the controller, which handles authenticated access-token
+requests. Controller account reservations remain authoritative across worker
+reconnects and keep shared subscriptions from receiving duplicate local quota
+identities. An unreachable runtime retains unresolved reservations and cleanup
+records until its state can be reconciled.
+
 ## Sources
 
 - [Tailscale CLI status](https://tailscale.com/docs/reference/tailscale-cli): supported read-only JSON interface; its schema can change, so parsing failures are explicit.

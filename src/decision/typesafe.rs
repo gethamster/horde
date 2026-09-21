@@ -6,6 +6,7 @@ use reqwest::{Client, StatusCode, Url, redirect::Policy};
 use serde_json::Value;
 use std::{
     net::IpAddr,
+    path::{Path, PathBuf},
     sync::OnceLock,
     time::{Duration, SystemTime},
 };
@@ -61,10 +62,36 @@ pub struct TypeSafe {
     client: Client,
     config: Decision,
     endpoint: Url,
+    authority: Authority,
+}
+
+#[derive(Clone)]
+enum Authority {
+    User,
+    Task { root: PathBuf, task: String },
 }
 
 impl TypeSafe {
     pub fn new(config: Decision) -> Result<Self> {
+        Self::new_with_authority(config, Authority::User)
+    }
+
+    /// Authorize every provider attempt against the task's current project owner.
+    pub fn new_project(
+        config: Decision,
+        root: impl AsRef<Path>,
+        task: impl Into<String>,
+    ) -> Result<Self> {
+        Self::new_with_authority(
+            config,
+            Authority::Task {
+                root: root.as_ref().to_path_buf(),
+                task: task.into(),
+            },
+        )
+    }
+
+    fn new_with_authority(config: Decision, authority: Authority) -> Result<Self> {
         config.validate()?;
         let endpoint = endpoint(&config.base_url)?;
         static CLIENT: OnceLock<Client> = OnceLock::new();
@@ -79,12 +106,23 @@ impl TypeSafe {
             client,
             config,
             endpoint,
+            authority,
         })
     }
 
     fn authorize(&self) -> Result<String> {
-        let current = crate::config::Settings::load_user()
-            .context("current operator decision configuration unavailable")?;
+        let current = match &self.authority {
+            Authority::User => crate::config::Settings::load_user()
+                .context("current operator decision configuration unavailable")?,
+            Authority::Task { root, task } => {
+                let db = crate::store::Store::open(root)
+                    .context("current project decision configuration unavailable")?;
+                let project = crate::projects::task_project(&db, task)
+                    .context("current task project unavailable")?;
+                crate::config::Settings::load_project_user(&db, &project)
+                    .context("current project decision configuration unavailable")?
+            }
+        };
         ensure!(
             current.decision.mode == crate::config::DecisionMode::Shadow
                 && current.decision == self.config,

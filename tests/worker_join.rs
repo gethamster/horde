@@ -404,7 +404,11 @@ async fn duplicate_worker_name_and_controller_alias_conflict_are_reported_after_
     let joined = success(invoke_join(&f, Some(&first), &invitation, &["--name", "apollo"]).await);
     let collision = invoke_join(&f, Some(&second), &invitation, &["--name", "apollo"]).await;
     assert!(!collision.status.success());
-    assert!(String::from_utf8_lossy(&collision.stderr).contains("name apollo conflicts"));
+    assert!(
+        String::from_utf8_lossy(&collision.stderr).contains("name apollo conflicts"),
+        "{}",
+        String::from_utf8_lossy(&collision.stderr)
+    );
     assert!(second.join("fleet-worker.json").exists());
     assert!(horde::daemon_client::running(&second));
     let recovered =
@@ -418,5 +422,9 @@ async fn duplicate_worker_name_and_controller_alias_conflict_are_reported_after_
     .unwrap();
     let aliased = invoke_join(&f, Some(&first), &invitation, &["--name", "different-name"]).await;
     assert!(!aliased.status.success());
-    assert!(String::from_utf8_lossy(&aliased.stderr).contains("controller alias"));
+    assert!(
+        String::from_utf8_lossy(&aliased.stderr).contains("controller alias"),
+        "{}",
+        String::from_utf8_lossy(&aliased.stderr)
+    );
 }

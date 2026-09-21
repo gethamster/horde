@@ -42,12 +42,18 @@ pub mod repo_init;
 pub mod skill_catalog;
 pub mod skills;
 
+pub mod account_auth;
+pub mod accounts;
 pub mod agent_setup;
 pub mod budget;
 pub mod capabilities;
+pub mod codex_session;
 pub mod daemon_client;
 pub mod execution_selection;
+pub mod lima;
 pub mod orchestration;
+pub mod project_runtime;
+pub mod projects;
 pub mod remote_submit;
 pub mod runtime_directory;
 pub mod skill_policy;

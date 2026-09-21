@@ -7,6 +7,9 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
+mod account_control;
+mod placement;
+pub use placement::route_queued;
 pub mod wire {
     tonic::include_proto!("task.federation.v1");
 }
@@ -91,6 +94,7 @@ pub fn call_sync(
     .map_err(|_| anyhow::anyhow!("federation client interrupted"))?
 }
 pub fn forward(db: &Store, oid: &str, name: &str, args: &Value) -> Result<Option<Value>> {
+    let project = crate::projects::task_project(db, oid)?;
     let origin = db.rows("SELECT * FROM remote_origins WHERE task=?", &[&oid])?;
     let Some(origin) = origin.first() else {
         return Ok(None);
@@ -108,7 +112,7 @@ pub fn forward(db: &Store, oid: &str, name: &str, args: &Value) -> Result<Option
             config(db)?,
             origin["owner_peer"].as_str().context("owner peer")?.into(),
             "caller_operation".into(),
-            json!({"task":origin["owner_task"],"method":"knowledge_options","args":{}}),
+            json!({"project":project,"task":origin["owner_task"],"method":"knowledge_options","args":{}}),
         )
         .context("knowledge operations require an updated owning runtime")?;
         ensure!(
@@ -160,7 +164,7 @@ pub fn forward(db: &Store, oid: &str, name: &str, args: &Value) -> Result<Option
         config(db)?,
         origin["owner_peer"].as_str().context("owner peer")?.into(),
         "caller_operation".into(),
-        json!({"task":origin["owner_task"],"method":name,"args":args,"snapshot":caller_snapshot,"origin_step":origin_step}),
+        json!({"project":project,"task":origin["owner_task"],"method":name,"args":args,"snapshot":caller_snapshot,"origin_step":origin_step}),
     )?;
     if name == "delegate_task" && caller_worker.is_string() {
         let key = format!(
@@ -288,7 +292,7 @@ fn bundle_packet(db: &Store, oid: &str, peer: &str, config: &NetworkConfig) -> R
                 .is_some_and(|v| v.iter().any(|n| n == name)),
             "remote runtime is not approved to receive selected bundle"
         );
-        let (version, values) = crate::secrets::load_bundle(name)?;
+        let (version, values) = crate::secrets::load_bundle_for_task(db, oid, name)?;
         ensure!(
             bundle["version"] == version,
             "application bundle changed; refresh it explicitly"
@@ -320,7 +324,9 @@ fn save_bundles(
             values.keys().all(|k| !k.starts_with("HORDE_")),
             "reserved environment key"
         );
-        let dir = db.root.join("remote-secrets").join(oid);
+        let dir = crate::project_runtime::task_root(db, oid)?
+            .join("remote-secrets")
+            .join(oid);
         std::fs::create_dir_all(&dir)?;
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
@@ -369,21 +375,61 @@ impl wire::federation_server::Federation for Service {
 impl Service {
     fn handle(&self, db: &Store, peer: &str, method: &str, args: &Value) -> Result<Value> {
         match method {
+            "account_acquire" | "account_release" | "project_acquire" | "project_release" => {
+                account_control::account_operation(db, peer, method, args)
+            }
+            "account_remove" | "account_retire" => {
+                account_control::remove_account(db, peer, method, args)
+            }
+            "account_tokens" => crate::account_auth::remote_tokens(db, peer, args),
             "manage" => {
                 ensure!(
                     self.config.management_clients.iter().any(|p| p == peer),
                     "caller is not approved for runtime management"
                 );
+                if let Some(value) = crate::fleet::remote_command(db, peer, args)? {
+                    return Ok(value);
+                }
                 crate::management::remote_command(db, peer, args)
             }
 
             "capabilities" => Ok(
-                json!({"runtime":self.config.runtime_id,"execution_available":self.config.execution_clients.iter().any(|p|p==peer),"protocol":1}),
+                json!({"runtime":self.config.runtime_id,"execution_available":self.config.execution_clients.iter().any(|p|p==peer),"protocol":1,"features":["projects","lima_host_operations"],"platform":crate::capabilities::local(db)?["platform"]}),
             ),
             "accept" => {
                 ensure!(
                     self.config.execution_clients.iter().any(|p| p == peer),
                     "caller is not approved for execution"
+                );
+                let project = crate::projects::resolve(
+                    db,
+                    args["project"]
+                        .as_str()
+                        .unwrap_or(crate::projects::DEFAULT_PROJECT),
+                )?;
+                ensure!(
+                    crate::projects::runtime_allowed(db, &project, peer)?,
+                    "caller is not granted this project"
+                );
+                ensure!(
+                    crate::projects::runtime_allowed(db, &project, &self.config.runtime_id)?,
+                    "runtime is not granted this project"
+                );
+                if let Some(selected_project) = args["execution"]["project"].as_str() {
+                    ensure!(
+                        selected_project == project,
+                        "assignment execution project mismatch"
+                    );
+                }
+                let isolation: String = db.conn.query_row(
+                    "SELECT isolation FROM projects WHERE id=?",
+                    [&project],
+                    |row| row.get(0),
+                )?;
+                ensure!(
+                    isolation != "vm"
+                        || crate::capabilities::local(db)?["platform"]["isolation"] == "lima",
+                    "project requires a VM runtime"
                 );
                 let owner = args["task"].as_str().context("owner task")?;
                 let old = db.rows(
@@ -397,6 +443,11 @@ impl Service {
                     .remove("bundles");
                 let digest = crate::store::hash(serde_json::to_string(&immutable)?.as_bytes());
                 if let Some(old) = old.first() {
+                    crate::projects::authorize_task(
+                        db,
+                        &project,
+                        old["task"].as_str().context("existing task")?,
+                    )?;
                     let saved: String = db.conn.query_row(
                         "SELECT data FROM external_ops WHERE task=? AND name='federation.request'",
                         [old["task"].as_str()],
@@ -408,6 +459,7 @@ impl Service {
                     );
                     return Ok(json!({"id":old["task"],"duplicate":true}));
                 }
+                placement::validate_required(db, &project, args)?;
                 if let Some(execution) = args.get("execution") {
                     crate::execution_selection::validate_received(
                         db,
@@ -415,14 +467,13 @@ impl Service {
                         &self.config.runtime_id,
                     )?;
                 }
-                let repo = db
-                    .root
+                let repo = crate::projects::storage_root(db, &project)?
                     .join("remote-repositories")
                     .join(crate::store::hash(format!("{peer}:{owner}").as_bytes()));
                 if !repo.join(".git").exists() {
                     unpack(&args["snapshot"], &repo)?;
                 }
-                let mut settings = crate::config::Settings::load(&db.root)?;
+                let mut settings = crate::config::Settings::load_project_user(db, &project)?;
                 let inherited: crate::config::Settings =
                     serde_json::from_value(args["settings"].clone())?;
                 settings.allow_commands &= inherited.allow_commands;
@@ -439,7 +490,8 @@ impl Service {
                 let plan: crate::template::Plan = serde_json::from_value(args["plan"].clone())?;
                 crate::template::validate(&plan.steps)?;
                 db.atomic(|| {
-                    let oid = db.submit_pinned(
+                    let oid = db.submit_pinned_project(
+                        &project,
                         args["objective"].as_str().context("objective")?,
                         &repo,
                         &settings,
@@ -461,13 +513,24 @@ impl Service {
                     sync_context(db, &oid, &args["context"])?;
                     db.conn.execute(
                         "INSERT INTO remote_context VALUES(?,?)",
-                        params![oid, json!({"context":args["context"]}).to_string()],
+                        params![oid, json!({"context":args["context"],"managed_accounts":args["managed_accounts"]}).to_string()],
                     )?;
                     Ok(json!({"id":oid}))
                 })
             }
             "status" | "cancel" | "revise" => {
                 let oid = args["task"].as_str().context("task")?;
+                if method == "cancel" {
+                    crate::projects::authorize_task(
+                        db,
+                        args["project"]
+                            .as_str()
+                            .unwrap_or(crate::projects::DEFAULT_PROJECT),
+                        oid,
+                    )?;
+                } else {
+                    authorize_project_operation(db, peer, oid, args)?;
+                }
                 ensure!(
                     !db.rows(
                         "SELECT task FROM remote_origins WHERE task=? AND owner_peer=?",
@@ -528,6 +591,7 @@ impl Service {
             "caller_operation" | "sync" | "environment_lease" | "child_result"
             | "child_verified" => {
                 let oid = args["task"].as_str().context("task")?;
+                authorize_project_operation(db, peer, oid, args)?;
                 ensure!(
                     !db.rows(
                         "SELECT task FROM remote_links WHERE task=? AND peer=?",
@@ -617,6 +681,7 @@ impl Service {
                 );
                 let mut input = args["args"].clone();
                 input["task"] = json!(oid);
+                input["project"] = json!(crate::projects::task_project(db, oid)?);
                 input.as_object_mut().context("arguments")?.remove("worker");
                 if matches!(
                     name,
@@ -688,7 +753,12 @@ pub async fn tick(db: &Store) -> Result<()> {
         &[],
     )?;
     let origins = db.rows("SELECT * FROM remote_origins", &[])?;
-    if links.is_empty() && origins.is_empty() {
+    let credential_cleanup: bool = db.conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM credential_deliveries WHERE state IN ('revocation_pending','replacement_pending'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if links.is_empty() && origins.is_empty() && !credential_cleanup {
         return Ok(());
     }
     let config = match config(db) {
@@ -698,6 +768,7 @@ pub async fn tick(db: &Store) -> Result<()> {
             return Ok(());
         }
     };
+    account_control::reconcile_credentials(db, &config).await?;
     for row in origins {
         let oid = row["task"].as_str().context("task")?;
         let peer = row["owner_peer"].as_str().context("peer")?;
@@ -712,7 +783,9 @@ pub async fn tick(db: &Store) -> Result<()> {
                 )?
                 .is_empty()
         {
-            let secrets = db.root.join("remote-secrets").join(oid);
+            let secrets = crate::project_runtime::task_root(db, oid)?
+                .join("remote-secrets")
+                .join(oid);
             if secrets.exists() {
                 std::fs::remove_dir_all(secrets)?;
             }
@@ -722,7 +795,7 @@ pub async fn tick(db: &Store) -> Result<()> {
             &config,
             peer,
             "sync",
-            json!({"task":row["owner_task"],"need_bundles":!terminal}),
+            json!({"project":crate::projects::task_project(db, oid)?,"task":row["owner_task"],"need_bundles":!terminal}),
         )
         .await
         {
@@ -730,7 +803,7 @@ pub async fn tick(db: &Store) -> Result<()> {
                 let synced = db.atomic(||{
      db.conn.execute("UPDATE tasks SET status='running' WHERE id=? AND status='blocked' AND EXISTS(SELECT 1 FROM external_ops WHERE task=? AND name='federation.sync' AND state='blocked') AND NOT EXISTS(SELECT 1 FROM attempts a JOIN steps t ON t.id=a.step WHERE t.task=? AND a.state='uncertain')",params![oid,oid,oid])?;
      db.conn.execute("DELETE FROM external_ops WHERE task=? AND name='federation.sync'",[oid])?;
-     db.conn.execute("INSERT INTO remote_context VALUES(?,?) ON CONFLICT(task) DO UPDATE SET packet=excluded.packet",params![oid,json!({"context":reply["context"],"children":reply["children"],"pending_questions":reply["pending_questions"]}).to_string()])?;
+     db.conn.execute("INSERT INTO remote_context VALUES(?,?) ON CONFLICT(task) DO UPDATE SET packet=json_set(excluded.packet,'$.managed_accounts',COALESCE(json_extract(remote_context.packet,'$.managed_accounts'),0))",params![oid,json!({"context":reply["context"],"children":reply["children"],"pending_questions":reply["pending_questions"]}).to_string()])?;
      sync_context(db,oid,&reply["context"])?;save_bundles(db,oid,peer,&config,&reply["bundles"])?;
      apply_remote_answers(db,oid,&reply["questions"])?;
      if reply["status"]=="cancelled"{crate::protocol::dispatch(db,"cancel",json!({"task":oid}),None)?;}
@@ -754,6 +827,10 @@ pub async fn tick(db: &Store) -> Result<()> {
    if link["state"]=="pending"||link["state"]=="sending"{
     if link["state"]=="pending" && link["status"]=="waiting" {return Ok(());}
     if link["state"]=="pending"&&!crate::delegation::capacity(db,oid)?{return Ok(());}
+    let project = crate::projects::task_project(db,oid)?;
+    ensure!(crate::projects::runtime_allowed(db,&project,peer)?, "runtime project grant revoked");
+    let features=call(&config,peer,"capabilities",json!({"project":project})).await?;
+    ensure!(features["features"].as_array().is_some_and(|items|items.iter().any(|item|item=="projects")), "runtime must advertise projects support before receiving new work");
     let mut packet=prepared_packet(db,oid)?;
     db.conn.execute("UPDATE remote_links SET state='sending',base=? WHERE task=?",params![packet["snapshot"]["commit"].as_str(),oid])?;
     packet["bundles"]=bundle_packet(db,oid,peer,&config)?;
@@ -761,8 +838,14 @@ pub async fn tick(db: &Store) -> Result<()> {
     db.conn.execute("UPDATE remote_links SET state='running',remote_id=? WHERE task=?",params![reply["id"].as_str(),oid])?;return Ok(());
    }
    let remote=link["remote_id"].as_str().context("remote task")?;
-   if link["status"]=="cancelled"{call(&config,peer,"cancel",json!({"task":remote})).await?;}
-   let reply=call(&config,peer,"status",json!({"task":remote})).await?;
+   let project=crate::projects::task_project(db,oid)?;
+   if !crate::projects::runtime_allowed(db,&project,peer)? && db.task(oid)?["status"]!="cancelled" {
+    call(&config,peer,"cancel",json!({"project":project,"task":remote})).await?;
+    db.conn.execute("UPDATE tasks SET status='cancelled' WHERE id=?",[oid])?;
+    db.event(oid,"task.runtime_grant_revoked",json!({"project":project,"runtime":peer}))?;
+   }
+   if link["status"]=="cancelled"{call(&config,peer,"cancel",json!({"project":crate::projects::task_project(db,oid)?,"task":remote})).await?;}
+   let reply=call(&config,peer,"status",json!({"project":crate::projects::task_project(db,oid)?,"task":remote})).await?;
    let status=reply["task"]["status"].as_str().context("remote status")?;
    let cancelled=db.task(oid)?["status"]=="cancelled";
    // A cancellation committed while status was in flight must reach the worker
@@ -800,6 +883,13 @@ pub async fn tick(db: &Store) -> Result<()> {
 /// Import a child snapshot as a commit based on its recorded source, then use the existing integration queue.
 pub fn integrate_child(db: &Store, parent: &str, args: &Value) -> Result<Value> {
     let child = args["child"].as_str().context("child")?;
+    let project = crate::projects::task_project(db, parent)?;
+    crate::projects::authorize_task(db, &project, child)?;
+    let same_repository: bool = db.conn.query_row("SELECT p.repository=c.repository FROM task_projects p JOIN task_projects c ON c.task=? WHERE p.task=?", params![child,parent], |row| row.get(0))?;
+    ensure!(
+        same_repository,
+        "cross-repository children cannot be integrated into their parent repository"
+    );
     ensure!(
         crate::delegation::tree(db, child)?["parent"] == parent,
         "not an immediate child"
@@ -951,7 +1041,7 @@ pub async fn environment_lease(db: &Store, oid: &str, acquire: bool) -> Result<(
             &config(db)?,
             origin["owner_peer"].as_str().context("owner peer")?,
             "environment_lease",
-            json!({"task":origin["owner_task"],"acquire":acquire}),
+            json!({"project":crate::projects::task_project(db,oid)?,"task":origin["owner_task"],"acquire":acquire}),
         )
         .await?;
     }
@@ -988,7 +1078,7 @@ pub fn revise_child(db: &Store, oid: &str, steps: &Value) -> Result<Option<Value
             config(db)?,
             link["peer"].as_str().context("peer")?.into(),
             "revise".into(),
-            json!({"task":link["remote_id"],"steps":steps}),
+            json!({"project":crate::projects::task_project(db,oid)?,"task":link["remote_id"],"steps":steps}),
         )?;
         db.atomic(|| {
             if db
@@ -1030,9 +1120,12 @@ pub fn revise_child(db: &Store, oid: &str, steps: &Value) -> Result<Option<Value
 }
 
 pub fn clear_remote_secrets(db: &Store) -> Result<()> {
-    let dir = db.root.join("remote-secrets");
-    if dir.exists() {
-        std::fs::remove_dir_all(dir)?;
+    for project in db.rows("SELECT id FROM projects", &[])? {
+        let root = crate::projects::storage_root(db, project["id"].as_str().context("project")?)?;
+        let dir = root.join("remote-secrets");
+        if dir.exists() {
+            std::fs::remove_dir_all(dir)?;
+        }
     }
     Ok(())
 }
@@ -1068,7 +1161,19 @@ fn prepared_packet(db: &Store, oid: &str) -> Result<Value> {
         // A root's original authorization is resolved by its owning controller.
         settings["autonomy"] = json!(true);
     }
-    let mut packet = json!({"task":oid,"objective":o["objective"],"snapshot":snapshot,"context":crate::delegation::mandatory(db,oid)?,"settings":settings,"plan":serde_json::from_str::<Value>(o["plan"].as_str().context("plan")?)?,"skills":crate::skills::packet(db,oid)?});
+    let project = crate::projects::task_project(db, oid)?;
+    let effective: crate::config::Settings = serde_json::from_value(settings.clone())?;
+    let mut managed_accounts = project != crate::projects::DEFAULT_PROJECT;
+    for role in effective.executors.keys() {
+        if let Some(config) = effective.executor(role) {
+            let managed: bool = db.conn.query_row("SELECT EXISTS(SELECT 1 FROM accounts a JOIN account_grants g ON g.account=a.id WHERE g.project=? AND a.provider=? AND a.auth_mode=? AND a.base_url=? AND (? IS NULL OR a.id=?))", params![project,config.kind,config.auth_mode,config.base_url,config.account,config.account], |row| row.get(0))?;
+            managed_accounts |= managed;
+        }
+    }
+    let mut packet = json!({"managed_accounts":managed_accounts,"project":project,"task":oid,"objective":o["objective"],"snapshot":snapshot,"context":crate::delegation::mandatory(db,oid)?,"settings":settings,"plan":serde_json::from_str::<Value>(o["plan"].as_str().context("plan")?)?,"skills":crate::skills::packet(db,oid)?});
+    if let Some(row) = db.rows("SELECT data FROM external_ops WHERE task=? AND name='federation.required_capabilities'", &[&oid])?.first() {
+        packet["required_capabilities"] = serde_json::from_str(row["data"].as_str().context("pinned configuration requirements")?)?;
+    }
     if let Some(execution) = crate::execution_selection::policy(db, oid)? {
         packet["execution"] = execution;
     }
@@ -1112,7 +1217,7 @@ fn import_foreign_child(db: &Store, parent: &str, args: &Value, origin: &Value) 
         config(db)?,
         peer.into(),
         "child_result".into(),
-        json!({"task":origin["owner_task"],"child":remote_child}),
+        json!({"project":crate::projects::task_project(db,parent)?,"task":origin["owner_task"],"child":remote_child}),
     )?;
     let rows = db.rows(
         "SELECT local_child FROM foreign_children WHERE parent=? AND remote_child=?",
@@ -1156,7 +1261,7 @@ fn import_foreign_child(db: &Store, parent: &str, args: &Value, origin: &Value) 
         config(db)?,
         peer.into(),
         "child_verified".into(),
-        json!({"task":origin["owner_task"],"child":remote_child,"version":reply["version"],"evidence":result}),
+        json!({"project":crate::projects::task_project(db,parent)?,"task":origin["owner_task"],"child":remote_child,"version":reply["version"],"evidence":result}),
     )?;
     Ok(result)
 }
@@ -1178,13 +1283,19 @@ pub async fn refresh_origin(db: &Store, oid: &str) -> Result<()> {
     if let Some(origin) = rows.first() {
         let config = config(db)?;
         let peer = origin["owner_peer"].as_str().context("owner peer")?;
-        let reply = call(&config, peer, "sync", json!({"task":origin["owner_task"]})).await?;
+        let reply = call(
+            &config,
+            peer,
+            "sync",
+            json!({"project":crate::projects::task_project(db,oid)?,"task":origin["owner_task"]}),
+        )
+        .await?;
         ensure!(reply["status"] != "cancelled", "caller cancelled this task");
         db.atomic(|| {
             sync_context(db,oid,&reply["context"])?;
             apply_remote_answers(db,oid,&reply["questions"])?;
             save_bundles(db,oid,peer,&config,&reply["bundles"])?;
-            db.conn.execute("INSERT INTO remote_context VALUES(?,?) ON CONFLICT(task) DO UPDATE SET packet=excluded.packet",params![oid,json!({"context":reply["context"],"children":reply["children"],"pending_questions":reply["pending_questions"]}).to_string()])?;
+            db.conn.execute("INSERT INTO remote_context VALUES(?,?) ON CONFLICT(task) DO UPDATE SET packet=json_set(excluded.packet,'$.managed_accounts',COALESCE(json_extract(remote_context.packet,'$.managed_accounts'),0))",params![oid,json!({"context":reply["context"],"children":reply["children"],"pending_questions":reply["pending_questions"]}).to_string()])?;
             Ok(())
         })?;
     }
@@ -1219,4 +1330,20 @@ pub fn handle_control(
         packet["method"].as_str().context("method required")?,
         &packet["args"],
     )
+}
+
+fn authorize_project_operation(db: &Store, peer: &str, task: &str, args: &Value) -> Result<()> {
+    let project = crate::projects::task_project(db, task)?;
+    ensure!(
+        args["project"]
+            .as_str()
+            .unwrap_or(crate::projects::DEFAULT_PROJECT)
+            == project,
+        "task belongs to another project"
+    );
+    ensure!(
+        crate::projects::runtime_allowed(db, &project, peer)?,
+        "caller project grant revoked"
+    );
+    Ok(())
 }

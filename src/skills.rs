@@ -256,7 +256,19 @@ pub fn capture_effective(
     repo: &Path,
     configured: &BTreeMap<String, PathBuf>,
 ) -> Result<Packet> {
-    let baseline = baseline_for_root(&db.root, repo, configured)?;
+    let project = crate::projects::infer(db, repo)?
+        .unwrap_or_else(|| crate::projects::DEFAULT_PROJECT.into());
+    capture_effective_project(db, &project, repo, configured)
+}
+
+pub fn capture_effective_project(
+    db: &Store,
+    project: &str,
+    repo: &Path,
+    configured: &BTreeMap<String, PathBuf>,
+) -> Result<Packet> {
+    let root = crate::projects::storage_root(db, project)?;
+    let baseline = baseline_for_root(&root, repo, configured)?;
     db.atomic(|| crate::skill_policy::effective(db, repo, baseline))
 }
 
@@ -387,8 +399,10 @@ pub fn validate_steps(packet: &Packet, steps: &[Step]) -> Result<()> {
     Ok(())
 }
 /// Materialize outside the checkout, so bundles never enter commits or claims.
-fn materialize(db: &Store, bundle: &Bundle) -> Result<PathBuf> {
-    let root = db.root.join("skills").join(&bundle.hash);
+fn materialize(db: &Store, task: &str, bundle: &Bundle) -> Result<PathBuf> {
+    let root = crate::project_runtime::task_root(db, task)?
+        .join("skills")
+        .join(&bundle.hash);
     if !root.exists() {
         let parent = root.parent().context("skill cache")?;
         std::fs::create_dir_all(parent)?;
@@ -445,7 +459,7 @@ pub fn prompt(db: &Store, task: &str, attempt: &str, step: &Step) -> Result<Stri
     );
     for name in &selected {
         let bundle = &packet[name];
-        let root = materialize(db, bundle)?;
+        let root = materialize(db, task, bundle)?;
         let read = json!({"name":name,"path":"SKILL.md"});
         prompt.push_str(&format!("\nSelected skill {name} (SHA-256 {}). Base directory: {}. Read its pinned instructions when needed with read_skill {read}, then read referenced resources progressively using the same name and relative path. Follow next_offset for additional pages. Selection supplies metadata only; instruction bodies are not included here.\n", bundle.hash, root.display()));
         db.atomic(|| {
@@ -489,7 +503,7 @@ pub fn read(db: &Store, task: &str, args: &Value) -> Result<Value> {
         Ok(text) => ("utf8", text.to_owned()),
         Err(_) => ("hex", hex::encode(slice)),
     };
-    let root = materialize(db, bundle)?;
+    let root = materialize(db, task, bundle)?;
     db.event(task, "skill.read", json!({"name":name,"hash":bundle.hash,"path":path,"worker":args["worker"],"offset":offset,"bytes":slice.len()}))?;
     Ok(
         json!({"name":name,"hash":bundle.hash,"path":path,"base_directory":root,"encoding":encoding,"content":content,"offset":offset,"next_offset":if end < bytes.len(){Some(end)}else{None},"size":bytes.len(),"files":bundle.files.keys().collect::<Vec<_>>()}),

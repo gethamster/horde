@@ -5,6 +5,12 @@ description: Turn a requested outcome and permitted runtime/model pools into bou
 
 Keep the caller in control of task decomposition and model choice. Start with
 the requested outcome, repository, constraints, and current `runtime_capabilities`.
+Select the project before discovery or submission. Use the repository's registered
+owner when it is unambiguous; otherwise require explicit project selection.
+A project-bound connection exposes only that project's permitted resources.
+New projects need administrator-granted runtimes and accounts before execution;
+a visible runtime or known account ID does not grant access.
+
 Use `plan_execution` to resolve role pools. For example:
 
 ```json
@@ -44,6 +50,13 @@ not authorize ignoring the role constraints.
 Give independent workers distinct responsibility, required context, and concrete
 acceptance criteria. Preserve dependencies when one result is needed by another.
 Results that change a shared repository need integration and combined validation.
+
+Keep each task within its registered repository. Cross-repository work belongs in
+separate children with `repo` set to another registered checkout in the same
+project; those results cannot be Git-integrated into the parent's repository.
+Account selection occurs before each invocation within the project's grants.
+Inspect queue reasons before changing plans, and retain uncertain work and its
+reservations rather than submitting a replacement under another account.
 
 Workers inspect their pinned guidance with `list_skills` and `read_skill`, then
 send suggested persistent improvements to the caller. The caller uses

@@ -146,7 +146,10 @@ async fn deliver(
     let timeout = Duration::from_secs(notify.timeout_seconds);
     let mut outcomes = vec![];
     if notify.webhook.is_some() || notify.webhook_env.is_some() {
-        outcomes.push(("webhook", webhook(notify, timeout, payload).await));
+        outcomes.push((
+            "webhook",
+            webhook(db, &pending.task, notify, timeout, payload).await,
+        ));
     }
     if !notify.command.is_empty() {
         outcomes.push(("command", command(pending, notify, timeout, payload).await));
@@ -174,7 +177,7 @@ async fn deliver(
 
 /// The webhook URL, taken from the daemon's credentials when only a variable
 /// name was configured.
-fn webhook_url(notify: &Notify) -> Result<String> {
+fn webhook_url(db: &Store, task: &str, notify: &Notify) -> Result<String> {
     if let Some(url) = &notify.webhook {
         return Ok(url.clone());
     }
@@ -182,11 +185,31 @@ fn webhook_url(notify: &Notify) -> Result<String> {
         .webhook_env
         .as_deref()
         .context("no webhook configured")?;
-    crate::config::credential(name).with_context(|| format!("resolving notify.webhook_env {name}"))
+    let project = crate::projects::task_project(db, task)?;
+    if project == crate::projects::DEFAULT_PROJECT {
+        return crate::config::credential(name)
+            .with_context(|| format!("resolving notify.webhook_env {name}"));
+    }
+    let path = crate::projects::storage_root(db, &project)?.join("credentials.env");
+    use std::os::unix::fs::PermissionsExt;
+    anyhow::ensure!(
+        std::fs::symlink_metadata(&path)?.is_file()
+            && std::fs::metadata(&path)?.permissions().mode() & 0o077 == 0,
+        "project notification credentials must be a private regular file"
+    );
+    crate::secrets::parse(&std::fs::read_to_string(path)?)?
+        .remove(name)
+        .context("project notification credential missing")
 }
 
-async fn webhook(notify: &Notify, timeout: Duration, payload: &Value) -> Result<()> {
-    let url = webhook_url(notify)?;
+async fn webhook(
+    db: &Store,
+    task: &str,
+    notify: &Notify,
+    timeout: Duration,
+    payload: &Value,
+) -> Result<()> {
+    let url = webhook_url(db, task, notify)?;
     let client = reqwest::Client::builder().timeout(timeout).build()?;
     let response = client
         .post(&url)

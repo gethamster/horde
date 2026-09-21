@@ -336,6 +336,24 @@ fn configure_provider(root: &Path, request: &Request) -> Result<Value> {
     } else {
         base
     };
+    let spec = provisioning::Spec {
+        name: provisioning::existing_equivalent(&settings, &spec)
+            .unwrap_or_else(|| spec.name.clone()),
+        ..spec
+    };
+    let existing = settings.providers.get(&spec.name);
+    if let Some(account) = existing.and_then(|provider| provider.account.as_deref()) {
+        let db = Store::open(root)?;
+        let managed: bool = db.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?)",
+            [account],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            !managed,
+            "provider selects a managed account; configure its credentials with account_credential_set"
+        );
+    }
     let Some(kind) = spec.kind.as_deref() else {
         return Ok(blocked(
             "provider_details_missing",
@@ -438,14 +456,8 @@ fn configure_provider(root: &Path, request: &Request) -> Result<Value> {
     }
     if changed {
         let updated = Settings::load_user()?;
-        let name = updated
-            .providers
-            .iter()
-            .find(|(_, provider)| provider.api_key_env == variable && provider.auth_mode == "api")
-            .map(|(name, _)| name)
-            .context("updated API provider is unavailable")?;
         let config = updated
-            .provider(name)
+            .provider(&spec.name)
             .context("updated API provider is unavailable")?;
         crate::capacity::credentials_changed(&Store::open(root)?, &config)?;
     }

@@ -57,7 +57,152 @@ pub fn worker_allowed(name: &str) -> bool {
     ]
     .contains(&name)
 }
-pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) -> Result<Value> {
+/// Operations available to a connection permanently bound to one project.
+pub fn project_allowed(name: &str) -> bool {
+    !matches!(
+        name,
+        "shutdown"
+            | "agent_setup"
+            | "provider_login"
+            | "skill_pack_list"
+            | "skill_pack_install"
+            | "project_create"
+            | "project_update"
+            | "project_configure"
+            | "project_repo_add"
+            | "project_runtime_grant"
+            | "project_runtime_revoke"
+            | "account_create"
+            | "account_grant"
+            | "account_revoke"
+            | "account_credential_set"
+            | "account_observe"
+            | "account_status"
+            | "management_events"
+            | "management_ack"
+    ) && (!name.starts_with("runtime_") || name == "runtime_capabilities")
+}
+
+pub fn dispatch(db: &Store, name: &str, args: Value, token: Option<&str>) -> Result<Value> {
+    dispatch_scoped(db, name, args, token, None)
+}
+
+/// `bound_project` comes from the trusted transport, never from tool arguments.
+pub fn dispatch_scoped(
+    db: &Store,
+    name: &str,
+    mut args: Value,
+    token: Option<&str>,
+    bound_project: Option<&str>,
+) -> Result<Value> {
+    if !args.is_object() {
+        bail!("arguments must be an object");
+    }
+    if token.is_some() && !worker_allowed(name) {
+        bail!("operation unavailable to worker credentials");
+    }
+    let worker_project = token
+        .map(|token| {
+            let worker = db.authenticate(token)?;
+            crate::projects::task_project(db, string(&worker, "task")?)
+        })
+        .transpose()?;
+    let bound = bound_project
+        .map(|project| crate::projects::resolve(db, project))
+        .transpose()?;
+    if let (Some(worker), Some(bound)) = (&worker_project, &bound)
+        && worker != bound
+    {
+        bail!("worker credential project scope violation");
+    }
+    let binding = worker_project.or(bound);
+    if binding.is_some() && (!project_allowed(name) || args["all_projects"] == true) {
+        bail!("operation unavailable to project-bound credentials");
+    }
+    if binding.is_some()
+        && args
+            .as_object()
+            .is_some_and(|object| object.keys().any(|key| key.starts_with('_')))
+    {
+        bail!("reserved runtime argument");
+    }
+    let requested = args["project"]
+        .as_str()
+        .map(|project| crate::projects::resolve(db, project))
+        .transpose()?;
+    if let (Some(bound), Some(requested)) = (&binding, &requested)
+        && bound != requested
+    {
+        bail!("project scope violation");
+    }
+    if requested.is_some() && args["all_projects"] == true {
+        bail!("all_projects conflicts with project selection");
+    }
+    let receipt_project = if name == "submit_task" && binding.is_none() && requested.is_none() {
+        crate::submission::receipt_project(db, &args)?
+    } else {
+        None
+    };
+    let project = if let Some(project) = binding
+        .as_ref()
+        .or(requested.as_ref())
+        .or(receipt_project.as_ref())
+    {
+        project.clone()
+    } else if let Some(task) = args["task"].as_str() {
+        crate::projects::task_project(db, task)?
+    } else if let Some(repo) = args["repo"].as_str() {
+        match crate::projects::infer(db, Path::new(repo))? {
+            Some(project) => project,
+            None => {
+                let count: i64 = db
+                    .conn
+                    .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))?;
+                if count > 1 && name == "submit_task" {
+                    bail!("select a project explicitly; repository is not registered");
+                }
+                crate::projects::DEFAULT_PROJECT.into()
+            }
+        }
+    } else {
+        crate::projects::DEFAULT_PROJECT.into()
+    };
+    if let Some(task) = args["task"].as_str() {
+        crate::projects::authorize_task(db, &project, task)?;
+    }
+    args["project"] = json!(project);
+    if name == "submit_task"
+        && let Some(receipt) = crate::submission::existing(db, &args)?
+    {
+        return Ok(receipt);
+    }
+    if let Some(repo) = args["repo"].as_str() {
+        if let Some(owner) = crate::projects::infer(db, Path::new(repo))? {
+            if owner != project {
+                bail!("repository belongs to another project");
+            }
+        } else if binding.is_some() {
+            bail!("repository is not registered to this project");
+        }
+    }
+    args["project"] = json!(project);
+    if name == "project_list" && binding.is_some() {
+        return Ok(json!([crate::projects::dispatch(
+            db,
+            "project_inspect",
+            &args
+        )?
+        .context("project inspection")?]));
+    }
+    dispatch_authorized(db, name, args, token)
+}
+
+fn dispatch_authorized(
+    db: &Store,
+    name: &str,
+    mut args: Value,
+    token: Option<&str>,
+) -> Result<Value> {
     if !args.is_object() {
         bail!("arguments must be an object");
     }
@@ -97,6 +242,12 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             args["step"] = w["step"].clone();
         }
     }
+    if let Some(result) = crate::projects::dispatch(db, name, &args)? {
+        return Ok(result);
+    }
+    if let Some(result) = crate::accounts::dispatch(db, name, &args)? {
+        return Ok(result);
+    }
     if matches!(name, "runtime_capabilities" | "plan_execution") {
         if let Some(task) = args["task"].as_str() {
             db.task(task)?;
@@ -105,16 +256,26 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             }
         }
         return if name == "runtime_capabilities" {
-            crate::capabilities::inventory(db)
+            crate::capabilities::inventory_project(db, string(&args, "project")?)
         } else {
             crate::orchestration::plan(db, &args)
         };
     }
-    if name == "provider_login" {
-        return crate::provider_login::dispatch(db, &args);
-    }
-    if name == "agent_setup" {
-        return crate::agent_setup::dispatch(db, &args);
+    if matches!(name, "agent_setup" | "provider_login") {
+        if args["project"] != crate::projects::DEFAULT_PROJECT {
+            bail!(
+                "host-wide provider setup and login require the default project; use managed account credentials for other projects"
+            );
+        }
+        // This host-wide API has a strict schema and is unavailable to bound connections.
+        args.as_object_mut()
+            .context("arguments object")?
+            .remove("project");
+        return if name == "provider_login" {
+            crate::provider_login::dispatch(db, &args)
+        } else {
+            crate::agent_setup::dispatch(db, &args)
+        };
     }
     match name {
         "skill_pack_list" => {
@@ -158,11 +319,16 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         return crate::submission::submit(db, &args);
     }
     if name == "submit_task" && args["execution"].is_object() {
-        let selection = crate::execution_selection::prepare(db, &args["execution"], None)?;
+        let selection = crate::execution_selection::prepare_project(
+            db,
+            string(&args, "project")?,
+            &args["execution"],
+            None,
+        )?;
         let selected = selection["selected"]["runtime"]
             .as_str()
             .context("selected runtime")?;
-        let inventory = crate::capabilities::inventory(db)?;
+        let inventory = crate::capabilities::inventory_project(db, string(&args, "project")?)?;
         let local = inventory["runtimes"]
             .as_array()
             .context("runtimes")?
@@ -177,7 +343,8 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
     }
     if name == "submit_task" {
         let repo = Path::new(string(&args, "repo")?).canonicalize()?;
-        let settings = Settings::load(&repo)?;
+        let project = string(&args, "project")?;
+        let settings = Settings::load_project(db, project, &repo)?;
         let templates = template::load_templates(&crate::branding::templates(&repo))?;
         let objective = string(&args, "objective")?;
         let plan = template::compile(
@@ -189,7 +356,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         )?;
         let selection = args
             .get("execution")
-            .map(|input| crate::execution_selection::prepare(db, input, None))
+            .map(|input| crate::execution_selection::prepare_project(db, project, input, None))
             .transpose()?;
         for s in &plan.steps {
             if selection.is_none() && s.kind == "agent" && !settings.executors.contains_key(&s.role)
@@ -198,7 +365,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             }
         }
         return db.atomic(|| {
-            let oid = db.submit(objective, &repo, &settings, &plan)?;
+            let oid = db.submit_project(project, objective, &repo, &settings, &plan)?;
             if let Some(selection) = &selection {
                 crate::execution_selection::pin(db, &oid, selection)?;
                 crate::execution_selection::validate_target(db, &oid, None)?;
@@ -212,10 +379,11 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
         });
     }
     if name == "list_tasks" {
-        return Ok(json!(db.rows(
-            "SELECT id,objective,repo,status,created FROM tasks ORDER BY created DESC",
-            &[]
-        )?));
+        return if args["all_projects"] == true {
+            Ok(json!(db.rows("SELECT t.id,t.objective,t.repo,t.status,t.created,p.project FROM tasks t JOIN task_projects p ON p.task=t.id ORDER BY t.created DESC", &[])?))
+        } else {
+            Ok(json!(db.rows("SELECT t.id,t.objective,t.repo,t.status,t.created,p.project FROM tasks t JOIN task_projects p ON p.task=t.id WHERE p.project=? ORDER BY t.created DESC", &[&string(&args, "project")?])?))
+        };
     }
     let oid = string(&args, "task")?;
     db.task(oid)?;
@@ -293,7 +461,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             args["limit"].as_i64().unwrap_or(50),
         )?)),
         "inspect" => Ok(
-            json!({"task":db.task(oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
+            json!({"task":db.task(oid)?,"project_runtime":crate::project_runtime::inspection(db,oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
         ),
         "summary" => crate::summary::build(db, oid),
         "events" => {
@@ -456,7 +624,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
                 bail!("the operator identity has no worker status");
             }
             let attempts = db.rows(
-                "SELECT id,pid FROM attempts WHERE worker=? AND state='uncertain'",
+                "SELECT id,pid,step FROM attempts WHERE worker=? AND state='uncertain'",
                 &[&wid],
             )?;
             for a in &attempts {
@@ -468,7 +636,17 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
                     );
                 }
             }
-            db.atomic(||{db.conn.execute("UPDATE attempts SET state='interrupted',finished=? WHERE worker=? AND state='uncertain'",rusqlite::params![now(),wid])?;db.conn.execute("UPDATE workers SET status='stopped' WHERE id=?",[wid])?;db.event(oid,"worker.reconciled",json!({"worker":wid}))?;Ok(())})?;
+            db.atomic(|| {
+                db.conn.execute("UPDATE attempts SET state='interrupted',finished=? WHERE worker=? AND state='uncertain'",rusqlite::params![now(),wid])?;
+                for attempt in &attempts {
+                    let step = attempt["step"].as_str().context("reconciled step")?;
+                    crate::accounts::release_step(db, step)?;
+                    db.conn.execute("UPDATE remote_account_leases SET state='release_pending' WHERE step=? AND state!='released'", [step])?;
+                }
+                db.conn.execute("UPDATE workers SET status='stopped' WHERE id=?",[wid])?;
+                db.event(oid,"worker.reconciled",json!({"worker":wid}))?;
+                Ok(())
+            })?;
             Ok(json!({"reconciled":true,"claims_preserved":true}))
         }
         "list_skills" => crate::skills::catalog(db, oid),
