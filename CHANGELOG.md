@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.6.5 - 2026-09-21
+
+- Run separate projects with their own repositories, operator configuration,
+  runtime grants, and optional Lima isolation while sharing managed provider
+  accounts. Task ownership and project-scoped capability evidence stay fixed
+  across scheduling, delegation, review, and recovery.
+- Add a provider-neutral decision-model service using the SystemOne protocol,
+  with Tuara as the default provider and Jev as the launch model. Operators can
+  opt into advisory routing and work-product reviews; each request uses the
+  task's project settings and eligible runtimes, and cancelled tasks cannot
+  send another provider request.
+- Add separately opted-in native context pruning and browser tests. Both keep
+  bounded evidence, validate responses, and fall back to conventional behavior
+  when authorization or evidence is unavailable.
+- Add automatic delivery gates that require exact held-out qualification and
+  independent checks before a decision-model veto can affect a merge. Automatic
+  delivery is limited to the default project; manual delivery drafts stay in
+  the task's project workspace.
+
 ## 0.6.4 - 2026-09-21
 
 - Add or replace provider API keys through a connected agent without terminal
