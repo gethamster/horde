@@ -295,7 +295,7 @@ pub fn admin_schema(name: &str) -> Value {
             ("after", "integer"),
             ("consumer", "string"),
         ],
-        "decisions" => &[
+        "decisions" | "reviews" => &[
             ("task", "string"),
             ("after", "integer"),
             ("limit", "integer"),
@@ -307,7 +307,7 @@ pub fn admin_schema(name: &str) -> Value {
         .iter()
         .map(|(k, t)| {
             let mut s = json!({"type":t});
-            if name == "decisions" && *k == "limit" {
+            if ["decisions", "reviews"].contains(&name) && *k == "limit" {
                 s["minimum"] = json!(1);
                 s["maximum"] = json!(200);
                 s["default"] = json!(50);
@@ -377,7 +377,7 @@ pub fn admin_schema(name: &str) -> Value {
         "runtime_reconcile" => &["id", "request_id", "resource"],
         "account_observe" => &["account", "provider", "window", "observed_at", "source"],
         "management_ack" => &["consumer", "seq"],
-        "decisions" => &["task"],
+        "decisions" | "reviews" => &["task"],
         "submit_task" => &["objective", "repo"],
         "remote_result" => &["task"],
         "delegate_task" => &["id", "objective"],

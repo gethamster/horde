@@ -283,6 +283,12 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             args["after"].as_i64().unwrap_or(0),
             args["limit"].as_i64().unwrap_or(50),
         )?)),
+        "reviews" => Ok(json!(crate::decision::review::list(
+            db,
+            oid,
+            args["after"].as_i64().unwrap_or(0),
+            args["limit"].as_i64().unwrap_or(50),
+        )?)),
         "inspect" => Ok(
             json!({"task":db.task(oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
         ),
@@ -554,7 +560,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
                 db.event(
                     oid,
                     "workflow.proposed",
-                    json!({"worker":wid,"revision":revision,"steps":new_ids,"warnings":warnings}),
+                    json!({"worker":wid,"revision":revision,"steps":new_ids,"warnings":warnings,"integrated_head":crate::decision::review::observed_head(&db.root,oid)}),
                 )?;
                 crate::budget::progress(db, wid, "proposal_accepted", &revision.to_string())?;
                 Ok(json!({"revision":revision,"steps":new_ids,"warnings":warnings}))
@@ -574,7 +580,7 @@ pub fn dispatch(db: &Store, name: &str, mut args: Value, token: Option<&str>) ->
             plan.steps.extend(added.clone());
             template::validate(&plan.steps)?;
             crate::skills::validate_steps(&crate::skills::packet(db, oid)?, &plan.steps)?;
-            db.atomic(||{crate::delegation::invalidate_acceptance(db,oid)?;for s in &added{db.conn.execute("INSERT INTO steps(id,task,name,spec,state) VALUES(?,?,?,?,'pending')",rusqlite::params![id(),oid,s.id,serde_json::to_string(s)?])?;}let rev:i64=db.conn.query_row("SELECT COALESCE(MAX(revision),0)+1 FROM revisions WHERE task=?",[oid],|r|r.get(0))?;let serialized=serde_json::to_string(&plan)?;db.conn.execute("INSERT INTO revisions VALUES(?,?,?,?)",rusqlite::params![oid,rev,serialized,now()])?;db.conn.execute("UPDATE tasks SET plan=?,status=CASE WHEN status='succeeded' THEN 'running' ELSE status END WHERE id=?",rusqlite::params![serialized,oid])?;db.event(oid,"workflow.revised",json!({"revision":rev,"warnings":warnings}))?;Ok(json!({"revision":rev,"warnings":warnings}))})
+            db.atomic(||{crate::delegation::invalidate_acceptance(db,oid)?;for s in &added{db.conn.execute("INSERT INTO steps(id,task,name,spec,state) VALUES(?,?,?,?,'pending')",rusqlite::params![id(),oid,s.id,serde_json::to_string(s)?])?;}let rev:i64=db.conn.query_row("SELECT COALESCE(MAX(revision),0)+1 FROM revisions WHERE task=?",[oid],|r|r.get(0))?;let serialized=serde_json::to_string(&plan)?;db.conn.execute("INSERT INTO revisions VALUES(?,?,?,?)",rusqlite::params![oid,rev,serialized,now()])?;db.conn.execute("UPDATE tasks SET plan=?,status=CASE WHEN status='succeeded' THEN 'running' ELSE status END WHERE id=?",rusqlite::params![serialized,oid])?;db.event(oid,"workflow.revised",json!({"revision":rev,"warnings":warnings,"integrated_head":crate::decision::review::observed_head(&db.root,oid)}))?;Ok(json!({"revision":rev,"warnings":warnings}))})
         }
         "put_artifact" => {
             let content = string(&args,"content")?.as_bytes();

@@ -120,6 +120,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         crate::execution_selection::migrate(&conn)?;
         crate::submission::migrate(&conn)?;
         crate::decision::store::migrate(&conn)?;
+        crate::decision::review::migrate(&conn)?;
         if version < 5 {
             crate::knowledge::migrate(&conn)?;
         }
@@ -159,7 +160,23 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             }
         }
     }
-    pub fn event(&self, task: &str, kind: &str, data: Value) -> Result<()> {
+    pub fn event(&self, task: &str, kind: &str, mut data: Value) -> Result<()> {
+        if matches!(
+            kind,
+            "task.submitted"
+                | "workflow.revised"
+                | "workflow.proposed"
+                | "step.finished"
+                | "integration.conflict"
+                | "integration.validation_failed"
+                | "integration.succeeded"
+                | "task.finished"
+        ) && let Some(fields) = data.as_object_mut()
+            && let Ok(context) = crate::delegation::mandatory(self, task)
+            && let Some(version) = context["version"].as_i64()
+        {
+            fields.insert("context_version".into(), json!(version));
+        }
         self.conn.execute(
             "INSERT INTO events(task,kind,data,created) VALUES(?,?,?,?)",
             params![
@@ -234,7 +251,11 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             }
             crate::delegation::initialize(self, &oid, objective, settings)?;
             crate::skills::bind(self, &oid, skills)?;
-            self.event(&oid, "task.submitted", json!({"objective":objective}))?;
+            self.event(
+                &oid,
+                "task.submitted",
+                json!({"objective":objective,"integrated_head":null,"revision":1}),
+            )?;
             Ok(())
         })?;
         Ok(oid)
@@ -578,6 +599,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
                 .unwrap_or_else(|| json!({"error":format!("{e:#}")})),
         };
         let value = crate::secrets::redact(self, oid, &value);
+        let integrated_head = crate::decision::review::observed_head(&self.root, oid);
         let waiting = crate::delegation::has_question(self, worker)?;
         let success = success && !waiting;
         self.atomic(|| {
@@ -631,7 +653,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             self.event(
                 oid,
                 "step.finished",
-                json!({"step":step,"attempt":attempt,"state":state,"result":value,"timing":crate::budget::status(self,attempt)?}),
+                json!({"step":step,"attempt":attempt,"state":state,"result":value,"timing":crate::budget::status(self,attempt)?,"integrated_head":integrated_head,"revision":crate::decision::review::current_revision(self,oid)?}),
             )?;
             Ok(())
         })

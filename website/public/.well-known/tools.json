@@ -1,5 +1,5 @@
 {
-  "count": 81,
+  "count": 82,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -1391,6 +1391,32 @@
     {
       "description": "Read paginated daemon-owned advisory decisions for one task",
       "name": "decisions",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Read advisory work-product reviews, evidence coverage, and freshness for one task",
+      "name": "reviews",
       "parameters": {
         "additionalProperties": false,
         "properties": {

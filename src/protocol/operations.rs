@@ -147,6 +147,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Read paginated daemon-owned advisory decisions for one task",
     ),
     (
+        "reviews",
+        "Read advisory work-product reviews, evidence coverage, and freshness for one task",
+    ),
+    (
         "submit_task",
         "Submit work with a stable request_id for safe retries, optional runtime and execution pool; returns durable task id",
     ),

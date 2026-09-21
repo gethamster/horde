@@ -465,7 +465,7 @@ fn settle(db: &Store, oid: &str) -> Result<()> {
             rusqlite::params![status, oid],
         )? > 0
         {
-            db.event(oid, "task.finished", json!({"status":status}))?;
+            db.event(oid, "task.finished", json!({"status":status,"integrated_head":crate::decision::review::observed_head(&db.root,oid),"revision":crate::decision::review::current_revision(db,oid)?}))?;
         }
     }
     Ok(())
@@ -587,12 +587,15 @@ type ActiveAttempt = (String, String, String, JoinHandle<Result<()>>);
 struct Scheduler {
     running: HashMap<String, ActiveAttempt>,
     decisions: crate::decision::shadow::Queue,
+    reviews: crate::decision::review::Queue,
     limit: usize,
 }
 impl Scheduler {
     async fn tick(&mut self, db: &Store, remote_ready: bool) -> Result<()> {
         // Advisory failures are isolated from authoritative scheduling.
         let _ = self.decisions.tick(db).await;
+        let _ = self.reviews.scan(db);
+        let _ = self.reviews.tick(db).await;
         let finished: Vec<_> = self
             .running
             .iter()
@@ -817,15 +820,17 @@ pub async fn daemon(root: &Path) -> Result<()> {
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     let recovered = recover(&db)?;
     let interrupted_decisions = crate::decision::shadow::recover(&db)?;
+    let resumed_reviews = crate::decision::review::resume_never_sent(&db)?;
     crate::environment::reconcile(&db).await?;
     crate::federation::clear_remote_secrets(&db)?;
     eprintln!(
-        "horde daemon listening on {} ({recovered} interrupted attempts held for reconciliation, {interrupted_decisions} interrupted advisory decisions)",
+        "horde daemon listening on {} ({recovered} interrupted attempts held for reconciliation, {interrupted_decisions} interrupted advisory decisions, {resumed_reviews} never-sent reviews queued for replay)",
         socket.display()
     );
     let mut scheduler = Scheduler {
         running: HashMap::new(),
         decisions: crate::decision::shadow::Queue::default(),
+        reviews: crate::decision::review::Queue::default(),
         limit: crate::management::limit(&db)?,
     };
     let remote_ready = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -992,6 +997,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
     maintenance.abort();
     let _ = maintenance.await;
     scheduler.decisions.shutdown(&db).await;
+    scheduler.reviews.shutdown(&db).await;
     for (tid, (_, attempt, wid, h)) in scheduler.running {
         h.abort();
         let _ = h.await;
@@ -1151,6 +1157,7 @@ mod scheduling_limits {
                 let mut scheduler = Scheduler {
                     running: HashMap::new(),
                     decisions: crate::decision::shadow::Queue::default(),
+                    reviews: crate::decision::review::Queue::default(),
                     limit: 64,
                 };
                 scheduler.tick(&db, true).await.unwrap();

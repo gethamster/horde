@@ -488,7 +488,7 @@ pub fn integrate(
         if let Err(e) = run(&target, &["merge", "--no-ff", "--no-edit", &commit]) {
             let conflicts =
                 run(&target, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
-            let evidence = json!({"error":e.to_string(),"conflicts":conflicts,"before":before,"validation":validation});
+            let evidence = json!({"error":e.to_string(),"conflicts":conflicts,"before":before,"integrated_head":before,"validation":validation,"revision":crate::decision::review::current_revision(db,oid)?});
             // Abort only the merge initiated above; preserves the integrated branch.
             run(&target, &["merge", "--abort"])?;
             db.conn.execute("UPDATE integrations SET state='conflict',evidence=? WHERE task=? AND worker=? AND commit_id=?",rusqlite::params![evidence.to_string(),oid,wid,commit])?;
@@ -507,7 +507,7 @@ pub fn integrate(
         )?;
         if !out.status.success() {
             let evidence = crate::secrets::redact_json(
-                &json!({"stdout":String::from_utf8_lossy(&out.stdout),"stderr":String::from_utf8_lossy(&out.stderr),"before":before,"validation":validation}),
+                &json!({"stdout":String::from_utf8_lossy(&out.stdout),"stderr":String::from_utf8_lossy(&out.stderr),"before":before,"integrated_head":run(&target,&["rev-parse","HEAD"])? ,"validation":validation,"revision":crate::decision::review::current_revision(db,oid)?}),
                 &values,
             );
             db.conn.execute("UPDATE integrations SET state='validation_failed',evidence=? WHERE task=? AND worker=? AND commit_id=?",rusqlite::params![evidence.to_string(),oid,wid,commit])?;
@@ -519,10 +519,11 @@ pub fn integrate(
         "UPDATE integrations SET state='succeeded' WHERE task=? AND worker=? AND commit_id=?",
         rusqlite::params![oid, wid, commit],
     )?;
+    let integrated_head = run(&target, &["rev-parse", "HEAD"])?;
     db.event(
         oid,
         "integration.succeeded",
-        json!({"worker":wid,"commit":commit}),
+        json!({"worker":wid,"commit":commit,"integrated_head":integrated_head,"revision":crate::decision::review::current_revision(db,oid)?}),
     )?;
-    Ok(json!({"commit":commit,"integrated_head":run(&target,&["rev-parse","HEAD"])?}))
+    Ok(json!({"commit":commit,"integrated_head":integrated_head}))
 }

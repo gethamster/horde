@@ -54,6 +54,8 @@ pub struct CapabilityGuidance {
 #[serde(default, deny_unknown_fields)]
 pub struct Decision {
     pub mode: DecisionMode,
+    /// Opt in to advisory review of durable workflow checkpoints.
+    pub review_enabled: bool,
     pub backend: String,
     pub base_url: String,
     pub api_key_env: String,
@@ -69,6 +71,7 @@ impl Default for Decision {
     fn default() -> Self {
         Self {
             mode: DecisionMode::Disabled,
+            review_enabled: false,
             backend: "typesafe".into(),
             base_url: "https://api.typesafe.ai".into(),
             api_key_env: "TYPESAFE_API_KEY".into(),
@@ -516,6 +519,7 @@ provider = "simulated"
 # Optional daemon-owned advisory routing. Repository files cannot set this.
 # [decision]
 # mode = "shadow"
+# review_enabled = true # advisory work-product reviews; false by default
 # backend = "typesafe"
 # base_url = "https://api.typesafe.ai"
 # api_key_env = "TYPESAFE_API_KEY"
