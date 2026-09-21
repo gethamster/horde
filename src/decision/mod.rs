@@ -5,6 +5,7 @@ pub mod review;
 pub mod shadow;
 pub mod store;
 pub mod typesafe;
+pub use typesafe::DecisionHttpClient;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -81,7 +82,13 @@ fn bounded_label(value: &str, maximum: usize) -> bool {
 
 impl DecisionRequest {
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.model == "jev-1.13.0", "unsupported decision model");
+        ensure!(
+            !self.model.is_empty()
+                && self.model.len() <= 128
+                && self.model.bytes().all(|byte| byte.is_ascii_alphanumeric()
+                    || matches!(byte, b'-' | b'_' | b'.' | b'/')),
+            "invalid decision model identifier"
+        );
         ensure!(
             !self.questions.is_empty() && self.questions.len() <= MAX_QUESTIONS,
             "decision request must contain 1..={MAX_QUESTIONS} questions"

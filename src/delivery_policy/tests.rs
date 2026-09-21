@@ -142,7 +142,12 @@ fn base_protection_and_merge_parent_are_bound() {
 fn held_out_qualification_is_required() {
     let dir = tempfile::tempdir().unwrap();
     let db = Store::open(dir.path()).unwrap();
-    let decision = crate::config::Decision::default();
+    let decision = crate::config::Decision {
+        backend: "typesafe".into(),
+        base_url: "https://api.typesafe.ai".into(),
+        api_key_env: "TYPESAFE_API_KEY".into(),
+        ..Default::default()
+    };
     let policy = AutomaticDelivery {
         qualification_id: "evaluation-1".into(),
         minimum_routine_probability: 0.8,
@@ -150,7 +155,7 @@ fn held_out_qualification_is_required() {
     };
     assert!(verify_qualification(&db, &policy, &decision).is_err());
     let policy_hash = json_hash(&serde_json::to_value(&policy).unwrap()).unwrap();
-    let report = json!({"backend":decision.backend,"model":decision.model,"policy":decision.policy,
+    let report = json!({"backend":decision.backend,"model":decision.model,"policy":decision.policy,"backend_fingerprint":decision.fingerprint().unwrap(),
             "purpose":"delivery:veto","catalog":"delivery-v1","delivery_policy_hash":policy_hash,
             "minimum_routine_probability":0.8,
             "held_out":{"cases":50,"baseline_quality":0.9,"candidate_quality":0.91,
@@ -172,6 +177,16 @@ fn held_out_qualification_is_required() {
     let mut changed = decision.clone();
     changed.policy = "another-policy".into();
     assert!(verify_qualification(&db, &policy, &changed).is_err());
+    let changed_endpoint = crate::config::Decision {
+        base_url: "https://other.example".into(),
+        ..decision.clone()
+    };
+    assert!(verify_qualification(&db, &policy, &changed_endpoint).is_err());
+    let changed_provider = crate::config::Decision {
+        backend: "tuara".into(),
+        ..decision.clone()
+    };
+    assert!(verify_qualification(&db, &policy, &changed_provider).is_err());
     let changed_threshold = AutomaticDelivery {
         minimum_routine_probability: 0.9,
         ..policy

@@ -1,12 +1,12 @@
 # Jev integration across Horde’s development lifecycle
 
-Status (September 21, 2026): Phases 1–4 are implemented in stacked PRs. Phase 5 has a guarded, default-off policy for the existing push-triggered merge and deployment path. No held-out delivery qualification or enrollment flow exists yet, so automatic merge is not operational. The browser path uses checked-in assertions and falls back to the environment's configured test command; declared application/WebMCP tools and a vision verifier remain open. One direct development-key SystemOne smoke request succeeded; no end-to-end Horde speed or quality benchmark has been completed.
+Status (September 21, 2026): Phases 1–4 are implemented in stacked PRs. Phase 5 has a guarded, default-off policy for the existing push-triggered merge and deployment path. No held-out delivery qualification or enrollment flow exists yet, so automatic merge is not operational. Phase 6 is limited to a configurable decision-model HTTP service; local open-model adapters and portable qualification are deferred. The browser path uses checked-in assertions and falls back to the environment's configured test command; declared application/WebMCP tools and a vision verifier remain open. One direct development-key SystemOne smoke request succeeded; no end-to-end Horde speed or quality benchmark has been completed.
 
 Research date: September 19, 2026. Repository: [gethamster/horde](https://github.com/gethamster/horde), inspected at commit `de239089928c7d0f1eb0b296a99afc140d076fe6`.
 
 ## Summary
 
-Add Jev as a fast decision service alongside Horde’s coding models. Use it to select suitable models, review work products, choose bounded next actions, and reduce unnecessary context and model calls.
+Add a decision-model service alongside Horde’s coding models. Jev is the launch model. Tuara is the default provider, although its decision endpoint is not available yet, so a fresh configuration remains disabled and unconfigured. An explicit TypeSafe development configuration uses the documented Jev HTTP endpoint.
 
 Start with routing and review. Extend into native execution, browser testing, and automatic delivery as each capability passes evaluation. Optimize verified completion time while preserving the existing quality baseline and configured spending limits.
 
@@ -35,11 +35,11 @@ TypeSafe documents weaknesses with indirection, irrelevant context, arithmetic, 
 
 ### A dedicated decision service
 
-- Implement a Rust `DecisionBackend` interface with a TypeSafe HTTP adapter. Jev cannot use Horde’s existing chat-completions executor directly.
+- Implement a Rust `DecisionBackend` interface with a provider-neutral SystemOne HTTP client. A decision model cannot use Horde’s existing chat-completions executor directly.
 - Give the service no worker token, shell access, or mutation tools. Runtime code constructs permitted choices and executes accepted decisions.
 - Support typed questions, validated probability distributions, explicit abstention, bounded batching, cancellation, and per-purpose deadlines.
 - Reuse HTTP connections. Retry transient failures within the decision deadline; decision retries must not consume coding-worker attempts.
-- Pin backend, model version, question catalog, thresholds, and policy with each task. Keep authorization ceilings in operator-controlled configuration.
+- Pin provider, normalized endpoint, protocol version, model, question catalog, thresholds, and policy with each task. Keep authorization ceilings in operator-controlled configuration.
 - Add task-scoped decision inspection through CLI/MCP and include decision summaries in existing metrics and events. Evaluation accepts registered purposes and evidence references; workers cannot submit replacement authorization policies.
 
 ### Durable evidence and compatibility
@@ -111,17 +111,17 @@ Horde currently observes deployments triggered by a merge; it does not independe
 - Add a separately triggerable release adapter where independent production gating is required. Pin the immutable release artifact and record dispatch identity before execution.
 - Verify deployed version and application-specific smoke checks. Roll back only through a configured compatible action targeting a known-good release; otherwise hold and notify.
 
-### 6. Qualify portable backends
+### 6. Generalize the decision-model service
 
-Use the same Horde evaluation suite for hosted Jev, Kev, SemIf, and Nimble.
+Use a provider-neutral configuration and client for the documented `POST /v1/systemone` request and response contract. The model identifier is configurable and validated; Jev is the launch value. Fresh settings default to provider `tuara`, an empty endpoint and key-variable name, and disabled mode. Enabling Tuara without an explicitly configured compatible endpoint fails before a request. Horde has not verified or published a Tuara decision API, so this is a configuration seam rather than a compatibility claim.
 
-Start with Kev’s compatible endpoint; add adapters for the others’ differing schemas and limits. Record checkpoint, prompt, hardware, and precision. Qualify each backend separately for each purpose.
+For development, an operator can explicitly select `backend = "typesafe"`, `base_url = "https://api.typesafe.ai"`, `api_key_env = "TYPESAFE_API_KEY"`, and `model = "jev-1.13.0"`. The key stays in the environment or Horde credentials file, never in configuration or evidence. Legacy enabled TypeSafe settings without a backend retain their previous meaning only when no custom endpoint is supplied or the endpoint is the exact TypeSafe service; custom endpoints require an explicit backend and key variable.
 
-A backend change never inherits another backend’s thresholds or delivery authority automatically. Training a Horde-specific model remains outside this implementation; retained evaluation data can support that later.
+Strict request and response validation, size and time budgets, retries, redaction, and default-off operator authorization apply to every configured provider. Decision evidence and caches bind provider, normalized endpoint, protocol, model, and credential source. A new provider or model cannot inherit active browser/context thresholds or delivery authority. The existing delivery qualification gate remains closed until trustworthy held-out evidence and reviewed enrollment exist. Kev, SemIf, Nimble, and local adapters are research candidates only; this phase does not implement or benchmark them.
 
 ## Validation and rollout defaults
 
-- Default configuration is disabled. Enabled purposes progress through shadow, advisory, and automatic operation independently.
+- Default configuration is disabled. A fresh Tuara decision configuration has no endpoint. Enabled purposes progress through shadow, advisory, and automatic operation independently only after their own qualification.
 - Select thresholds on calibration data, then freeze them for held-out evaluation. Raw confidence is not a measured probability that shipping is safe.
 - Promotion requires preserved baseline completion quality and critical-defect detection, with lower end-to-end verified-completion latency after decision overhead, retries, and escalations.
 - Test malformed responses, missing answers, invalid probabilities, rate limits, outages, budget exhaustion, and oversized inputs.

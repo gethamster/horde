@@ -1,9 +1,9 @@
 //! Operator-owned, default-off authority for routine automatic delivery.
-//! Facts are checked independently of Jev. Its answer can only veto an eligible merge.
+//! Facts are checked independently of the decision model. Its answer can only veto an eligible merge.
 use crate::{
     config::{AutomaticDelivery, DecisionMode, Settings},
     decision::{
-        Answer, ChoiceQuestion, DecisionRequest, Question, store as decisions, typesafe::TypeSafe,
+        Answer, ChoiceQuestion, DecisionHttpClient, DecisionRequest, Question, store as decisions,
     },
     executor::Invocation,
     store::{Store, hash, id, now},
@@ -264,7 +264,7 @@ fn preflight_snapshot(i: &Invocation<'_>, head: &str) -> Result<Value> {
     Ok(snapshot)
 }
 
-fn jev_request(i: &Invocation<'_>, facts: &Value) -> Result<DecisionRequest> {
+fn decision_request(i: &Invocation<'_>, facts: &Value) -> Result<DecisionRequest> {
     let request = DecisionRequest { model:i.settings.decision.model.clone(), state:facts.clone(),
         questions: vec![Question::Choice(ChoiceQuestion {id:"delivery".into(),
             question:"Should this already policy-eligible routine change be escalated for manual delivery? Escalate on uncertainty, consequential API or migration effects, or security concerns.".into(),
@@ -273,8 +273,8 @@ fn jev_request(i: &Invocation<'_>, facts: &Value) -> Result<DecisionRequest> {
     Ok(request)
 }
 
-async fn jev_veto(i: &Invocation<'_>, facts: &Value, minimum: f64) -> Result<String> {
-    let request = jev_request(i, facts)?;
+async fn decision_veto(i: &Invocation<'_>, facts: &Value, minimum: f64) -> Result<String> {
+    let request = decision_request(i, facts)?;
     let decision_id = id();
     let admitted = decisions::enqueue_bounded(
         i.db,
@@ -304,20 +304,14 @@ async fn jev_veto(i: &Invocation<'_>, facts: &Value, minimum: f64) -> Result<Str
             policy_hash: json_hash(&serde_json::to_value(&i.settings.automatic_delivery)?)?,
             catalog_hash: hash(b"delivery-v1"),
             candidate_hashes: json!({}),
-            backend_fingerprint: hash(
-                format!(
-                    "{}:{}",
-                    i.settings.decision.backend, i.settings.decision.model
-                )
-                .as_bytes(),
-            ),
+            backend_fingerprint: i.settings.decision.fingerprint()?,
             evidence_hash: json_hash(facts)?,
             request_hash,
             cache_hash: String::new(),
             artifact_hash: None,
         },
     )?;
-    let backend = TypeSafe::new(i.settings.decision.clone())?;
+    let backend = DecisionHttpClient::new(i.settings.decision.clone())?;
     let start = Instant::now();
     let outcome = backend
         .decide_counted_with(&request, |_| {
@@ -334,7 +328,7 @@ async fn jev_veto(i: &Invocation<'_>, facts: &Value, minimum: f64) -> Result<Str
                 "provider_unavailable",
                 attempts,
             )?;
-            return Err(error).context("delivery Jev veto unavailable");
+            return Err(error).context("delivery decision-model veto unavailable");
         }
     };
     let (answer, probability) = match response.answers.first() {
@@ -343,7 +337,7 @@ async fn jev_veto(i: &Invocation<'_>, facts: &Value, minimum: f64) -> Result<Str
             probabilities,
             ..
         }) => (answer.as_str(), probabilities["routine"]),
-        _ => bail!("delivery Jev response omitted choice"),
+        _ => bail!("delivery decision-model response omitted choice"),
     };
     let result = serde_json::to_value(&response)?;
     decisions::complete(
@@ -360,7 +354,7 @@ async fn jev_veto(i: &Invocation<'_>, facts: &Value, minimum: f64) -> Result<Str
     )?;
     ensure!(
         answer == "routine" && probability >= minimum,
-        "Jev escalated automatic delivery"
+        "decision model escalated automatic delivery"
     );
     Ok(decision_id)
 }
@@ -418,7 +412,7 @@ pub async fn authorize_merge(i: &Invocation<'_>, head: &str, number: &str) -> Re
         "paths":paths,"manifest":redacted_manifest(i, &manifest)?,"checks":checks,"approvals":approved,
         "review":review["review"],"independent_review":review["independent_review"],
         "context_version":review["context_version"]});
-    let decision = jev_veto(i, &facts, policy.minimum_routine_probability).await?;
+    let decision = decision_veto(i, &facts, policy.minimum_routine_probability).await?;
     // A provider call may have overlapped an edit or policy change.
     current_policy(i)?.context("automatic delivery disabled")?;
     clean_workspace(i, head)?;

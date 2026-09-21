@@ -1,8 +1,8 @@
 //! Bounded, durable shadow routing launched after conventional dispatch.
 use super::{
-    Answer, ChoiceQuestion, DecisionRequest, NoulQuestion, Question, ScoreQuestion,
+    Answer, ChoiceQuestion, DecisionHttpClient, DecisionRequest, NoulQuestion, Question,
+    ScoreQuestion,
     store::{self, PreparedDecision, QueuedDecision},
-    typesafe::TypeSafe,
 };
 use crate::{
     config::{Decision, DecisionMode, Settings},
@@ -474,12 +474,7 @@ fn prepare(job: &Job) -> Result<Prepared> {
     let request_hash = hash_json(&wire)?;
     let policy_value = crate::secrets::redact_json(&policy.unwrap_or(Value::Null), &redactions);
     let policy_hash = hash_json(&policy_value)?;
-    let backend_fingerprint = hash_json(&json!({
-        "backend":snapshot.decision.backend,
-        "base_url":snapshot.decision.base_url,
-        "api_key_env":snapshot.decision.api_key_env,
-        "model":snapshot.decision.model,
-    }))?;
+    let backend_fingerprint = snapshot.decision.fingerprint()?;
     let cache_hash = hash_json(&json!({
         "state":hash_json(&request.state)?,"context_version":context_version,
         "policy":snapshot.decision.policy,"policy_hash":policy_hash,
@@ -567,7 +562,7 @@ async fn run(job: Job) {
         return;
     };
     let started = Instant::now();
-    let outcome = match TypeSafe::new(*config) {
+    let outcome = match DecisionHttpClient::new(*config) {
         Ok(backend) => backend
             .decide_counted_with(&request, |_| {
                 if let Ok(db) = Store::open(&root) {

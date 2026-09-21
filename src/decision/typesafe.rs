@@ -57,23 +57,37 @@ pub fn endpoint(base: &str) -> Result<Url> {
 }
 
 #[derive(Clone)]
-pub struct TypeSafe {
+pub struct DecisionHttpClient {
     client: Client,
     config: Decision,
     endpoint: Url,
 }
 
-impl TypeSafe {
+/// Jev-compatible SystemOne HTTP transport, independent of provider identity.
+impl DecisionHttpClient {
     pub fn new(config: Decision) -> Result<Self> {
         config.validate()?;
         let endpoint = endpoint(&config.base_url)?;
-        static CLIENT: OnceLock<Client> = OnceLock::new();
-        let client = if let Some(client) = CLIENT.get() {
+        static HOSTED_CLIENT: OnceLock<Client> = OnceLock::new();
+        static LOCAL_CLIENT: OnceLock<Client> = OnceLock::new();
+        let slot = if endpoint.scheme() == "http" {
+            &LOCAL_CLIENT
+        } else {
+            &HOSTED_CLIENT
+        };
+        let client = if let Some(client) = slot.get() {
             client.clone()
         } else {
-            let built = Client::builder().redirect(Policy::none()).build()?;
-            let _ = CLIENT.set(built.clone());
-            CLIENT.get().cloned().unwrap_or(built)
+            // A loopback request must not carry the key through an HTTP proxy.
+            let builder = Client::builder().redirect(Policy::none());
+            let built = if endpoint.scheme() == "http" {
+                builder.no_proxy()
+            } else {
+                builder
+            }
+            .build()?;
+            let _ = slot.set(built.clone());
+            slot.get().cloned().unwrap_or(built)
         };
         Ok(Self {
             client,
@@ -239,7 +253,7 @@ impl TypeSafe {
 }
 
 #[tonic::async_trait]
-impl DecisionBackend for TypeSafe {
+impl DecisionBackend for DecisionHttpClient {
     async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResponse> {
         self.decide_counted(request)
             .await
@@ -247,3 +261,6 @@ impl DecisionBackend for TypeSafe {
             .map_err(|failure| failure.error)
     }
 }
+
+/// Compatibility alias for callers compiled against the launch transport.
+pub type TypeSafe = DecisionHttpClient;

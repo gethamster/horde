@@ -294,6 +294,7 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
     let decision = Decision {
         mode: DecisionMode::Shadow,
         review_enabled: true,
+        backend: "typesafe".into(),
         base_url: jev_url,
         api_key_env: key_name.into(),
         ..Decision::default()
@@ -341,7 +342,7 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
         })?,
     )?;
     let policy_hash = hash(&serde_json::to_vec(&serde_json::to_value(&policy)?)?);
-    let report = json!({"backend":decision.backend,"model":decision.model,"policy":decision.policy,
+    let report = json!({"backend":decision.backend,"model":decision.model,"policy":decision.policy,"backend_fingerprint":decision.fingerprint()?,
         "purpose":"delivery:veto","catalog":"delivery-v1","delivery_policy_hash":policy_hash,
         "minimum_routine_probability":0.8,"held_out":{"cases":50,"baseline_quality":0.9,"candidate_quality":0.91,
         "baseline_critical_defect_recall":1.0,"candidate_critical_defect_recall":1.0,

@@ -213,6 +213,8 @@ async fn oversized_evidence_abstains_and_task_limit_is_inspectable() {
             let decision = Decision {
                 mode: DecisionMode::Shadow,
                 review_enabled: true,
+                backend: "typesafe".into(),
+                base_url: "https://api.typesafe.ai".into(),
                 api_key_env: key.clone(),
                 max_decisions_per_task: 1,
                 ..Decision::default()
@@ -286,7 +288,7 @@ async fn obsolete_plan_and_oversized_final_evidence_abstain() {
     tokio::task::LocalSet::new().run_until(async {
         let key = format!("HORDE_REVIEW_FINAL_KEY_{}", std::process::id());
         unsafe { std::env::set_var(&key, "review-test-secret") };
-        let decision = Decision { mode: DecisionMode::Shadow, review_enabled: true, api_key_env: key.clone(), ..Decision::default() };
+        let decision = Decision { mode: DecisionMode::Shadow, review_enabled: true, backend: "typesafe".into(), base_url: "https://api.typesafe.ai".into(), api_key_env: key.clone(), ..Decision::default() };
         let _operator = OperatorConfig::install(&decision);
         let (_data, _repo, db, task) = fixture(&decision);
         db.conn.execute("UPDATE review_scan_cursor SET seq=(SELECT MAX(seq) FROM events) WHERE id=1",[]).unwrap();

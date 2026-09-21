@@ -2,7 +2,7 @@
 //! The original conversation stays live until every omitted byte is verified in CAS.
 use crate::{
     config::{Decision, DecisionMode, NativeContextMode, Settings},
-    decision::{Answer, ChoiceQuestion, DecisionRequest, Question, store, typesafe::TypeSafe},
+    decision::{Answer, ChoiceQuestion, DecisionHttpClient, DecisionRequest, Question, store},
     native_protocol::Conversation,
     store::Store,
 };
@@ -121,12 +121,12 @@ fn short(value: &str, limit: usize) -> String {
 }
 fn redactions(
     bundle: std::collections::BTreeMap<String, String>,
-    jev_key: &str,
+    decision_key: &str,
     provider_key: &str,
 ) -> Vec<String> {
     let mut values = bundle
         .into_values()
-        .chain([jev_key.to_owned(), provider_key.to_owned()])
+        .chain([decision_key.to_owned(), provider_key.to_owned()])
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
     let escaped = values
@@ -467,14 +467,7 @@ pub async fn maybe_prune(
                     .map(|group| &group.hash)
                     .collect::<Vec<_>>()
             ),
-            backend_fingerprint: crate::store::hash(
-                serde_json::to_string(&json!([
-                    decision.backend,
-                    decision.base_url,
-                    decision.model
-                ]))?
-                .as_bytes(),
-            ),
+            backend_fingerprint: decision.fingerprint()?,
             evidence_hash,
             request_hash: crate::store::hash(&serde_json::to_vec(&crate::decision::wire_request(
                 &request,
@@ -491,7 +484,7 @@ pub async fn maybe_prune(
         return Ok(());
     }
     let started = Instant::now();
-    let backend = match TypeSafe::new(decision.clone()) {
+    let backend = match DecisionHttpClient::new(decision.clone()) {
         Ok(backend) => backend,
         Err(error) => {
             store::finish_state(db, &id, "failed", "backend_unavailable", 0)?;
