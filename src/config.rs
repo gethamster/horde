@@ -5,6 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "project_config.rs"]
+mod project_config;
+
 /// Provider slug used by every executor role that does not name one.
 pub const DEFAULT_PROVIDER: &str = "default";
 
@@ -141,6 +144,7 @@ impl Provider {
     fn resolve(&self, e: &Executor) -> ExecutorConfig {
         ExecutorConfig {
             kind: self.kind.clone(),
+            project: None,
             auth_mode: self.auth_mode.clone(),
             base_url: self.base_url.clone(),
             api_key_env: self.api_key_env.clone(),
@@ -192,6 +196,8 @@ impl Executor {
 #[serde(default, deny_unknown_fields)]
 pub struct ExecutorConfig {
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     pub account: Option<String>,
     pub auth_mode: String,
     pub program: Option<String>,

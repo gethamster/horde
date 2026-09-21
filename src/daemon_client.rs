@@ -32,24 +32,39 @@ pub fn running(root: &Path) -> bool {
 }
 
 pub fn request(root: &Path, method: &str, args: Value) -> Result<Value> {
-    send(root, method, args, REQUEST_TIMEOUT)
+    send(root, method, args, REQUEST_TIMEOUT, None)
 }
 
 /// Ask the daemon a question whose only purpose is to learn whether it is
 /// serving. Callers treat a failure as "no daemon", so this must never be the
 /// outermost request of a nested pair.
 pub fn probe(root: &Path, method: &str, args: Value) -> Result<Value> {
-    send(root, method, args, PROBE_TIMEOUT)
+    send(root, method, args, PROBE_TIMEOUT, None)
 }
 
-fn send(root: &Path, method: &str, args: Value, timeout: Duration) -> Result<Value> {
+pub fn request_scoped(
+    root: &Path,
+    method: &str,
+    args: Value,
+    project: Option<&str>,
+) -> Result<Value> {
+    send(root, method, args, REQUEST_TIMEOUT, project)
+}
+
+fn send(
+    root: &Path,
+    method: &str,
+    args: Value,
+    timeout: Duration,
+    project: Option<&str>,
+) -> Result<Value> {
     let mut stream = std::os::unix::net::UnixStream::connect(root.join("daemon.sock"))?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     writeln!(
         stream,
         "{}",
-        json!({"method":method,"args":args,"token":crate::branding::var("HORDE_WORKER_TOKEN").ok()})
+        json!({"method":method,"args":args,"project":project,"token":crate::branding::var("HORDE_WORKER_TOKEN").ok()})
     )?;
     let mut response = String::new();
     std::io::BufReader::new(stream).read_line(&mut response)?;

@@ -8,10 +8,26 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
+mod project_host;
+mod providers;
+use project_host::{
+    admit_local_vm, bootstrap_path, persist_bootstrap, runtime_visible, send_host_operation,
+};
+pub use project_host::{remote_command, reserved_local_cpus};
+pub use providers::kubernetes_manifest;
+use providers::{lifecycle, provision};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Profile {
     pub provider: String,
+    pub project: String,
+    pub host: Option<String>,
+    pub lima_user: String,
+    pub lima_home: PathBuf,
+    pub lima_guard: PathBuf,
+    pub lima_image_digest: String,
+    pub lima_horde_binary: PathBuf,
+    pub lima_egress: Vec<String>,
     pub endpoint: String,
     pub api_key_env: String,
     pub image: String,
@@ -29,6 +45,14 @@ impl Default for Profile {
     fn default() -> Self {
         Self {
             provider: "docker".into(),
+            project: "default".into(),
+            host: None,
+            lima_user: String::new(),
+            lima_home: PathBuf::new(),
+            lima_guard: "/usr/local/libexec/horde-lima-guard".into(),
+            lima_image_digest: String::new(),
+            lima_horde_binary: PathBuf::new(),
+            lima_egress: vec![],
             endpoint: String::new(),
             api_key_env: String::new(),
             image: String::new(),
@@ -110,8 +134,15 @@ pub fn load() -> Result<Config> {
 impl Profile {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            ["docker", "kubernetes", "e2b", "daytona", "tailscale"]
-                .contains(&self.provider.as_str()),
+            [
+                "docker",
+                "kubernetes",
+                "e2b",
+                "daytona",
+                "tailscale",
+                "lima"
+            ]
+            .contains(&self.provider.as_str()),
             "unsupported runtime provider"
         );
         ensure!(
@@ -131,6 +162,9 @@ impl Profile {
                 self.image.contains("@sha256:"),
                 "container image must be pinned by digest"
             );
+        }
+        if self.provider == "lima" {
+            crate::lima::validate(self)?;
         }
         if !self.endpoint.is_empty() {
             let u = reqwest::Url::parse(&self.endpoint)?;
@@ -165,6 +199,29 @@ pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
         let rows = db.rows("SELECT r.id,r.profile,r.resource,r.state,r.version,r.created,r.error,p.observed AS last_seen,p.status AS runtime_status FROM managed_runtimes r LEFT JOIN runtime_presence p ON p.runtime=r.id WHERE r.state!='removed'
 UNION ALL SELECT m.runtime,'fleet:' || k.name,NULL,CASE WHEN m.state='revoked' THEN 'revoked' WHEN c.expires<=? THEN 'expired' WHEN p.observed>? THEN 'ready' ELSE 'offline' END,json_extract(p.status,'$.version'),m.created,NULL,p.observed,p.status
 FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint LEFT JOIN runtime_presence p ON p.runtime=m.runtime WHERE NOT EXISTS(SELECT 1 FROM runtime_settings s WHERE s.key='runtime_removed:' || m.runtime AND s.value='true') ORDER BY created",&[&now(),&(now()-30)])?;
+        let project = args["project"]
+            .as_str()
+            .map(|p| crate::projects::resolve(db, p))
+            .transpose()?;
+        let rows = rows
+            .into_iter()
+            .filter_map(|row| {
+                if args["all_projects"] == true {
+                    return Some(Ok(row));
+                }
+                let Some(project) = project.as_deref() else {
+                    return Some(Ok(row));
+                };
+                let Some(id) = row["id"].as_str() else {
+                    return Some(Err(anyhow::anyhow!("runtime id")));
+                };
+                match runtime_visible(db, project, id) {
+                    Ok(true) => Some(Ok(row)),
+                    Ok(false) => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
         let rows = rows
             .into_iter()
             .map(|row| {
@@ -179,6 +236,12 @@ FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LE
     }
     if name == "runtime_inspect" {
         let id = args["id"].as_str().context("id required")?;
+        if let Some(project) = args["project"].as_str() {
+            ensure!(
+                runtime_visible(db, &crate::projects::resolve(db, project)?, id)?,
+                "runtime is not granted to this project"
+            );
+        }
         return Ok(Some(
             json!({"name":crate::runtime_directory::display_name(db,id)?,"runtime":db.rows("SELECT * FROM managed_runtimes WHERE id=?",&[&id])?,"fleet_membership":db.rows("SELECT m.runtime,m.key_id,k.name AS fleet,m.state,m.created,c.expires,c.renew_after FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint WHERE m.runtime=?",&[&id])?,"operations":db.rows("SELECT * FROM runtime_operations WHERE runtime=? ORDER BY created",&[&id])?.iter().map(management::operation_receipt).collect::<Result<Vec<_>>>()?}),
         ));
@@ -237,6 +300,20 @@ fn enqueue_operation(db: &Store, name: &str, args: &Value) -> Result<Option<Valu
     } else {
         crate::runtime_directory::resolve_known(db, selector)?
     };
+    if name != "runtime_create"
+        && let Some(row) = db
+            .rows("SELECT spec FROM managed_runtimes WHERE id=?", &[&id])?
+            .first()
+    {
+        let spec: Profile = serde_json::from_str(row["spec"].as_str().context("runtime spec")?)?;
+        if let Some(requested) = args["project"].as_str() {
+            ensure!(
+                crate::projects::resolve(db, requested)?
+                    == crate::projects::resolve(db, &spec.project)?,
+                "runtime belongs to another project"
+            );
+        }
+    }
     let body = if name == "runtime_skills_update" {
         let mut payload = args.as_object().context("operation args")?.clone();
         payload.insert(
@@ -254,10 +331,21 @@ fn enqueue_operation(db: &Store, name: &str, args: &Value) -> Result<Option<Valu
         if name == "runtime_create" {
             let profile = args["profile"].as_str().context("profile required")?;
             let config = load()?;
-            let spec = config.profiles.get(profile).context("unknown runtime profile")?;
+            let configured = config.profiles.get(profile).context("unknown runtime profile")?;
+            let project = crate::projects::resolve(db, &configured.project)?;
+            let requested = crate::projects::resolve(db, args["project"].as_str().unwrap_or("default"))?;
+            ensure!(project == requested, "runtime profile belongs to another project");
+            let spec = Profile { project: project.clone(), ..configured.clone() };
             spec.validate()?;
+            if spec.provider == "lima" && spec.host.is_none() {
+                admit_local_vm(db, &spec)?;
+            }
+            if let Some(host) = spec.host.as_deref() {
+                ensure!(host != selector && crate::projects::runtime_allowed(db, &project, host)?, "host is not granted to project");
+            }
+            crate::projects::bind_runtime(db, &project, &id)?;
             ensure!(spec.provider != "tailscale", "use horde network add to enroll Tailscale hosts");
-            db.conn.execute("INSERT INTO managed_runtimes(id,profile,spec,state,created) VALUES(?,?,?,'requested',?)",params![id,profile,serde_json::to_string(spec)?,now()])?;
+            db.conn.execute("INSERT INTO managed_runtimes(id,profile,spec,state,created) VALUES(?,?,?,'requested',?)",params![id,profile,serde_json::to_string(&spec)?,now()])?;
         } else if db.rows("SELECT id FROM managed_runtimes WHERE id=?", &[&id])?.is_empty() {
             ensure!(remote_management(name), "provider lifecycle is unavailable for independently enrolled workers");
             ensure!(crate::fleet_enrollment::authority::is_active(db, &id)?, "runtime must have an active enrollment for remote management");
@@ -365,274 +453,6 @@ fn kube(p: &Profile, rest: Vec<String>) -> Vec<String> {
     a.extend(rest);
     a
 }
-async fn http(
-    p: &Profile,
-    method: reqwest::Method,
-    path: &str,
-    body: Option<Value>,
-) -> Result<Value> {
-    let base = if p.endpoint.is_empty() {
-        if p.provider == "e2b" {
-            "https://api.e2b.app"
-        } else {
-            "https://app.daytona.io/api"
-        }
-    } else {
-        &p.endpoint
-    };
-    let key = crate::config::credential(&p.api_key_env)
-        .context("provider API credential unavailable in daemon environment")?;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?;
-    let mut request = client.request(method, format!("{}{path}", base.trim_end_matches('/')));
-    request = if p.provider == "e2b" {
-        request.header("X-API-Key", key)
-    } else {
-        request.bearer_auth(key)
-    };
-    if let Some(body) = body {
-        request = request.json(&body);
-    }
-    let response = request.send().await?;
-    ensure!(
-        response.status().is_success(),
-        "{} API returned {}",
-        p.provider,
-        response.status()
-    );
-    let bytes = response.bytes().await?;
-    ensure!(
-        bytes.len() <= 4 * 1024 * 1024,
-        "provider response too large"
-    );
-    if bytes.is_empty() {
-        Ok(json!({}))
-    } else {
-        Ok(serde_json::from_slice(&bytes)?)
-    }
-}
-pub fn kubernetes_manifest(p: &Profile, id: &str) -> Value {
-    json!({"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":format!("horde-{id}"),"labels":{"app.kubernetes.io/managed-by":"horde","horde-runtime":id}},"spec":{"serviceName":format!("horde-{id}"),"replicas":1,"selector":{"matchLabels":{"horde-runtime":id}},"template":{"metadata":{"labels":{"horde-runtime":id}},"spec":{"terminationGracePeriodSeconds":60,"securityContext":{"runAsNonRoot":true,"runAsUser":10001,"fsGroup":10001},"containers":[{"name":"horde","image":p.image,"args":["--data-dir","/data","daemon"],"env":[{"name":"HORDE_CONCURRENCY","value":p.concurrency.to_string()}],"resources":{"requests":{"cpu":p.cpus.to_string(),"memory":format!("{}Mi",p.memory_mb)},"limits":{"cpu":p.cpus.to_string(),"memory":format!("{}Mi",p.memory_mb)}},"volumeMounts":[{"name":"data","mountPath":"/data"}]}]}},"volumeClaimTemplates":[{"metadata":{"name":"data"},"spec":{"accessModes":["ReadWriteOnce"],"resources":{"requests":{"storage":format!("{}Gi",p.disk_gb)}}}}]}})
-}
-async fn provision(db: &Store, p: &Profile, id: &str, bootstrap: Option<&Value>) -> Result<String> {
-    let name = format!("horde-{id}");
-    match p.provider.as_str() {
-        "docker" => {
-            let volume = format!("{name}-data");
-            command(
-                &docker(
-                    p,
-                    vec![
-                        "volume".into(),
-                        "create".into(),
-                        "--label".into(),
-                        format!("task-runtime={id}"),
-                        volume.clone(),
-                    ],
-                ),
-                None,
-            )
-            .await?;
-            let mut args = vec![
-                "run".into(),
-                "--detach".into(),
-                "--name".into(),
-                name.clone(),
-                "--label".into(),
-                format!("task-runtime={id}"),
-                "--restart".into(),
-                "unless-stopped".into(),
-                "--cpus".into(),
-                p.cpus.to_string(),
-                "--memory".into(),
-                format!("{}m", p.memory_mb),
-                "--mount".into(),
-                format!("type=volume,src={volume},dst=/data"),
-            ];
-            let env_file = db.root.join(format!("bootstrap-{}", crate::store::id()));
-            let env = bootstrap_env(p, bootstrap);
-            let mut lines = String::new();
-            for (k, v) in env.as_object().context("bootstrap environment")? {
-                lines.push_str(&format!(
-                    "{k}={}\n",
-                    v.as_str().context("environment value")?
-                ));
-            }
-            crate::secrets::write_private(&env_file, lines.as_bytes())?;
-            args.extend([
-                "--env-file".into(),
-                env_file.to_string_lossy().into_owned(),
-                p.image.clone(),
-                "--data-dir".into(),
-                "/data".into(),
-                "daemon".into(),
-            ]);
-            let result = command(&docker(p, args), None).await;
-            std::fs::remove_file(env_file)?;
-            result?;
-            Ok(name)
-        }
-        "kubernetes" => {
-            let mut manifest = kubernetes_manifest(p, id);
-            if let Some(packet) = bootstrap {
-                let secret = json!({"apiVersion":"v1","kind":"Secret","metadata":{"name":format!("{name}-bootstrap"),"labels":{"task-runtime":id}},"type":"Opaque","stringData":{"bootstrap":packet.to_string()}});
-                command(
-                    &kube(p, vec!["create".into(), "-f".into(), "-".into()]),
-                    Some(&secret),
-                )
-                .await?;
-                manifest["spec"]["template"]["spec"]["containers"][0]["env"].as_array_mut().context("container environment")?.push(json!({"name":"HORDE_BOOTSTRAP_JSON","valueFrom":{"secretKeyRef":{"name":format!("{name}-bootstrap"),"key":"bootstrap"}}}));
-                manifest["spec"]["template"]["spec"]["containers"][0]["env"].as_array_mut().context("container environment")?.push(json!({"name":"HORDE_BOOTSTRAP_JSON","valueFrom":{"secretKeyRef":{"name":format!("{name}-bootstrap"),"key":"bootstrap"}}}));
-            }
-            command(
-                &kube(
-                    p,
-                    vec![
-                        "create".into(),
-                        "-f".into(),
-                        "-".into(),
-                        "-o".into(),
-                        "json".into(),
-                    ],
-                ),
-                Some(&manifest),
-            )
-            .await?;
-            Ok(name)
-        }
-        "e2b" => {
-            let result=http(p,reqwest::Method::POST,"/sandboxes",Some(json!({"templateID":p.image,"timeout":p.lifetime_seconds,"autoPause":true,"secure":true,"metadata":{"task-runtime":id},"envVars":bootstrap_env(p,bootstrap)}))).await?;
-            Ok(result["sandboxID"]
-                .as_str()
-                .context("sandbox ID missing")?
-                .into())
-        }
-        "daytona" => {
-            let result=http(p,reqwest::Method::POST,"/sandbox",Some(json!({"name":name,"snapshot":p.image,"cpu":p.cpus,"memory":p.memory_mb.div_ceil(1024),"disk":p.disk_gb,"autoStopInterval":p.lifetime_seconds.div_ceil(60),"labels":{"task-runtime":id},"env":bootstrap_env(p,bootstrap)}))).await?;
-            Ok(result["id"].as_str().context("sandbox ID missing")?.into())
-        }
-        _ => bail!("unsupported provider"),
-    }
-}
-async fn lifecycle(p: &Profile, id: &str, resource: &str, action: &str) -> Result<Value> {
-    ensure!(
-        !resource.is_empty()
-            && resource.len() <= 128
-            && resource
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-'),
-        "invalid provider resource ID"
-    );
-    match p.provider.as_str() {
-        "docker" => {
-            let object = command(&docker(p, vec!["inspect".into(), resource.into()]), None).await?;
-            ensure!(
-                object[0]["Config"]["Labels"]["task-runtime"] == id,
-                "resource ownership label mismatch"
-            );
-            if action == "runtime_reconcile" {
-                return Ok(object);
-            }
-            let verb = match action {
-                "runtime_destroy" => "rm",
-                "runtime_stop" => "stop",
-                "runtime_start" => "start",
-                _ => bail!("operation requires enrolled runtime"),
-            };
-            let mut args = vec![verb.into()];
-            if verb == "rm" {
-                args.push("--force".into());
-            }
-            args.push(resource.into());
-            command(&docker(p, args), None).await
-        }
-        "kubernetes" => {
-            let object = command(
-                &kube(
-                    p,
-                    vec![
-                        "get".into(),
-                        "statefulset".into(),
-                        resource.into(),
-                        "-o".into(),
-                        "json".into(),
-                    ],
-                ),
-                None,
-            )
-            .await?;
-            ensure!(
-                object["metadata"]["labels"]["task-runtime"] == id,
-                "resource ownership label mismatch"
-            );
-            if action == "runtime_reconcile" {
-                return Ok(object);
-            }
-            if action == "runtime_destroy" {
-                command(
-                    &kube(
-                        p,
-                        vec![
-                            "delete".into(),
-                            "statefulset".into(),
-                            resource.into(),
-                            "--wait=true".into(),
-                        ],
-                    ),
-                    None,
-                )
-                .await
-            } else {
-                let replicas = match action {
-                    "runtime_start" => "1",
-                    "runtime_stop" => "0",
-                    _ => bail!("operation requires enrolled runtime"),
-                };
-                command(
-                    &kube(
-                        p,
-                        vec![
-                            "scale".into(),
-                            "statefulset".into(),
-                            resource.into(),
-                            format!("--replicas={replicas}"),
-                        ],
-                    ),
-                    None,
-                )
-                .await
-            }
-        }
-        "e2b" | "daytona" => {
-            let prefix = if p.provider == "e2b" {
-                "sandboxes"
-            } else {
-                "sandbox"
-            };
-            let path = format!("/{prefix}/{resource}");
-            let info = http(p, reqwest::Method::GET, &path, None).await?;
-            ensure!(
-                info["metadata"]["task-runtime"] == id || info["labels"]["task-runtime"] == id,
-                "resource ownership label mismatch"
-            );
-            if action == "runtime_reconcile" {
-                return Ok(info);
-            }
-            let (method, suffix) = match (p.provider.as_str(), action) {
-                (_, "runtime_destroy") => (reqwest::Method::DELETE, ""),
-                ("e2b", "runtime_stop") => (reqwest::Method::POST, "/pause"),
-                ("e2b", "runtime_start") => (reqwest::Method::POST, "/resume"),
-                (_, "runtime_stop") => (reqwest::Method::POST, "/stop"),
-                (_, "runtime_start") => (reqwest::Method::POST, "/start"),
-                _ => bail!("operation requires enrolled runtime"),
-            };
-            http(p, method, &format!("{path}{suffix}"), None).await
-        }
-        _ => bail!("unsupported provider"),
-    }
-}
 pub fn recover_operations(db: &Store) -> Result<()> {
     db.atomic(|| {
         let interrupted_update: bool = db.conn.query_row(
@@ -647,6 +467,7 @@ pub fn recover_operations(db: &Store) -> Result<()> {
 }
 
 pub async fn tick(db: &Store) -> Result<()> {
+    db.conn.execute("UPDATE managed_runtimes SET error='bootstrap enrollment expired before activation; inspect retained guest and recreate with a new runtime identity' WHERE state NOT IN ('removed','ready') AND error IS NULL AND EXISTS(SELECT 1 FROM runtime_enrollments e WHERE e.runtime=managed_runtimes.id AND e.state='pending' AND e.expires<=?)", [now()])?;
     let paused =
         i64::from(management::value(db, "fleet_updates_paused")?.as_deref() == Some("true"));
     let operations = db.rows(
@@ -675,8 +496,18 @@ pub async fn tick(db: &Store) -> Result<()> {
         };
         ensure!(row["state"] != "removed", "runtime has been removed");
         let p:Profile=serde_json::from_str(row["spec"].as_str().context("spec")?)?;p.validate()?;
+        if let Some(host) = p.host.as_deref() {
+            return send_host_operation(db, op, &p, host).await;
+        }
         if action=="runtime_create"{
-            let bootstrap=crate::enrollment::issue(db,id,&p)?;
+            let incoming = bootstrap_path(db,&p.project,id)?;
+            let bootstrap = if incoming.exists() {
+                Some(serde_json::from_slice(&std::fs::read(incoming)?)?)
+            } else {
+                let packet = crate::enrollment::issue(db,id,&p)?;
+                if let Some(packet) = &packet { persist_bootstrap(db,&p.project,id,packet)?; }
+                packet
+            };
             let resource=provision(db,&p,id,bootstrap.as_ref()).await?;
             db.conn.execute("UPDATE managed_runtimes SET resource=?,state=CASE WHEN state='ready' THEN state ELSE 'provisioned' END WHERE id=?",params![resource,id])?;
             Ok(json!({"resource":resource,"state":"provisioned","enrollment_required":p.peer.is_none()}))
@@ -694,19 +525,22 @@ pub async fn tick(db: &Store) -> Result<()> {
 
         }else{
             let input:Value=serde_json::from_str(op["args"].as_str().context("operation args")?)?;
-            let resource=if action=="runtime_reconcile"{input["resource"].as_str().context("resource required for reconciliation")?}else{row["resource"].as_str().context("resource ID unavailable; reconcile provisioning first")?};
+            let recovery_resource = if action == "runtime_destroy" && p.provider == "lima" && row["resource"].is_null() {
+                Some(crate::lima::owned_resource(&db.root, &p, id)?)
+            } else { None };
+            let resource=if action=="runtime_reconcile"{input["resource"].as_str().context("resource required for reconciliation")?}else{row["resource"].as_str().or(recovery_resource.as_deref()).context("resource ID unavailable; reconcile provisioning first")?};
             let result=if p.provider=="tailscale" {
                 ensure!(action=="runtime_destroy", "Tailscale hosts support update, restart, and destroy (unenroll); host power and provisioning remain user-owned");
                 json!({"unenrolled":true,"host_retained":true})
-            }else{lifecycle(&p,id,resource,action).await?};
+            }else{lifecycle(db,&p,id,resource,action).await?};
             if action=="runtime_reconcile" {db.conn.execute("UPDATE managed_runtimes SET resource=?,error=NULL WHERE id=?",params![resource,id])?;}
             if action=="runtime_destroy" {db.conn.execute("UPDATE runtime_enrollments SET state='revoked',token_hash='' WHERE runtime=?",[id])?;}
-            db.conn.execute("UPDATE managed_runtimes SET state=? WHERE id=?",params![match action{"runtime_destroy"=>"removed","runtime_stop"=>"stopped",_=>"provisioned"},id])?;Ok(result)
+            db.conn.execute("UPDATE managed_runtimes SET state=? WHERE id=?",params![match action{"runtime_destroy"=>"removed","runtime_stop"=>"stopped","runtime_reconcile" if p.provider == "lima" => result["state"].as_str().unwrap_or("uncertain"),_=>"provisioned"},id])?;Ok(result)
         }
     }.await;
     match operation {
         Ok(result) => {
-            let state = if remote_management(action) {
+            let state = if remote_management(action) || result["host_managed"] == true {
                 match result["state"].as_str() {
                     Some("succeeded") => "succeeded",
                     Some("failed" | "blocked" | "uncertain") => "failed",
@@ -789,7 +623,7 @@ async fn remote_status(
 }
 async fn replace_container(db: &Store, p: &Profile, id: &str, resource: &str) -> Result<()> {
     if p.provider == "docker" {
-        lifecycle(p, id, resource, "runtime_destroy").await?;
+        lifecycle(db, p, id, resource, "runtime_destroy").await?;
         provision(db, p, id, None).await?;
     } else {
         let object = command(
@@ -919,97 +753,4 @@ async fn container_update(
 }
 
 #[cfg(test)]
-mod recovery_tests {
-    use super::*;
-
-    #[test]
-    fn local_id_is_rejected_before_queuing() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let db = Store::open(temp.path())?;
-        assert!(
-            dispatch(
-                &db,
-                "runtime_create",
-                &json!({"id":"local","profile":"any","request_id":"create"})
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("reserved")
-        );
-        assert!(db.rows("SELECT * FROM runtime_operations", &[])?.is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn interrupted_rollout_pauses_queued_updates_across_recovery() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let db = Store::open(temp.path())?;
-        for (id, state) in [("first", "running"), ("next", "pending")] {
-            db.conn.execute("INSERT INTO runtime_operations(id,runtime,action,args,state,created) VALUES(?,'worker','runtime_update','{}',?,0)", params![id,state])?;
-        }
-        recover_operations(&db)?;
-        recover_operations(&db)?;
-        tick(&db).await?;
-        assert_eq!(
-            management::value(&db, "fleet_updates_paused")?.as_deref(),
-            Some("true")
-        );
-        let state: String = db.conn.query_row(
-            "SELECT state FROM runtime_operations WHERE id='next'",
-            [],
-            |r| r.get(0),
-        )?;
-        assert_eq!(state, "pending");
-        let state: String = db.conn.query_row(
-            "SELECT state FROM runtime_operations WHERE id='first'",
-            [],
-            |r| r.get(0),
-        )?;
-        assert_eq!(state, "uncertain");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn incompatible_container_is_held_without_provider_rollback() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let db = Store::open(temp.path())?;
-        let p: Profile =
-            serde_json::from_value(json!({"provider":"docker","image":"old@sha256:fixture"}))?;
-        for rollback_safe in [json!(false), Value::Null] {
-            let progress = json!({"image":"new@sha256:fixture","phase":"health","replaced_at":0,"rollback_safe":rollback_safe});
-            let op = json!({"id":"update","result":progress.to_string()});
-            let config = crate::network::NetworkConfig::default();
-            let result = container_update(
-                &db,
-                &p,
-                "worker",
-                &json!({"resource":"worker"}),
-                &op,
-                &config,
-                "missing",
-                &json!({"version":"0.2.1"}),
-            )
-            .await?;
-            assert_eq!(result["state"], "blocked");
-            assert!(
-                result["reason"]
-                    .as_str()
-                    .unwrap()
-                    .contains("schema compatibility")
-            );
-        }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod branding_tests {
-    use super::*;
-    #[test]
-    fn bootstrap_supports_both_generations_of_remote_images() {
-        let packet = json!({"fixture": "bootstrap"});
-        let env = bootstrap_env(&Profile::default(), Some(&packet));
-        assert_eq!(env["HORDE_CONCURRENCY"], "4");
-        assert_eq!(env["HORDE_BOOTSTRAP_JSON"], packet.to_string());
-    }
-}
+mod tests;

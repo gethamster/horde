@@ -236,7 +236,21 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
     let normalized = delegation_target(db, args)?;
     let args = &normalized;
     let parent = db.task(oid)?;
-    let source = if let Some(worker) = args["worker"].as_str() {
+    let project = crate::projects::task_project(db, oid)?;
+    let parent_repo = std::path::Path::new(parent["repo"].as_str().context("repo")?);
+    let repo = args["repo"]
+        .as_str()
+        .map(std::path::Path::new)
+        .unwrap_or(parent_repo);
+    if args["repo"].is_string() {
+        ensure!(
+            crate::projects::infer(db, repo)?.as_deref() == Some(project.as_str()),
+            "delegation repository must be registered in the parent project"
+        );
+    }
+    let source = if args["repo"].is_string() {
+        repo.to_path_buf()
+    } else if let Some(worker) = args["worker"].as_str() {
         db.worker(worker)?["workspace"]
             .as_str()
             .map(std::path::PathBuf::from)
@@ -254,7 +268,15 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
     let objective = args["objective"].as_str().context("objective")?;
     let mut settings: Settings =
         serde_json::from_str(parent["settings"].as_str().context("settings")?)?;
-    let repo = std::path::Path::new(parent["repo"].as_str().context("repo")?);
+    let ownership_repo = if args["repo"].is_string() {
+        repo.to_path_buf()
+    } else {
+        let path: String = db.conn.query_row(
+            "SELECT r.path FROM task_projects t JOIN project_repositories r ON r.id=t.repository WHERE t.task=?",
+            [oid], |row| row.get(0),
+        )?;
+        std::path::PathBuf::from(path)
+    };
     let templates = crate::template::load_templates(&crate::branding::templates(repo))?;
     let mut plan = crate::template::compile(
         args["template"]
@@ -278,11 +300,11 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
   ensure!(count<limits.children as i64 && t["depth"].as_u64().unwrap_or(0)<limits.depth as u64,"delegation tree limit reached");
   settings.secret_bundles.clear();
   settings.skills.clear();
-  let child=db.submit_pinned(objective,repo,&settings,&plan,&skills)?;
+  let child=db.submit_pinned_project(&project,objective,&ownership_repo,&settings,&plan,&skills)?;
   crate::execution_selection::inherit(db,oid,&child,args)?;
   crate::execution_selection::validate_target(db,&child,args["peer"].as_str())?;
   if args["peer"].is_null(){
-   let target=db.root.join("delegated-repositories").join(&child);std::fs::create_dir_all(target.parent().context("repository directory")?)?;
+   let target=crate::projects::storage_root(db,&project)?.join("delegated-repositories").join(&child);std::fs::create_dir_all(target.parent().context("repository directory")?)?;
    let base=if let Some(snapshot)=args.get("_snapshot"){
     crate::federation::unpack(snapshot,&target)?;snapshot["commit"].as_str().context("caller source commit")?.to_owned()
    }else{
@@ -290,6 +312,7 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
     let output=crate::executor::clean_command("git").args(["clone","--no-hardlinks"]).arg(&source).arg(&target).output()?;ensure!(output.status.success(),"cannot allocate child repository");crate::git::run(&target,&["checkout","--detach",&base])?;base
    };
    crate::git::run(&target,&["config","user.name","Horde"])?;crate::git::run(&target,&["config","user.email","task@localhost"])?;
+   crate::projects::register_repository(db,&project,&target)?;
    db.conn.execute("UPDATE tasks SET repo=? WHERE id=?",params![target.to_string_lossy(),child])?;
    db.conn.execute("INSERT INTO local_child_bases VALUES(?,?)",params![child,base])?;
   }

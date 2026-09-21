@@ -8,6 +8,16 @@ use std::{collections::BTreeMap, path::Path};
 pub fn submit(db: &Store, args: &Value) -> Result<Value> {
     let peer =
         crate::runtime_directory::resolve(db, args["on"].as_str().context("runtime required")?)?;
+    let project = crate::projects::resolve(
+        db,
+        args["project"]
+            .as_str()
+            .unwrap_or(crate::projects::DEFAULT_PROJECT),
+    )?;
+    ensure!(
+        crate::projects::runtime_allowed(db, &project, &peer)?,
+        "runtime is not granted this project"
+    );
     let network = crate::federation::config(db)?;
     ensure!(
         network.delegate_peers.contains(&peer),
@@ -19,7 +29,7 @@ pub fn submit(db: &Store, args: &Value) -> Result<Value> {
         "remote work needs a clean repository; commit intended source changes and keep credential files outside the repository"
     );
     let snapshot = crate::federation::snapshot(&repo)?;
-    let settings = Settings::load(&repo)?;
+    let settings = Settings::load_project(db, &project, &repo)?;
     let objective = args["objective"].as_str().context("objective required")?;
     let templates = crate::template::load_templates(&crate::branding::templates(&repo))?;
     let plan = crate::template::compile(
@@ -31,10 +41,10 @@ pub fn submit(db: &Store, args: &Value) -> Result<Value> {
     )?;
     let execution = args
         .get("execution")
-        .map(|input| crate::execution_selection::prepare(db, input, None))
+        .map(|input| crate::execution_selection::prepare_project(db, &project, input, None))
         .transpose()?;
     db.atomic(|| {
-        let id = db.submit(objective, &repo, &settings, &plan)?;
+        let id = db.submit_project(&project, objective, &repo, &settings, &plan)?;
         if let Some(execution) = &execution {
             crate::execution_selection::pin(db, &id, execution)?;
             crate::execution_selection::validate_target(db, &id, Some(&peer))?;
@@ -117,7 +127,12 @@ pub fn result(db: &Store, id: &str) -> Result<Value> {
         "remote result artifact is corrupt"
     );
     let snapshot: Value = serde_json::from_slice(&bytes)?;
-    let parent = db.root.join("remote-results");
+    let project = crate::projects::task_project(db, id)?;
+    let parent = db
+        .root
+        .join("projects")
+        .join(project)
+        .join("remote-results");
     std::fs::create_dir_all(&parent)?;
     let destination = parent.join(id);
     if !destination.try_exists()? {

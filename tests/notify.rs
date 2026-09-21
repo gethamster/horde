@@ -51,8 +51,14 @@ impl Daemon {
         d.wait_ready();
         d
     }
+    fn config_file(&self) -> PathBuf {
+        self.root.parent().unwrap().join("config/horde/config.toml")
+    }
     fn spawn(root: &Path) -> Child {
+        let config = root.parent().unwrap().join("config");
+        std::fs::create_dir_all(config.join("horde")).unwrap();
         Command::new(BIN)
+            .env("XDG_CONFIG_HOME", config)
             .arg("--data-dir")
             .arg(root)
             .arg("daemon")
@@ -96,11 +102,7 @@ impl Daemon {
         self.call_result(method, args).unwrap()
     }
     fn configure(&self, notify: &str) {
-        std::fs::write(
-            self.repo.join(".horde.toml"),
-            format!("[notify]\n{notify}\n"),
-        )
-        .unwrap();
+        std::fs::write(self.config_file(), format!("[notify]\n{notify}\n")).unwrap();
     }
     fn submit(&self, template: &str) -> String {
         self.call(
@@ -146,10 +148,10 @@ impl Daemon {
 }
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        support::stop_daemon(&mut self.child, &self.root);
     }
 }
+mod support;
 /// Poll until `check` returns a value, or fail with the last observation.
 fn eventually<T>(what: &str, mut check: impl FnMut() -> Option<T>) -> T {
     let start = Instant::now();
