@@ -68,7 +68,11 @@ pub struct DecisionHttpClient {
 #[derive(Clone)]
 enum Authority {
     User,
-    Task { root: PathBuf, task: String },
+    Task {
+        root: PathBuf,
+        task: String,
+        allow_completed_review: bool,
+    },
 }
 
 /// Jev-compatible SystemOne HTTP transport, independent of provider identity.
@@ -88,6 +92,23 @@ impl DecisionHttpClient {
             Authority::Task {
                 root: root.as_ref().to_path_buf(),
                 task: task.into(),
+                allow_completed_review: false,
+            },
+        )
+    }
+
+    /// Review evidence may be evaluated after a task succeeds or fails.
+    pub fn new_project_review(
+        config: Decision,
+        root: impl AsRef<Path>,
+        task: impl Into<String>,
+    ) -> Result<Self> {
+        Self::new_with_authority(
+            config,
+            Authority::Task {
+                root: root.as_ref().to_path_buf(),
+                task: task.into(),
+                allow_completed_review: true,
             },
         )
     }
@@ -128,13 +149,26 @@ impl DecisionHttpClient {
         let current = match &self.authority {
             Authority::User => crate::config::Settings::load_user()
                 .context("current operator decision configuration unavailable")?,
-            Authority::Task { root, task } => {
+            Authority::Task {
+                root,
+                task,
+                allow_completed_review,
+            } => {
                 let db = crate::store::Store::open(root)
                     .context("current project decision configuration unavailable")?;
-                ensure!(
-                    db.task(task)?["status"] == "running",
-                    "task is no longer running for a decision request"
-                );
+                let current_task = db.task(task)?;
+                let status = current_task["status"].as_str().unwrap_or_default();
+                if *allow_completed_review {
+                    ensure!(
+                        matches!(status, "running" | "succeeded" | "failed"),
+                        "task is no longer reviewable for a decision request"
+                    );
+                } else {
+                    ensure!(
+                        status == "running",
+                        "task is no longer running for a decision request"
+                    );
+                }
                 let project = crate::projects::task_project(&db, task)
                     .context("current task project unavailable")?;
                 crate::config::Settings::load_project_user(&db, &project)

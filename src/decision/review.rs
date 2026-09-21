@@ -584,7 +584,7 @@ async fn run(job: Job) {
         return;
     };
     let start = Instant::now();
-    let outcome = match DecisionHttpClient::new_project(prepared.config, &root, &task) {
+    let outcome = match DecisionHttpClient::new_project_review(prepared.config, &root, &task) {
         Ok(backend) => {
             backend
                 .decide_counted_with(&request, |_| {
