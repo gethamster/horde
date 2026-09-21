@@ -1,5 +1,5 @@
 {
-  "count": 82,
+  "count": 83,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
