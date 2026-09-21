@@ -1,5 +1,5 @@
 {
-  "count": 97,
+  "count": 98,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -1975,6 +1975,10 @@
             "maximum": 200,
             "minimum": 1,
             "type": "integer"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
           },
           "task": {
             "type": "string"
