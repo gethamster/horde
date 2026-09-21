@@ -17,6 +17,12 @@ async fn child_action() {
         Ok(value) => value,
         Err(error) => json!({"error":error.to_string()}),
     };
+    if let Ok(expected) = std::env::var("HORDE_EXPECT_EFFECTIVE_KEY") {
+        assert_eq!(
+            horde::config::credential("TUARA_API_KEY").unwrap(),
+            expected
+        );
+    }
     std::fs::write(
         Path::new(&root).join("result.json"),
         serde_json::to_vec(&output).unwrap(),
@@ -99,6 +105,179 @@ fn provider_setup_consumes_existing_secret_reference_and_preserves_unrelated_con
     let verify = f.run(json!({"action":"verify"}), &[]);
     assert!(!verify.to_string().contains("fixture-secret-never-output"));
     assert_eq!(verify["checks"]["provider_api"], "not_probed");
+}
+
+#[test]
+fn direct_provider_key_addition_and_replacement_are_private_and_preserve_other_accounts() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let config_dir = f.dir.path().join("config/horde");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), "# local settings\n[providers.local-fixture]\nkind='simulated'\nauth_mode='login'\nmodel='local-model'\n").unwrap();
+    std::fs::write(
+        config_dir.join("credentials.env"),
+        "# another account\nOTHER_API_KEY='keep-this-key'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        config_dir.join("credentials.env"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    for secret in ["first-direct-key", "replacement-direct-key"] {
+        let report = f.run(json!({"action":"configure_provider","provider":"tuara","credential":secret,"roles":["worker"]}), &[]);
+        assert_eq!(report["status"], "configured", "{report}");
+        assert_eq!(report["credential_activation"], "next_invocation");
+        assert_eq!(report["restart_required"], false);
+        assert_eq!(report["provider_api"], "not_probed");
+        assert!(!report.to_string().contains(secret));
+        let config = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
+        assert!(config.contains("# local settings"));
+        assert!(config.contains("[providers.local-fixture]"));
+        assert!(!config.contains(secret));
+        let credentials = std::fs::read_to_string(config_dir.join("credentials.env")).unwrap();
+        assert!(credentials.contains("# another account"));
+        let values = horde::secrets::parse(&credentials).unwrap();
+        assert_eq!(values["OTHER_API_KEY"], "keep-this-key");
+        assert_eq!(values["TUARA_API_KEY"], secret);
+        assert_eq!(
+            std::fs::metadata(config_dir.join("credentials.env"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+        assert!(
+            !f.run(json!({"action":"inspect"}), &[])
+                .to_string()
+                .contains(secret)
+        );
+    }
+}
+
+#[test]
+fn direct_provider_key_rejects_invalid_content_and_conflicting_sources_without_writes() {
+    let f = Fixture::new();
+    for credential in [
+        String::new(),
+        "   ".into(),
+        "invalid\nkey".into(),
+        "invalid\rkey".into(),
+        "invalid\0key".into(),
+        "x".repeat(16385),
+    ] {
+        let report = f.run(
+            json!({"action":"configure_provider","provider":"tuara","credential":credential}),
+            &[],
+        );
+        assert!(report.get("error").is_some(), "{report}");
+        assert!(!f.dir.path().join("config/horde/config.toml").exists());
+    }
+    for source in [
+        json!({"credential_env":"FIXTURE_KEY"}),
+        json!({"credential_file":"/not/read"}),
+    ] {
+        let mut args = json!({"action":"configure_provider","provider":"tuara","credential":"never-echo-this"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(source.as_object().unwrap().clone());
+        let report = f.run(args, &[]);
+        assert!(report.get("error").is_some(), "{report}");
+        assert!(!report.to_string().contains("never-echo-this"));
+        assert!(!f.dir.path().join("config/horde/config.toml").exists());
+    }
+}
+
+#[test]
+fn credential_fields_are_rejected_on_unrelated_setup_actions() {
+    let f = Fixture::new();
+    for source in [
+        json!({"credential":"never-echo-this"}),
+        json!({"credential_env":"FIXTURE_KEY"}),
+        json!({"credential_file":"/not/read"}),
+    ] {
+        let mut args = json!({"action":"inspect"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(source.as_object().unwrap().clone());
+        let report = f.run(args, &[]);
+        assert!(report.get("error").is_some(), "{report}");
+        assert!(!report.to_string().contains("never-echo-this"));
+    }
+}
+
+#[test]
+fn supplied_key_overrides_inherited_environment_without_restart_or_echo() {
+    let f = Fixture::new();
+    let report = f.run(json!({"action":"configure_provider","provider":"tuara","credential":"replacement-direct-key"}), &[("TUARA_API_KEY", "old-inherited-key")]);
+    assert_eq!(report["status"], "configured", "{report}");
+    assert_eq!(report["restart_required"], false);
+    assert_eq!(report["credential_activation"], "next_invocation");
+    assert!(!report.to_string().contains("replacement-direct-key"));
+    assert!(!report.to_string().contains("old-inherited-key"));
+    f.run(
+        json!({"action":"inspect"}),
+        &[
+            ("TUARA_API_KEY", "old-inherited-key"),
+            ("HORDE_EXPECT_EFFECTIVE_KEY", "replacement-direct-key"),
+        ],
+    );
+    let matching = f.run(json!({"action":"configure_provider","provider":"tuara","credential":"replacement-direct-key"}), &[("TUARA_API_KEY", "replacement-direct-key")]);
+    assert_eq!(matching["restart_required"], false);
+}
+
+#[test]
+fn only_an_effective_key_change_invalidates_previous_provider_capacity() {
+    let f = Fixture::new();
+    let args =
+        json!({"action":"configure_provider","provider":"tuara","credential":"first-direct-key"});
+    assert_eq!(f.run(args.clone(), &[])["status"], "configured");
+    let db = Store::open(&f.root).unwrap();
+    let account = "tuara:api:https://tuara.com/router/v1:TUARA_API_KEY";
+    db.conn.execute(
+        "INSERT INTO account_capacity(account,provider,window,used,reset,observed,source) VALUES(?,'tuara','provider-window',100,?,?,'provider')",
+        rusqlite::params![account, horde::store::now() + 3600, horde::store::now()],
+    ).unwrap();
+    db.conn.execute(
+        "INSERT INTO account_capacity(account,provider,window,used,reset,observed,source) VALUES(?,'tuara','budget-window',100,?,?,'local_budget')",
+        rusqlite::params![account, horde::store::now() + 3600, horde::store::now()],
+    ).unwrap();
+    let provider_used = || -> Option<f64> {
+        use rusqlite::OptionalExtension;
+        db.conn
+            .query_row(
+                "SELECT used FROM account_capacity WHERE account=? AND window='provider-window'",
+                [account],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+    };
+    assert_eq!(f.run(args, &[])["status"], "configured");
+    assert_eq!(provider_used(), Some(100.0));
+    let replacement = json!({"action":"configure_provider","provider":"tuara","credential":"replacement-direct-key"});
+    assert_eq!(
+        f.run(
+            replacement.clone(),
+            &[("TUARA_API_KEY", "first-direct-key")]
+        )["status"],
+        "configured"
+    );
+    assert_eq!(provider_used(), None);
+    // Restore the stored old key so the final request changes the effective key.
+    assert_eq!(f.run(json!({"action":"configure_provider","provider":"tuara","credential":"first-direct-key"}), &[("TUARA_API_KEY", "first-direct-key")])["status"], "configured");
+    assert_eq!(f.run(replacement, &[])["status"], "configured");
+    assert_eq!(provider_used(), None);
+    let budget: f64 = db
+        .conn
+        .query_row(
+            "SELECT used FROM account_capacity WHERE account=? AND window='budget-window'",
+            [account],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(budget, 100.0);
 }
 
 #[test]

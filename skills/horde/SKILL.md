@@ -155,11 +155,12 @@ A role may also set `model` to pick what that provider is asked for. See
 horde start
 ```
 
-Keys in `credentials.env` are re-read for each invocation, so `horde config provider
-add` takes effect on the next task with no restart. A key exported into the daemon's
-environment instead is fixed for the life of that process, so changing one needs
-`horde stop && horde start`. An exported variable also wins over the file: a stale
-`TUARA_API_KEY` in the daemon's shell makes edits to `credentials.env` look ignored.
+Keys in `credentials.env` are re-read for each invocation. An exported variable
+normally takes precedence over that file and stays fixed for the daemon's life.
+To replace it without restarting, give the new key to `agent_setup` action
+`configure_provider`, or use the Tuara `provider_login` handoff. These explicit
+updates persist file priority for the selected variable, so the next invocation
+uses the replacement. Other variables keep their environment-first lookup.
 
 **5. Prove it works, for free.**
 

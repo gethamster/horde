@@ -214,6 +214,38 @@ instead.
 
 Two modes, per provider.
 
+A user without terminal access can give a trusted agent a key for `agent_setup`
+action `configure_provider`. Pass the value as `credential`, or choose one
+existing `credential_env` or `credential_file` reference. The response omits the
+key. Horde preserves unrelated accounts and settings, and reads the saved key
+for the next invocation. An explicitly supplied key takes precedence over an
+older daemon environment value without a restart. Other variables keep their
+environment-first lookup. Key storage does not verify provider access.
+
+For Tuara, `provider_login` with `action: "start"`, `provider: "tuara"` (or a
+configured Tuara provider name), and a stable `request_id` returns a key-page
+handoff. Relay the URL and submit the user's inference API key as `input` with the
+session ID. Horde verifies API-key identity and `router:invoke` scope through
+account introspection before saving it. Failed verification, cancellation, or
+expiry keeps the existing key. No Tuara CLI or inference request is needed, and
+account OAuth tokens do not grant inference access. Successful verification
+leaves quota unknown. The preset reuses the matching configured provider and
+preserves its model and role settings.
+
+For subscription sign-in, call `provider_login` with `action: "start"`, the
+`provider`, and a stable `request_id`. Poll `status` with the returned `session_id`
+and relay the CLI's login URL and any device code to the user. Submit a manual
+authorization code through `input` only when the CLI asks for one. A session
+survives client disconnects until its deadline, but ends on daemon restart.
+Verified login changes the shared CLI account on that runtime; separate
+subscription profiles are not created. The operation makes no model request.
+See the [operation reference](operations.md#provider-account-setup) for arguments.
+
+Credential changes preserve existing tasks' provider selection. Role changes
+affect new tasks. An effective key change or verified login discards affected
+provider quota observations; local budget observations remain. Capacity stays
+unknown until fresh evidence arrives, and uncertain work still needs reconciliation.
+
 **Subscription login (`auth_mode = "login"`).** Codex and Claude use their own
 installed CLI and existing credential store. Horde does not read or copy those
 credentials.

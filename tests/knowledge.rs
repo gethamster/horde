@@ -76,7 +76,7 @@ fn children_share_only_published_family_claims_and_never_change_execution_state(
             .call(task, "knowledge", json!({"scope":"family"}))
             .unwrap();
         let rows = page["records"].as_array().unwrap();
-        assert_eq!(rows.len(), 2, "{page}");
+        assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|r| r["id"] == shared));
         assert!(rows.iter().any(|r| r["id"] == sibling));
         assert!(!page.to_string().contains(&private));
