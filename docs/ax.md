@@ -181,6 +181,14 @@ waking it. Back up the deployment's persistent stores before replacing the
 cluster; stopping a worker does not make its state independent of Substrate's
 storage.
 
+Drain and suspend project workers before stopping a kind cluster's host. After
+the host restarts, retained Pods can receive new IPs while Substrate retains
+their old worker addresses. In the tested recovery, replacing the idle WorkerPool
+Pods through Kubernetes registered current addresses while preserving the AX
+Tasks, Workspaces, and snapshots. Use this recovery when those addresses differ,
+and require authenticated Horde readiness before dispatching work. AX API health
+or a Task's ready status alone does not confirm that its worker is reachable.
+
 ## Validation and current limits
 
 The pinned AX/gVisor deployment ran two projects concurrently and completed four
