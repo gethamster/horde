@@ -1,6 +1,6 @@
 # Jev integration across Horde’s development lifecycle
 
-Status: Proposed implementation plan; no implementation or live benchmarks completed.
+Status (September 21, 2026): Phase 1 shadow routing and phase 2 advisory work-product review are implemented in open PRs. Phase 3 native context pruning is implemented in this stacked PR. One direct development-key SystemOne smoke request succeeded; no end-to-end Horde speed or quality benchmark has been completed.
 
 Research date: September 19, 2026. Repository: [gethamster/horde](https://github.com/gethamster/horde), inspected at commit `de239089928c7d0f1eb0b296a99afc140d076fe6`.
 

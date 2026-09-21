@@ -19,6 +19,31 @@ impl Conversation {
         self.0.push(serde_json::value::to_raw_value(&message)?);
         Ok(())
     }
+    pub fn values(&self) -> Result<Vec<Value>> {
+        self.0
+            .iter()
+            .map(|message| serde_json::from_str(message.get()).map_err(Into::into))
+            .collect()
+    }
+    pub fn range_bytes(&self, start: usize, end: usize) -> Result<Vec<u8>> {
+        anyhow::ensure!(
+            start < end && end <= self.0.len(),
+            "invalid native conversation range"
+        );
+        let mut bytes = Vec::new();
+        bytes.push(b'[');
+        for (index, message) in self.0[start..end].iter().enumerate() {
+            if index > 0 {
+                bytes.push(b',');
+            }
+            bytes.extend_from_slice(message.get().as_bytes());
+        }
+        bytes.push(b']');
+        Ok(bytes)
+    }
+    pub fn hash(&self) -> Result<String> {
+        Ok(crate::store::hash(&self.range_bytes(0, self.0.len())?))
+    }
 }
 
 pub(crate) fn request_bytes(

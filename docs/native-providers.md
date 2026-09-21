@@ -25,6 +25,59 @@ template for the tokenized prompt prefix to match. Horde cannot guarantee that
 server-side template behavior or a particular cache speedup. Different invocations
 may have different context and tools and therefore start a new prefix.
 
+## Optional Jev context pruning
+
+The operator can enable Jev decisions for the native executor in the user-level
+`[decision]` configuration. The default is disabled. `native_context_mode = "shadow"`
+records proposals without changing a conversation; `"active"` can
+replace completed search exchanges before a native request. Both require
+`decision.mode = "shadow"`, a configured TypeSafe credential, and the same
+operator settings pinned to the task. Routing and work-product review remain
+advisory even when native pruning is active.
+
+Only older, successful `read_file` or `search` assistant/tool groups are scored in
+shadow mode. Active mode prunes `search` groups only and rejects search results
+that mention instruction, policy, contract, skill, or acceptance files. Complete
+file reads remain available in the conversation because their authority cannot
+be reliably inferred from their path.
+
+The entire group must have matching call IDs and no assistant narrative or
+reasoning text. Horde retains the system and initial user messages, later user
+and coordination messages, the three newest completed groups, mutations,
+failures, and incomplete calls. Jev receives bounded, redacted excerpts and
+typed keep/omit and next-action questions. Its next-action choices are limited
+to `continue` and `prune`; `hold` is offered only when a configured request byte
+ceiling already blocks unchanged continuation. It cannot dispatch a new tool,
+delegate, or override the runtime's ownership and completion checks.
+
+Horde asks Jev only when the serialized native request reaches
+`native_context_trigger_bytes` (64 KiB by default), or the optional hard byte
+ceiling is exceeded, and the best-case replacement could save at least
+`native_context_min_savings_bytes` (16 KiB) and
+`native_context_min_savings_ratio_percent` (15%). A high-confidence answer
+must still meet both savings thresholds. These limits avoid paid decisions on
+small histories and account conservatively for the lost prefix cache. They are
+byte estimates, not provider token limits.
+
+Before applying an active replacement, Horde stores the exact omitted message
+bytes in its task-scoped artifact store and verifies each SHA-256 hash through a
+readback. The new conversation epoch stays in the same attempt and keeps tool
+rounds, usage, deadlines, and claims intact. The in-conversation reference lets
+the worker call `retrieve_native_context` for an 8 KiB page at a time by hash
+and byte offset. Retrieval is limited to verified archives from that task and
+attempt, and checks the hash again. It never reruns a tool. If a decision or
+archive fails, Horde retains the previous valid conversation. If the optional
+hard request byte ceiling still cannot be met, the attempt stops explicitly.
+
+The decision record and native-context epoch audit contain evidence and
+conversation hashes; the original omitted bytes remain in the private artifact
+store. An archived replacement is first recorded as `prepared`. It is reported
+as applied only after the next native provider request has been sent. A crash
+before that point may leave a prepared archive but never a false applied claim.
+Shadow proposals and active replacements have no measured speed or
+quality benefit yet. External Codex and Claude harness sessions are not
+rewritten by this feature.
+
 ## Worker tool arguments
 
 Published worker schemas omit task, worker, step attribution, and verification

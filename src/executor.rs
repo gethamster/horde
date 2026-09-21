@@ -919,6 +919,9 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         }
     }
     definitions.push(crate::native_protocol::completion_tool(i.spec));
+    if i.settings.decision.native_context_mode == crate::config::NativeContextMode::Active {
+        definitions.push(crate::native_context::retrieval_tool());
+    }
     let tool_names: std::collections::BTreeSet<String> = definitions
         .iter()
         .filter_map(|d| d["function"]["name"].as_str().map(str::to_owned))
@@ -929,6 +932,7 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     let mut last_questions = String::new();
     let mut asked_for_result = false;
     let mut loop_guard = crate::native_protocol::LoopGuard::default();
+    let mut context_decisions = std::collections::HashMap::new();
     for turn in 0..i.settings.max_tool_rounds {
         let questions =
             crate::protocol::dispatch(i.db, "pending_questions", json!({}), Some(i.token))?;
@@ -941,6 +945,41 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         if unread.as_array().is_some_and(|a| !a.is_empty()) {
             messages.push(json!({"role":"user","content":format!("Unread coordination messages (acknowledge explicitly): {unread}")}))?;
         }
+        if i.settings.decision.native_context_mode != crate::config::NativeContextMode::Disabled {
+            let before = crate::native_protocol::request_bytes(
+                model,
+                &messages,
+                &definitions,
+                config.stream,
+                config.max_tokens,
+                config.max_price.as_deref(),
+                &config.extra_body,
+            )?;
+            if crate::native_context::maybe_prune(
+                crate::native_context::PruningContext {
+                    db: i.db,
+                    task: i.task,
+                    step: i.step,
+                    attempt: i.attempt,
+                    decision: &i.settings.decision,
+                    provider_key: &key,
+                },
+                &mut messages,
+                &mut context_decisions,
+                before.len(),
+            )
+            .await
+            .is_err()
+            {
+                i.db.event(
+                    i.task,
+                    "native_context.failed",
+                    json!({
+                        "step":i.step,"attempt":i.attempt,"code":"pruning_unavailable",
+                    }),
+                )?;
+            }
+        }
         let turn_started = Instant::now();
         let body = crate::native_protocol::request_bytes(
             model,
@@ -951,6 +990,12 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
             config.max_price.as_deref(),
             &config.extra_body,
         )?;
+        let hard_limit = i.settings.decision.native_context_max_request_bytes;
+        if hard_limit > 0 && body.len() > hard_limit {
+            bail!(
+                "native provider request exceeds configured context byte ceiling after conservative pruning"
+            );
+        }
         let response = client
             .post(format!(
                 "{}/chat/completions",
@@ -961,6 +1006,9 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
             .body(body)
             .send()
             .await?;
+        if i.settings.decision.native_context_mode == crate::config::NativeContextMode::Active {
+            crate::native_context::mark_used(i.db, i.task, i.attempt, &messages.hash()?)?;
+        }
         crate::capacity::ingest_headers_current(
             i.db,
             config,
@@ -1063,6 +1111,28 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                     Ok(args) => {
                         if name == "complete_step" {
                             crate::native_protocol::completion_result(args, calls.len(), i.spec)
+                        } else if name == "retrieve_native_context" {
+                            (|| -> Result<Value> {
+                                if i.settings.decision.native_context_mode
+                                    != crate::config::NativeContextMode::Active
+                                {
+                                    bail!("native context retrieval is not enabled");
+                                }
+                                crate::native_context::retrieve(
+                                    i.db,
+                                    i.task,
+                                    i.attempt,
+                                    args["hash"].as_str().context("native context hash")?,
+                                    args["offset"]
+                                        .as_u64()
+                                        .context("native context offset")?
+                                        .try_into()?,
+                                    args["limit"]
+                                        .as_u64()
+                                        .context("native context limit")?
+                                        .try_into()?,
+                                )
+                            })()
                         } else if crate::protocol::worker_allowed(name) {
                             let root = i.db.root.clone();
                             let name = name.to_owned();
