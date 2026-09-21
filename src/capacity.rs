@@ -28,6 +28,105 @@ pub fn account(c: &ExecutorConfig) -> String {
         }
     })
 }
+fn generation_key(account: &str) -> String {
+    format!("capacity.credentials_generation:{account}")
+}
+
+/// Capture before acquiring credentials or starting a subscription process.
+pub fn credential_generation(db: &Store, config: &ExecutorConfig) -> Result<Option<String>> {
+    management::value(db, &generation_key(&account(config)))
+}
+
+fn if_current(
+    db: &Store,
+    config: &ExecutorConfig,
+    generation: Option<&str>,
+    ingest: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    // Hold the same write transaction for the comparison and every resulting observation.
+    db.atomic(|| {
+        if credential_generation(db, config)?.as_deref() == generation {
+            ingest()?;
+        }
+        Ok(())
+    })
+}
+
+pub fn ingest_current(
+    db: &Store,
+    config: &ExecutorConfig,
+    generation: Option<&str>,
+    event: &Value,
+) -> Result<()> {
+    if_current(db, config, generation, || ingest(db, config, event))
+}
+
+pub fn ingest_headers_current(
+    db: &Store,
+    config: &ExecutorConfig,
+    generation: Option<&str>,
+    headers: &reqwest::header::HeaderMap,
+    status: u16,
+) -> Result<()> {
+    if_current(db, config, generation, || {
+        ingest_headers(db, config, headers, status)
+    })
+}
+
+/// A replaced credential invalidates provider observations, not local budgets.
+/// Unknown capacity permits a fresh attempt; it does not assert valid access or zero usage.
+pub fn credentials_changed(db: &Store, changed: &ExecutorConfig) -> Result<()> {
+    let same_store = |config: &ExecutorConfig| {
+        config.auth_mode == changed.auth_mode
+            && if changed.auth_mode == "api" {
+                config.api_key_env == changed.api_key_env
+            } else {
+                config.kind == changed.kind
+            }
+    };
+    let mut accounts = std::collections::BTreeSet::from([account(changed)]);
+    let mut collect = |settings: Settings| {
+        for name in settings.providers.keys() {
+            if let Some(config) = settings.provider(name)
+                && same_store(&config)
+            {
+                accounts.insert(account(&config));
+            }
+        }
+        for role in settings.executors.keys() {
+            if let Some(config) = settings.executor(role)
+                && same_store(&config)
+            {
+                accounts.insert(account(&config));
+            }
+        }
+    };
+    collect(Settings::load_user()?);
+    // Running and held tasks retain their submitted configuration and account names.
+    for row in db.rows("SELECT DISTINCT settings FROM tasks", &[])? {
+        if let Some(settings) = row["settings"].as_str() {
+            collect(serde_json::from_str(settings)?);
+        }
+    }
+    db.atomic(|| {
+        for account in &accounts {
+            management::set(
+                db,
+                &generation_key(account),
+                &uuid::Uuid::new_v4().to_string(),
+            )?;
+            db.conn.execute(
+                "DELETE FROM account_capacity WHERE account=? AND source='provider'",
+                [account],
+            )?;
+        }
+        management::event(
+            db,
+            "account.credentials_changed",
+            json!({"accounts":accounts,"capacity":"unknown","local_budgets":"preserved"}),
+        )
+    })
+}
 pub fn observe(db: &Store, s: &Snapshot) -> Result<()> {
     ensure!(
         !s.account.is_empty() && !s.provider.is_empty() && !s.window.is_empty(),
@@ -280,6 +379,7 @@ pub fn budgets(db: &Store) -> Result<()> {
 /// Read the installed Codex app-server account API; never starts a thread or model turn.
 pub async fn codex_probe(db: &Store, config: &ExecutorConfig) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+    let generation = credential_generation(db, config)?;
     let program = config.program.as_deref().unwrap_or("codex");
     let mut command = tokio::process::Command::from(crate::executor::clean_command(program));
     command
@@ -332,7 +432,7 @@ pub async fn codex_probe(db: &Store, config: &ExecutorConfig) -> Result<()> {
                     "Codex account capacity API unavailable"
                 );
                 if id == 2 {
-                    ingest(db, config, &response["result"])?;
+                    ingest_current(db, config, generation.as_deref(), &response["result"])?;
                 }
                 break;
             }

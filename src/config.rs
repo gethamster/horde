@@ -726,7 +726,9 @@ impl Settings {
 
 /// Daemon-side credentials for boot services; this file is never sent to workers.
 pub fn credential(name: &str) -> Result<String> {
-    if let Ok(value) = std::env::var(name) {
+    if !credential_file_overrides()?.contains(name)
+        && let Ok(value) = std::env::var(name)
+    {
         return Ok(value);
     }
     let path = Settings::credentials_path();
@@ -740,6 +742,30 @@ pub fn credential(name: &str) -> Result<String> {
     crate::secrets::parse(&std::fs::read_to_string(path)?)?
         .remove(name)
         .with_context(|| format!("credential {name} is not configured"))
+}
+
+fn credential_file_overrides() -> Result<std::collections::BTreeSet<String>> {
+    let path = crate::branding::config_dir().join("credential-overrides.json");
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("invalid credential override settings"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(error) => Err(error).context("credential override settings unavailable"),
+    }
+}
+
+/// An explicit operator-supplied key takes effect even in a long-running daemon
+/// whose inherited environment still contains a previous key. Unmanaged names
+/// retain the existing environment-first behavior. This file contains names only.
+pub(crate) fn activate_saved_credential(name: &str) -> Result<()> {
+    use std::io::Write;
+    let mut names = credential_file_overrides()?;
+    names.insert(name.to_owned());
+    let directory = crate::branding::config_dir();
+    let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+    temporary.write_all(&serde_json::to_vec(&names)?)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(directory.join("credential-overrides.json"))?;
+    Ok(())
 }
 
 /// Write the starter configuration and an empty credentials file into `directory`.
