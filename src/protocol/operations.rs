@@ -1,7 +1,62 @@
 pub const OPERATIONS: &[(&str, &str)] = &[
     (
+        "account_usage",
+        "Inspect granted account quotas and usage attributed to this project",
+    ),
+    (
+        "project_configure",
+        "Install administrator-approved project settings from a TOML file",
+    ),
+    (
+        "project_create",
+        "Create an isolated project with no inherited resource grants",
+    ),
+    ("project_list", "List projects visible to this connection"),
+    (
+        "project_inspect",
+        "Inspect a project and its resource grants",
+    ),
+    (
+        "project_update",
+        "Change project concurrency and isolation requirements",
+    ),
+    (
+        "project_repo_add",
+        "Register a checkout and its worktrees to a project",
+    ),
+    ("project_runtime_grant", "Authorize a runtime for a project"),
+    (
+        "project_runtime_revoke",
+        "Revoke a project's runtime authorization",
+    ),
+    (
+        "account_create",
+        "Create a provider account owned by a project",
+    ),
+    (
+        "account_list",
+        "List accounts granted to the selected project",
+    ),
+    (
+        "account_inspect",
+        "Inspect a granted provider account without exposing credentials",
+    ),
+    (
+        "account_grant",
+        "Explicitly share an account with another project",
+    ),
+    ("account_revoke", "Revoke a project's account grant"),
+    (
+        "account_credential_set",
+        "Import a versioned credential from a private file",
+    ),
+    (
+        "account_delivery_list",
+        "Inspect credential delivery and revocation state",
+    ),
+    (
         "provider_login",
-        "Start, inspect, complete or cancel a provider sign-in through the agent; no model usage required",
+        "Administer default-project legacy provider sign-in; managed accounts use account_credential_set",
     ),
     (
         "skill_pack_list",

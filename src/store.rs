@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 /// Status of the per-task synthetic worker row that carries operator steering messages.
 /// Operator rows never receive mail, never wake, and are hidden from worker listings.
 pub const OPERATOR_STATUS: &str = "operator";
@@ -81,9 +81,55 @@ impl Store {
         }
         let conn = Connection::open(root.join("state.sqlite3"))?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version > i64::from(SCHEMA_VERSION) {
             bail!("database schema {version} is newer than this runtime supports");
+        }
+        if version == i64::from(SCHEMA_VERSION) {
+            // WAL mode persists in the database. Reopening a current store must
+            // not acquire a write lock: callers may be inside another connection's
+            // transaction while preparing a workspace or reading ownership.
+            conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
+            return Ok(Self {
+                conn,
+                root: root.to_owned(),
+            });
+        }
+        // Hold the daemon lock through migration so an older scheduler cannot
+        // dispatch work while the new ownership schema is being installed.
+        let _migration_lock = if version == 5 {
+            use fs2::FileExt;
+            let lock = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(root.join("daemon.lock"))?;
+            lock.try_lock_exclusive()
+                .context("stop the running Horde daemon before migrating its schema 5 database")?;
+            version = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            if version > i64::from(SCHEMA_VERSION) {
+                bail!("database schema {version} is newer than this runtime supports");
+            }
+            Some(lock)
+        } else {
+            None
+        };
+        if version == i64::from(SCHEMA_VERSION) {
+            conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
+            return Ok(Self {
+                conn,
+                root: root.to_owned(),
+            });
+        }
+        if version == 5 {
+            let backup = root.join(format!("pre-projects-{}.sqlite3", id()));
+            conn.execute("VACUUM INTO ?", [backup.to_string_lossy().as_ref()])?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))?;
+            }
         }
         legacy_store::migrate(&conn, root)?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
@@ -126,6 +172,9 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         if version < 5 {
             crate::knowledge::migrate(&conn)?;
         }
+        crate::projects::migrate(&conn)?;
+        crate::accounts::migrate(&conn)?;
+        crate::project_runtime::migrate(&conn)?;
         if version != i64::from(SCHEMA_VERSION) {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
@@ -197,17 +246,37 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         settings: &Settings,
         plan: &Plan,
     ) -> Result<String> {
-        let skills = crate::skills::capture_effective(self, repo, &settings.skills)?;
-        self.submit_pinned(objective, repo, settings, plan, &skills)
+        let project = crate::projects::infer(self, repo)?
+            .unwrap_or_else(|| crate::projects::DEFAULT_PROJECT.to_owned());
+        self.submit_project(&project, objective, repo, settings, plan)
     }
-    pub(crate) fn submit_pinned(
+    pub fn submit_project(
         &self,
+        project: &str,
+        objective: &str,
+        repo: &Path,
+        settings: &Settings,
+        plan: &Plan,
+    ) -> Result<String> {
+        let project = crate::projects::resolve(self, project)?;
+        // Resolve ownership before capturing any repository-controlled resources.
+        if let Some(owner) = crate::projects::infer(self, repo)? {
+            anyhow::ensure!(owner == project, "repository belongs to another project");
+        }
+        let skills =
+            crate::skills::capture_effective_project(self, &project, repo, &settings.skills)?;
+        self.submit_pinned_project(&project, objective, repo, settings, plan, &skills)
+    }
+    pub(crate) fn submit_pinned_project(
+        &self,
+        project: &str,
         objective: &str,
         repo: &Path,
         settings: &Settings,
         plan: &Plan,
         skills: &crate::skills::Packet,
     ) -> Result<String> {
+        let project = crate::projects::resolve(self, project)?;
         crate::skills::validate(skills)?;
         crate::skills::validate_steps(skills, &plan.steps)?;
         if objective.trim().is_empty() {
@@ -231,6 +300,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
                     now()
                 ],
             )?;
+            crate::projects::bind_task(self, &oid, &project, repo)?;
             self.conn.execute(
                 "INSERT INTO revisions VALUES(?,1,?,?)",
                 params![oid, serde_json::to_string(plan)?, now()],
@@ -601,7 +671,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
                 .unwrap_or_else(|| json!({"error":format!("{e:#}")})),
         };
         let value = crate::secrets::redact(self, oid, &value);
-        let integrated_head = crate::decision::review::observed_head(&self.root, oid);
+        let integrated_head = crate::decision::review::observed_head(self, oid);
         let waiting = crate::delegation::has_question(self, worker)?;
         let success = success && !waiting;
         self.atomic(|| {

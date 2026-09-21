@@ -57,16 +57,23 @@ pub async fn run_command(
     timeout: u64,
     record: Option<(&Store, &str)>,
 ) -> Result<Value> {
-    let mut values = std::collections::BTreeMap::new();
     if let Some((db, attempt)) = record {
         let oid: String = db.conn.query_row(
             "SELECT t.task FROM steps t JOIN attempts a ON a.step=t.id WHERE a.id=?",
             [attempt],
             |r| r.get(0),
         )?;
-        values = crate::secrets::values(db, &oid)?;
+        let values = crate::secrets::values(db, &oid)?;
+        return run_task_command_env(db, &oid, argv, dir, timeout, Some(attempt), &values).await;
     }
-    run_command_env(argv, dir, timeout, record, &values).await
+    run_command_env(
+        argv,
+        dir,
+        timeout,
+        record,
+        &std::collections::BTreeMap::new(),
+    )
+    .await
 }
 pub async fn run_command_env(
     argv: &[String],
@@ -81,6 +88,23 @@ pub async fn run_command_env(
     let mut c = clean_command(&argv[0]);
     c.args(&argv[1..]).current_dir(dir).envs(values);
     let result = run_process(c, None, timeout, record).await?;
+    Ok(crate::secrets::redact_json(&result, values))
+}
+
+pub async fn run_task_command_env(
+    db: &Store,
+    task: &str,
+    argv: &[String],
+    dir: &Path,
+    timeout: u64,
+    attempt: Option<&str>,
+    values: &std::collections::BTreeMap<String, String>,
+) -> Result<Value> {
+    let program = argv.first().context("empty command")?;
+    let mut command = clean_command(program);
+    command.args(&argv[1..]).current_dir(dir).envs(values);
+    crate::account_auth::scope_command(&mut command, db, task)?;
+    let result = run_process(command, None, timeout, attempt.map(|a| (db, a))).await?;
     Ok(crate::secrets::redact_json(&result, values))
 }
 
@@ -194,10 +218,11 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
     if i.spec.kind == "delivery" {
         return crate::delivery::execute(i).await;
     }
-    let config = i
+    let mut config = i
         .settings
         .executor(&i.spec.role)
         .context("unconfigured executor role")?;
+    config.project = Some(crate::projects::task_project(i.db, i.task)?);
     match config.kind.as_str() {
         "simulated" => Ok(json!({"result":"simulated executor","accepted":true})),
         "codex" | "claude" | "grok" => harness(i, &config).await,
@@ -221,6 +246,7 @@ async fn run_step_command(i: &Invocation<'_>) -> Result<Value> {
         .env("HORDE_WORKER_TOKEN", i.token)
         .env("HORDE_DATA_DIR", &i.db.root)
         .env("HORDE_BIN", std::env::current_exe()?);
+    crate::account_auth::scope_command(&mut command, i.db, i.task)?;
     let result = run_process(
         command,
         None,
@@ -381,7 +407,7 @@ mod capacity_failure_tests {
 }
 
 async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
-    let generation = crate::capacity::credential_generation(i.db, config)?;
+    let generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
     if !i.settings.allow_commands {
         bail!(
             "external harnesses require allow_commands=true; use the native executor for file-only authority"
@@ -393,13 +419,42 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     if !["login", "api"].contains(&config.auth_mode.as_str()) {
         bail!("auth_mode must be login or api");
     }
+    let project = crate::projects::task_project(i.db, i.task)?;
+    let managed = crate::accounts::validate_account(i.db, &project, config)?;
+    if managed && config.kind == "codex" && config.auth_mode == "login" {
+        return crate::codex_session::execute(
+            i,
+            config,
+            &project,
+            config.account.as_deref().context("managed account")?,
+        )
+        .await;
+    }
+    // Keep the exact credential used at launch for redaction even if it rotates mid-turn.
+    let mut invocation_secrets =
+        std::collections::BTreeMap::from([("worker_token".into(), i.token.to_owned())]);
+    if managed {
+        let credential = crate::accounts::credential(
+            i.db,
+            &project,
+            config.account.as_deref().context("account")?,
+        )?;
+        invocation_secrets.insert("account_secret".into(), credential.secret);
+    }
+    crate::capacity::ensure_generation(i.db, config, generation.as_deref())?;
     let broker = if config.auth_mode == "api" {
         Some(
-            crate::credentials::Broker::start_observed(
+            crate::credentials::Broker::with_key_observed(
                 config,
                 i.token,
+                if managed {
+                    invocation_secrets["account_secret"].clone()
+                } else {
+                    crate::account_auth::api_key(i.db, &project, config)?
+                },
                 i.settings.timeout_seconds,
                 &i.db.root,
+                generation.clone(),
             )
             .await?,
         )
@@ -422,8 +477,23 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         return grok_harness(i, config, &executable, &args).await;
     }
     let mcp = json!({"mcpServers":{"coordination":{"command":executable,"args":args,"env":{"HORDE_WORKER_TOKEN":i.token}}}});
-    let mut cmd = clean_command(config.program.as_deref().unwrap_or(&config.kind));
+    let mut cmd = if managed {
+        crate::account_auth::command(
+            i.db,
+            &project,
+            config.account.as_deref().context("account")?,
+            config,
+        )?
+    } else {
+        clean_command(config.program.as_deref().unwrap_or(&config.kind))
+    };
     cmd.current_dir(i.workspace);
+    if managed && config.kind == "claude" && config.auth_mode == "login" {
+        cmd.env(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            &invocation_secrets["account_secret"],
+        );
+    }
     if config.kind == "codex" {
         cmd.args([
             "exec",
@@ -507,6 +577,7 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         Some((i.db, i.attempt)),
     )
     .await?;
+    let raw = crate::secrets::redact_json(&raw, &invocation_secrets);
     let stdout = raw["stdout"].as_str().unwrap_or("");
     let artifact = i.db.artifact(
         i.task,
@@ -603,7 +674,7 @@ fn unfenced(text: &str) -> &str {
     }
     text
 }
-fn parse_result(text: &str) -> Result<Value> {
+pub(crate) fn parse_result(text: &str) -> Result<Value> {
     let body = unfenced(text);
     let result: Value = match serde_json::from_str(body) {
         Ok(value) => value,
@@ -668,16 +739,22 @@ fn accepted(result: Value) -> Result<Value> {
     Ok(result)
 }
 pub async fn probe(config: &ExecutorConfig) -> Result<Value> {
+    if config.project.is_some() && config.account.is_some() {
+        bail!("managed project probes require an explicit account resolver");
+    }
+    let key = crate::config::credential(&config.api_key_env)?;
+    probe_with_key(config, &key).await
+}
+pub async fn probe_with_key(config: &ExecutorConfig, key: &str) -> Result<Value> {
     let requested = config
         .model
         .as_deref()
         .context("native provider requires a model")?;
-    let key = crate::config::credential(&config.api_key_env)?;
     let response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(45))
         .build()?
         .get(format!("{}/models", config.base_url.trim_end_matches('/')))
-        .bearer_auth(&key)
+        .bearer_auth(key)
         .send()
         .await?;
     if !response.status().is_success() {
@@ -803,9 +880,11 @@ pub fn record_tool_completed(
 }
 
 async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
-    let catalog = probe(config).await?;
-    let generation = crate::capacity::credential_generation(i.db, config)?;
-    let key = crate::config::credential(&config.api_key_env)?;
+    let generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
+    let project = crate::projects::task_project(i.db, i.task)?;
+    let key = crate::account_auth::api_key(i.db, &project, config)?;
+    crate::capacity::ensure_generation(i.db, config, generation.as_deref())?;
+    let catalog = probe_with_key(config, &key).await?;
     let model = catalog["model"].as_str().context("resolved model")?;
     i.db.event(
         i.task,
@@ -1142,10 +1221,16 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
 
 /// Explicit probe for streaming and tool behavior; never substitutes a model.
 pub async fn probe_tools(config: &ExecutorConfig) -> Result<Value> {
-    let catalog = probe(config).await?;
+    if config.project.is_some() && config.account.is_some() {
+        bail!("managed project probes require an explicit account resolver");
+    }
+    let key = crate::config::credential(&config.api_key_env)?;
+    probe_tools_with_key(config, &key).await
+}
+pub async fn probe_tools_with_key(config: &ExecutorConfig, key: &str) -> Result<Value> {
+    let catalog = probe_with_key(config, key).await?;
     let model = catalog["model"].as_str().context("resolved model")?;
     crate::native_protocol::validate_extra_body(&config.extra_body)?;
-    let key = crate::config::credential(&config.api_key_env)?;
     let mut body = json!({"model":model,"messages":[{"role":"user","content":"Call ping with value ok."}],"stream":true,"max_tokens":128,"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}}],"tool_choice":{"type":"function","function":{"name":"ping"}}});
     body.as_object_mut().expect("request object").extend(
         crate::native_protocol::extra_body_with_usage(&config.extra_body, true),

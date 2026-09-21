@@ -42,7 +42,7 @@ horde config models default        # what that endpoint accepts as a model
 
 Presets are `tuara`, `codex`, `claude`, `openai`, and `anthropic`; anything else is described with `--kind`, `--base-url`, and `--api-key-env`. For scripts, `printf '%s\n' "$KEY" | horde config provider add tuara --key-stdin --use-for planner,worker,reviewer`. The key is never taken as a command-line argument, and lands only in `credentials.env`.
 
-Settings merge in this order:
+For the `default` project, settings merge in this order:
 
 1. Built-in defaults.
 2. `$XDG_CONFIG_HOME/horde/config.toml`, or `~/.config/horde/config.toml`.
@@ -222,6 +222,92 @@ Set `autonomy = false` to hold new tasks until the initial question is answered:
 horde answer TASK_ID QUESTION_ID yes
 ```
 
+## Separate projects and provider accounts
+
+Create a project for each independent body of work, then register its checkouts
+and approve the runtimes allowed to execute it:
+
+```sh
+horde project create horde --concurrency 4
+horde project create hamster --concurrency 2
+horde project repo-add horde /absolute/path/to/horde
+horde project repo-add hamster /absolute/path/to/hamster
+horde project runtime-grant horde local
+horde project runtime-grant hamster local
+horde --project horde submit "Implement the next change" --repo /absolute/path/to/horde
+horde --project hamster list
+horde list --all-projects
+```
+
+Projects have immutable IDs and human-readable slugs. A checkout and all of its
+Git worktrees belong to one project. Separate clones of the same upstream may
+belong to different projects. Registered repositories supply the project when
+selection is unambiguous; pass `--project` when it cannot be inferred. A new
+project starts with no account or runtime grants. The `default` project retains
+legacy settings and runtime eligibility, subject to explicit revocation.
+
+Configure each new project's providers in an administrator-owned TOML file:
+
+```sh
+horde project configure horde --file /private/path/horde.toml
+horde project inspect horde
+horde project update horde --concurrency 3
+```
+
+Horde validates the file before atomically replacing
+`DATA_DIR/projects/PROJECT_ID/config.toml`, with mode 0600. Its settings merge
+with the built-in defaults and then the registered repository's two configuration
+files. New projects do not inherit the default project's user configuration.
+Continue using `horde config` for the `default` project.
+
+Repository files cannot define provider connections, replace executor programs,
+raise concurrency, or expand secret-bundle access. They also cannot enable
+prohibited commands or delivery, or redirect delivery and notification destinations.
+Repository skill paths must remain inside their checkout. Account and runtime
+grants remain separate administrator operations.
+
+Application bundle names resolve through the project's private
+`DATA_DIR/projects/PROJECT_ID/secrets.toml`, whose `[bundles]` table maps names
+to private environment files. Relative bundle paths resolve beside that file.
+The default project retains its user-level `secrets.toml`. Provider credentials
+use the account store described below and do not belong in application bundles.
+
+Provider login handoffs configure the default project's legacy credentials.
+For a managed project account, import its credential with `account credential-set`
+as shown below. Project-bound MCP connections cannot start a host-wide login
+handoff or replace another project's credentials.
+
+Create managed accounts using the provider's executor kind, authentication mode,
+and endpoint. Save the returned account ID for inspection, grants, or pinning:
+
+```sh
+horde --project horde account create subscription-one --provider codex --auth-mode login --concurrency 2
+horde --project horde account credential-set ACCOUNT_ID /private/path/credential.json
+horde --project horde account list
+horde account grant ACCOUNT_ID hamster
+horde account revoke ACCOUNT_ID hamster
+```
+
+A credential file contains `kind`, `secret`, and optional `expires_at` (Unix
+seconds) and `metadata`. Supported kinds are `api_key`, `claude_setup_token`,
+`codex_refresh_token`, and `codex_access_token`. Keep this file private and outside
+the repository. Importing a credential creates a new version; only the owning
+project can replace it. Account inspection returns metadata without the secret.
+
+For Codex, `secret` can contain the serialized authentication JSON with its
+`tokens.refresh_token`, or the refresh token with the account and token fields
+in `metadata`. An access-only token requires `metadata.account_id` and cannot
+renew itself. For Claude, generate a token using `claude setup-token` and import
+it as `claude_setup_token`; set its expiration when known. Horde reports expired
+credentials and requires renewal.
+
+Roles may pin `account = "ACCOUNT_ID"`. Without a pin, Horde chooses among the
+project's granted accounts that match the resolved provider kind, authentication
+mode, and endpoint. Add several matching accounts to spread invocations across
+subscriptions. Accounts shared through grants retain one quota identity and
+concurrency total. See [runtime management](runtime-management.md#project-capacity-and-credential-lifetimes)
+for reservations, refresh, and revocation.
+
 ## Notifications
 
 A `[notify]` table makes the daemon push task milestones to a webhook, a local
@@ -331,3 +417,27 @@ applies throughout its family. Workers see it in their tool schemas; administrat
 clients can retrieve task-specific schemas through `knowledge_options`. See
 [task-family notebooks](coordination.md#task-family-notebooks) for scope, queries,
 claim lifecycle, and export.
+
+## Project command environments
+
+Native commands in a new project use a private home under
+`DATA_DIR/projects/PROJECT_ID/command-state/home`. Their XDG configuration,
+cache, data, and state directories live alongside that home. Command steps,
+native worker tools, app processes, and Compose commands use these paths.
+They do not inherit the host SSH agent. Application bundles cannot override
+these directory settings. The migrated `default` project keeps its existing
+command environment.
+
+Provision tools and authentication that depend on a home directory in the
+project's directories before running work. This includes GitHub CLI login,
+Docker contexts, and language toolchains discovered through the home directory.
+Executables still resolve through the daemon's `PATH`. A separate home does
+not prevent a native command from reading other files accessible to the same
+OS user; use VM isolation when that boundary is required.
+
+Managed provider harnesses use separate homes and configuration directories
+under `DATA_DIR/projects/PROJECT_ID/accounts/ACCOUNT_ID`. Codex refresh
+credentials remain in the controller's private account storage. Worker
+app-server sessions receive access tokens through the authenticated controller
+connection and use the external-token login mode. Claude subscription sessions
+use the selected setup token and an account-specific `CLAUDE_CONFIG_DIR`.
