@@ -15,10 +15,10 @@ pub(super) fn current_policy(i: &Invocation<'_>) -> Result<Option<AutomaticDeliv
             && operator.decision == i.settings.decision,
         "decision service is not currently authorized for automatic delivery"
     );
-    ensure!(
-        i.settings.decision.backend == "typesafe" && i.settings.decision.model == "jev-1.13.0",
-        "automatic delivery requires a separately qualified decision provider and model"
-    );
+    i.settings
+        .decision
+        .validate()
+        .context("decision service is not configured for automatic delivery")?;
     verify_qualification(i.db, policy, &i.settings.decision)?;
     Ok(Some(policy.clone()))
 }

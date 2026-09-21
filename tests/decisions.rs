@@ -117,7 +117,7 @@ fn generic_request_accepts_a_pinned_nonlaunch_model_and_rejects_a_stale_reply() 
 }
 
 #[tokio::test]
-async fn explicit_tuara_compatible_mock_is_shadow_only() {
+async fn explicit_tuara_compatible_mock_supports_operator_opted_in_actions() {
     let _lock = CONFIG_LOCK.lock().await;
     let (base_url, mut bodies) = server(vec![("200 OK", response_json(), 0)]).await;
     let key = format!("HORDE_DECISION_GENERIC_KEY_{}", std::process::id());
@@ -137,12 +137,17 @@ async fn explicit_tuara_compatible_mock_is_shadow_only() {
         native_context_mode: horde::config::NativeContextMode::Active,
         ..decision.clone()
     };
-    assert!(active.validate().is_err());
+    active.validate().unwrap();
     let browser_active = Decision {
         browser_test_mode: horde::config::BrowserTestMode::Active,
         ..decision
     };
-    assert!(browser_active.validate().is_err());
+    browser_active.validate().unwrap();
+    let incompatible = Decision {
+        protocol: "unsupported-v2".into(),
+        ..browser_active
+    };
+    assert!(incompatible.validate().is_err());
     unsafe { std::env::remove_var(key) };
 }
 

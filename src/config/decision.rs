@@ -120,14 +120,6 @@ impl Decision {
         if self.policy != "routing-v1" {
             bail!("decision.policy must be routing-v1");
         }
-        if (self.native_context_mode == NativeContextMode::Active
-            || self.browser_test_mode == BrowserTestMode::Active)
-            && (self.backend != "typesafe" || self.model != "jev-1.13.0")
-        {
-            bail!(
-                "active decision-model actions require a separately qualified provider and model"
-            );
-        }
         if !(100..=30_000).contains(&self.deadline_ms)
             || !(1..=3).contains(&self.max_attempts)
             || !(1..=256).contains(&self.max_decisions_per_task)

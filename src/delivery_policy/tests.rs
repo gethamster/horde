@@ -139,13 +139,13 @@ fn base_protection_and_merge_parent_are_bound() {
     assert!(!merge_parent_matches(&commit, "advanced-base"));
 }
 #[test]
-fn held_out_qualification_is_required() {
+fn tuara_delivery_requires_exact_held_out_qualification() {
     let dir = tempfile::tempdir().unwrap();
     let db = Store::open(dir.path()).unwrap();
     let decision = crate::config::Decision {
-        backend: "typesafe".into(),
-        base_url: "https://api.typesafe.ai".into(),
-        api_key_env: "TYPESAFE_API_KEY".into(),
+        backend: "tuara".into(),
+        base_url: "https://tuara.com/router/v1".into(),
+        api_key_env: "TUARA_API_KEY".into(),
         ..Default::default()
     };
     let policy = AutomaticDelivery {
@@ -183,10 +183,15 @@ fn held_out_qualification_is_required() {
     };
     assert!(verify_qualification(&db, &policy, &changed_endpoint).is_err());
     let changed_provider = crate::config::Decision {
-        backend: "tuara".into(),
+        backend: "typesafe".into(),
         ..decision.clone()
     };
     assert!(verify_qualification(&db, &policy, &changed_provider).is_err());
+    let changed_model = crate::config::Decision {
+        model: "another-model".into(),
+        ..decision.clone()
+    };
+    assert!(verify_qualification(&db, &policy, &changed_model).is_err());
     let changed_threshold = AutomaticDelivery {
         minimum_routine_probability: 0.9,
         ..policy
