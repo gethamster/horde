@@ -155,12 +155,14 @@ fn compose_argv(
     a
 }
 async fn command(
+    db: &Store,
+    task: &str,
     argv: &[String],
     workspace: &std::path::Path,
     values: &BTreeMap<String, String>,
     timeout: u64,
 ) -> Result<Value> {
-    crate::executor::run_command_env(argv, workspace, timeout, None, values).await
+    crate::executor::run_task_command_env(db, task, argv, workspace, timeout, None, values).await
 }
 /// Ports held by app environments that have not finished starting.
 ///
@@ -210,7 +212,13 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
     let tree = crate::delegation::tree(i.db, i.task)?;
     let limits: crate::delegation::Limits =
         serde_json::from_str(tree["limits"].as_str().context("limits")?)?;
-    let eid = format!("task-{}", id());
+    let project = crate::projects::task_project(i.db, i.task)?;
+    let eid = format!(
+        "horde-{}-{}-{}",
+        &crate::store::hash(project.as_bytes())[..8],
+        &crate::store::hash(i.task.as_bytes())[..8],
+        id()
+    );
     // Held until this returns, so a concurrent start cannot be handed the same
     // port during the window between closing the listener and the app binding.
     let (listener, port, _reserved) = reserve_port()?;
@@ -235,7 +243,9 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
         pid: None,
         finished: false,
     };
-    let scratch = i.db.root.join("environment-private").join(&eid);
+    let scratch = crate::project_runtime::task_root(i.db, i.task)?
+        .join("environment-private")
+        .join(&eid);
     std::fs::create_dir_all(&scratch)?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o700))?;
@@ -246,7 +256,8 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
     let browser_authorized = spec.browser_test.is_some()
         && i.settings.decision.mode == crate::config::DecisionMode::Shadow
         && i.settings.decision.browser_test_mode != crate::config::BrowserTestMode::Disabled
-        && crate::config::Settings::load_user()
+        && crate::projects::task_project(i.db, i.task)
+            .and_then(|project| crate::config::Settings::load_project_user(i.db, &project))
             .is_ok_and(|current| current.decision == i.settings.decision);
     let mut tested_commit = None;
     let operation = async {
@@ -266,10 +277,12 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
 
         if spec.runner == "process" {
             let argv = substitute(&spec.start, port);
-            let mut cmd = Command::from(clean_command(&argv[0]));
+            let mut start_command = clean_command(&argv[0]);
+            start_command.envs(&values);
+            crate::account_auth::scope_command(&mut start_command, i.db, i.task)?;
+            let mut cmd = Command::from(start_command);
             cmd.args(&argv[1..])
                 .current_dir(i.workspace)
-                .envs(&values)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -315,6 +328,7 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
                 .args(&check[1..])
                 .current_dir(i.workspace)
                 .envs(&values);
+            crate::account_auth::scope_command(&mut config_cmd, i.db, i.task)?;
             let config =
                 crate::executor::run_process(config_cmd, None, 60, Some((i.db, i.attempt))).await?;
             ensure!(
@@ -845,8 +859,7 @@ async fn reconcile_inner(db: &Store, startup: bool) -> Result<()> {
                 }
             }
         } else {
-            let file = db
-                .root
+            let file = crate::project_runtime::task_root(db, row["task"].as_str().context("task")?)?
                 .join("environment-private")
                 .join(eid)
                 .join("compose.json");
@@ -856,6 +869,7 @@ async fn reconcile_inner(db: &Store, startup: bool) -> Result<()> {
                 let mut args = compose_argv(&spec, eid, &file, None);
                 args.extend(["down".into(), "--volumes".into(), "--remove-orphans".into()]);
                 if !command(
+                    db, row["task"].as_str().context("task")?,
                     &args,
                     std::path::Path::new(row["workspace"].as_str().context("workspace")?),
                     &BTreeMap::new(),
@@ -882,7 +896,7 @@ async fn reconcile_inner(db: &Store, startup: bool) -> Result<()> {
             )?;
             continue;
         }
-        let dir = db.root.join("environment-private").join(eid);
+        let dir = crate::project_runtime::task_root(db, row["task"].as_str().context("task")?)?.join("environment-private").join(eid);
         cleanup_env_manifest(&dir)?;
         if dir.exists() {
             std::fs::remove_dir_all(dir)?;
@@ -1020,8 +1034,16 @@ async fn invocation_command(
     values: &BTreeMap<String, String>,
     timeout: u64,
 ) -> Result<Value> {
-    crate::executor::run_command_env(argv, workspace, timeout, Some((i.db, i.attempt)), values)
-        .await
+    crate::executor::run_task_command_env(
+        i.db,
+        i.task,
+        argv,
+        workspace,
+        timeout,
+        Some(i.attempt),
+        values,
+    )
+    .await
 }
 
 #[cfg(test)]

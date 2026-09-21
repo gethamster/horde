@@ -383,7 +383,10 @@ fn one(directory: &Path, terminal: &mut Terminal) -> Result<String> {
 /// configured provider already points at the same endpoint with the same harness,
 /// that is the one to write to — otherwise `add tuara` would leave a twin of the
 /// shipped `default` behind, with the roles still on the old one.
-fn existing_equivalent(settings: &crate::config::Settings, spec: &Spec) -> Option<String> {
+pub(crate) fn existing_equivalent(
+    settings: &crate::config::Settings,
+    spec: &Spec,
+) -> Option<String> {
     if settings.providers.contains_key(&spec.name) || preset(&spec.name).is_none() {
         return None;
     }

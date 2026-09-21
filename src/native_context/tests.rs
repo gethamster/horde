@@ -56,6 +56,9 @@ fn task(db: &Store, settings: &Settings) -> (String, String, String) {
     let task = db
         .submit("native context", &db.root, settings, &plan)
         .unwrap();
+    attempt_for_task(db, task)
+}
+fn attempt_for_task(db: &Store, task: String) -> (String, String, String) {
     let step = db.steps(&task).unwrap()[0]["id"]
         .as_str()
         .unwrap()
@@ -72,6 +75,25 @@ fn task(db: &Store, settings: &Settings) -> (String, String, String) {
         )
         .unwrap();
     (task, step, attempt)
+}
+fn project_task(
+    db: &Store,
+    project: &str,
+    repo: &std::path::Path,
+    settings: &Settings,
+) -> (String, String, String) {
+    std::fs::create_dir_all(repo).unwrap();
+    crate::git::run(repo, &["init", "-b", "main"]).unwrap();
+    let plan = crate::template::compile(
+        "simulated",
+        &crate::template::load_templates(repo).unwrap(),
+        std::collections::BTreeMap::from([("task".into(), "native context".into())]),
+    )
+    .unwrap();
+    let task = db
+        .submit_project(project, "native context", repo, settings, &plan)
+        .unwrap();
+    attempt_for_task(db, task)
 }
 #[test]
 fn only_old_completed_read_only_groups_are_candidates() {
@@ -326,6 +348,51 @@ fn candidate_cap_keeps_the_largest_old_group_even_when_it_is_ninth() {
     assert!(candidates.iter().any(|group| group.start == large_start));
 }
 #[tokio::test(flavor = "current_thread")]
+async fn non_default_project_authorization_follows_its_current_operator_config() {
+    let _config_lock = CONFIG_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("xdg");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let _environment = EnvironmentGuard::install(&config_dir, "test-key");
+    let db = Store::open(&dir.path().join("data")).unwrap();
+    let project = crate::projects::dispatch(&db, "project_create", &json!({"slug":"native"}))
+        .unwrap()
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let operator_dir = crate::projects::storage_root(&db, &project).unwrap();
+    std::fs::create_dir_all(&operator_dir).unwrap();
+    let decision = Decision {
+        mode: DecisionMode::Shadow,
+        native_context_mode: NativeContextMode::Active,
+        api_key_env: "HORDE_NATIVE_CONTEXT_TEST_KEY".into(),
+        ..Decision::default()
+    };
+    let settings = Settings {
+        decision: decision.clone(),
+        ..Settings::default()
+    };
+    let config_path = operator_dir.join("config.toml");
+    std::fs::write(&config_path, toml::to_string(&settings).unwrap()).unwrap();
+    let (task, _, _) = project_task(&db, &project, &dir.path().join("repo"), &settings);
+    assert_eq!(
+        Settings::load_user().unwrap().decision.mode,
+        DecisionMode::Disabled
+    );
+    assert!(authorized(&db, &task, &decision).unwrap());
+
+    let revoked = Settings {
+        decision: Decision {
+            native_context_mode: NativeContextMode::Disabled,
+            ..decision.clone()
+        },
+        ..Settings::default()
+    };
+    std::fs::write(&config_path, toml::to_string(&revoked).unwrap()).unwrap();
+    assert!(!authorized(&db, &task, &decision).unwrap());
+}
+#[tokio::test(flavor = "current_thread")]
 async fn active_pruning_archives_exact_bytes_and_preserves_attempt_state() {
     let _config_lock = CONFIG_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
@@ -378,13 +445,25 @@ async fn active_pruning_archives_exact_bytes_and_preserves_attempt_state() {
         decision: decision.clone(),
         ..Settings::default()
     };
+    let db = Store::open(&dir.path().join("data")).unwrap();
+    let project = crate::projects::dispatch(&db, "project_create", &json!({"slug":"native"}))
+        .unwrap()
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let operator_dir = crate::projects::storage_root(&db, &project).unwrap();
+    std::fs::create_dir_all(&operator_dir).unwrap();
     std::fs::write(
-        config_dir.join("horde/config.toml"),
+        operator_dir.join("config.toml"),
         toml::to_string(&settings).unwrap(),
     )
     .unwrap();
-    let db = Store::open(dir.path()).unwrap();
-    let (task, step, attempt) = task(&db, &settings);
+    let (task, step, attempt) = project_task(&db, &project, &dir.path().join("repo"), &settings);
+    assert_eq!(
+        Settings::load_user().unwrap().decision.mode,
+        DecisionMode::Disabled
+    );
     let mut messages = prefix();
     messages.extend(pair(
         "search",

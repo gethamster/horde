@@ -30,6 +30,8 @@ class SmokeTests(unittest.TestCase):
                         try:
                             self.assertFalse((root / "daemon.log").exists())
                             self.assertFalse((root / "data/daemon.sock").exists())
+                            self.assertIn("[providers.smoke]", (root / "config/horde/config.toml").read_text())
+                            self.assertNotIn("[providers", (root / "repo/.horde/horde.toml").read_text())
                             self.assertEqual((poison / "config.toml").read_text(), "not valid TOML")
                         finally:
                             shutil.rmtree(root)

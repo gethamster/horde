@@ -307,7 +307,8 @@ fn authorized(db: &Store, task: &str, decision: &Decision) -> Result<bool> {
             .as_str()
             .context("task settings")?,
     )?;
-    let current = Settings::load_user()?;
+    let project = crate::projects::task_project(db, task)?;
+    let current = Settings::load_project_user(db, &project)?;
     Ok(snapshot.decision == *decision
         && current.decision == *decision
         && decision.mode == DecisionMode::Shadow
@@ -491,7 +492,7 @@ pub async fn maybe_prune(
         return Ok(());
     }
     let started = Instant::now();
-    let backend = match TypeSafe::new(decision.clone()) {
+    let backend = match TypeSafe::new_project(decision.clone(), &db.root, task) {
         Ok(backend) => backend,
         Err(error) => {
             store::finish_state(db, &id, "failed", "backend_unavailable", 0)?;

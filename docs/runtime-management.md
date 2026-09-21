@@ -79,8 +79,157 @@ usage remains unknown. They are not a strict fleet-wide billing guarantee.
 Boot services preserve the selected absolute `XDG_CONFIG_HOME`.
 They read API credentials from their daemon environment or a private
 `credentials.env` beside `config.toml`, with mode 0600. This file is never injected
-into arbitrary worker commands. Subscription authentication remains in each
-installed CLI's credential store.
+into arbitrary worker commands. Legacy subscription authentication in the default project remains in each
+installed CLI's credential store. Managed accounts use the private profiles
+and controller-owned refresh described below.
+
+## Project capacity and credential lifetimes
+
+A shared host may execute several projects, each with explicit runtime grants.
+Use `horde project runtime-grant PROJECT RUNTIME` for each approved pairing and
+`runtime-revoke` to withdraw it. Add `--dedicated` to bind the runtime permanently
+to one project; revoke conflicting explicit grants first. This binding rejects
+other project grants and excludes implicit `default` access. Newly managed
+project runtimes receive this binding automatically. These project grants
+supplement the host's network execution grants.
+
+The scheduler rotates among eligible projects. Host and project concurrency
+limits apply before dispatch, along with each account's shared limit. Account
+selection prefers the lowest active-to-limit ratio, then the least recently
+used account. Exhausted, expired, and unauthenticated accounts are excluded.
+Configured fallback roles remain subject to their approved provider settings.
+
+`horde --project PROJECT inspect TASK_ID` includes the project's queue reason
+and each attempt's runtime, account, authentication profile, credential version,
+and isolation mode. These bindings persist before execution. Uncertain local
+attempts and unresolved remote reservations retain their capacity; another
+account becoming available does not replay them.
+
+Managed authentication uses separate project/account directories for harness
+history and caches. API harnesses retain the invocation-scoped credential broker.
+Codex subscription invocations use app-server external tokens; a private
+controller profile serializes refresh and authenticated workers request access
+tokens from it. Unsupported app-server authentication interfaces fail explicitly.
+Claude receives the selected setup token with a separate `CLAUDE_CONFIG_DIR`.
+A new project's execution cannot fall back to a default-project key or ambient
+subscription login.
+
+Credential deliveries retain their request ID and version for retries. Revocation
+blocks new reservations and refresh, marks affected managed invocations for
+cancellation, and requests removal of remote copies. An unreachable receiver
+remains pending reconciliation. Inspect delivery state with
+`horde --project PROJECT account delivery-list ACCOUNT_ID`; reconnect and
+reconcile before treating remote cleanup as complete.
+
+## Optional project VMs with Lima
+
+Native execution works without Lima. On macOS and Linux, a `provider = "lima"`
+profile provisions a Linux guest with its own Docker daemon and disk. macOS uses
+Virtualization.framework; Linux requires KVM and uses QEMU. A project configured
+with `--isolation vm` stays queued when no suitable guest is available.
+
+Lima provisioning requires `limactl` 1.x or newer, a Linux Horde executable for
+the host architecture, and a digest-pinned apt-based guest image. Configure the
+usual controller enrollment signer and address, then add a profile to
+`runtimes.toml`:
+
+```toml
+[profiles.horde-vm]
+provider = "lima"
+project = "PROJECT_UUID"
+image = "DIGEST_MATCHING_LINUX_CLOUD_IMAGE_URL"
+lima_image_digest = "sha256:IMAGE_SHA256"
+lima_horde_binary = "/absolute/path/to/linux/horde"
+lima_user = "horde_vm_project"
+lima_home = "/var/lib/horde-lima/PROJECT_UUID"
+lima_guard = "/usr/local/libexec/horde-lima-guard"
+lima_egress = ["CONTROLLER_IP/32", "DNS_IP/32", "PACKAGE_MIRROR_CIDR"]
+cpus = 2
+memory_mb = 4096
+disk_gb = 20
+concurrency = 2
+```
+
+Replace every placeholder. The allowlist must cover controller communication,
+DNS, and the selected image and package sources. The host administrator must
+create a dedicated non-root OS user for each project's guests. Install
+the output of `horde runtime guard-script` (also available at
+`scripts/horde-lima-guard.py`) as the root-owned, mode-0755 executable above and
+create a root-owned private `/etc/horde-lima/projects/PROJECT_UUID.json` containing
+exactly `project`, `user`, `home`, and `egress`, matching the profile.
+
+The daemon needs noninteractive sudo access to that guard's `apply` and `verify`
+operations for the project, and to run `limactl` as its dedicated user. Linux
+requires nftables. macOS requires enabled PF with `horde-lima/*` as the first
+active filter anchor and no skipped interfaces. The guard validates this policy
+and refuses mismatches; it does not replace the host's global firewall.
+
+Guests use only Lima's `user-v2` network. Host-side rules restrict the dedicated
+user's outbound connections. The guest receives no host-home mounts, SSH agent,
+host Docker socket, or automatic forwarded ports. Provisioning installs Docker,
+Compose, and Git, then enrolls the guest through authenticated Horde networking.
+Broad egress grants broaden guest access, so list only the destinations needed
+by that project.
+
+On macOS, PF applies the dedicated-user policy to TCP and UDP. Lima's
+[user-v2 implementation](https://github.com/lima-vm/lima/blob/master/pkg/networks/usernet/gvproxy.go)
+uses gvisor-tap-vsock, whose [documented network limitation](https://github.com/containers/gvisor-tap-vsock#limitations)
+prevents ICMP forwarding outside the virtual network. The sole `user-v2` NIC is
+therefore part of the isolation requirement; adding another NIC invalidates it.
+Linux uses an nftables UID rule that drops all other outbound protocols as well.
+Run the opt-in acceptance suite on each supported host before relying on a new
+Lima version in production.
+
+Run `horde runtime doctor PROFILE` to verify the installed prerequisite and
+host-network policy without provisioning a guest. Use the ordinary `runtime
+create`, `inspect`, `start`, `stop`, `destroy`, and `reconcile` commands with the
+Lima profile and its project selection:
+
+```sh
+horde --project horde runtime create horde-vm-1 --profile horde-vm --request-id create-horde-vm-1
+horde --project horde runtime inspect horde-vm-1
+```
+
+Guest ownership and disk identity
+cannot be reassigned to another project. Resource intent survives uncertain
+management results; inspect the existing guest before reconciling it. Guest CPU
+and memory reservations are checked against the provisioning host's resources.
+
+Inspection reports the guest's actual resource name. New guests use compact
+names to fit the host's SSH socket path limit; existing guests retain their
+names and recorded configuration across upgrades. A failed create can be
+destroyed using its saved ownership record, but an unavailable guest inventory
+remains uncertain until the host can be inspected.
+
+Guest setup retries failed package downloads a bounded number of times. A guest
+becomes ready only after Docker and Compose work, its state directory exists,
+and it enrolls with the controller. If setup fails, inspect
+`/var/log/cloud-init-output.log` inside the retained guest before reconciling it.
+
+To provision on another authorized host, set the controller profile's `host` to
+that runtime's stable ID. Install the matching profile there without `host`, with
+the same immutable project ID and local prerequisites. Both runtimes need the
+project grants and management authorization. The guest connects directly to the
+original controller. Native Docker still shares the host daemon; project naming
+alone does not provide VM isolation. WSL uses native Linux execution; native
+Windows execution is unsupported.
+
+After preparing two project profiles and their host policies, run the live
+acceptance suite explicitly on each macOS and Linux provisioning host:
+
+```sh
+python3 scripts/test_lima_live.py --allow-live \
+  --project-a PROJECT_A_UUID --profile-a PROFILE_A \
+  --project-b PROJECT_B_UUID --profile-b PROFILE_B \
+  --blocked-ip REACHABLE_DENIED_IP --blocked-port DENIED_SERVICE_PORT
+```
+
+The denied service must be reachable from the host and excluded from both guest
+allowlists. The suite creates temporary guests, checks Docker builds, Compose,
+nested Docker, disk separation, network denial, and lifecycle retries, then
+cleans up its resources. It requires installed Lima and prepared host policies;
+the ordinary Rust tests use mocked providers and do not establish live VM
+compatibility.
 
 ## Provisioning
 
