@@ -117,6 +117,10 @@ impl TypeSafe {
             Authority::Task { root, task } => {
                 let db = crate::store::Store::open(root)
                     .context("current project decision configuration unavailable")?;
+                ensure!(
+                    db.task(task)?["status"] == "running",
+                    "task is no longer running for a decision request"
+                );
                 let project = crate::projects::task_project(&db, task)
                     .context("current task project unavailable")?;
                 crate::config::Settings::load_project_user(&db, &project)
