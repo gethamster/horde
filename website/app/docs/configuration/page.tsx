@@ -112,6 +112,7 @@ worker = "claude"`}</code></pre>
     <p>For an existing Tuara account, import its inference key with <code>horde config provider add tuara</code>, or ask your connected agent to use <code>provider_login</code>. That flow guides you to Tuara’s key page, verifies the key you supply, and saves it.</p>
     <h3 id="tuara-signup">Create a funded Tuara account</h3>
     <p>Horde can create a Tuara organization, fund it through Stripe’s Link wallet, and save its new inference key privately. Signup uses Tuara’s <a href="https://tuara.com/docs/agents/signup/index.md">Machine Payments Protocol endpoint</a>. You do not need to copy the new key or write operation JSON.</p>
+    <p>For a Tuara test-mode account, pass <code>--test-mode</code> to signup or ask your MCP agent to use <code>test_mode: true</code>. You approve Horde with a regular Link account; Link supplies test payment credentials without charging its underlying payment method. Horde saves this choice with the signup request, so a resumed request stays in test mode.</p>
     <p>Your connected agent first inspects the private Link wallet connection. If Link is missing, Horde uses the host’s Node.js and npm to install a pinned Link CLI under its configuration directory. If either prerequisite is missing, the agent receives a clear setup action. After installation succeeds, it starts device login and relays Link’s verification URL and phrase. The agent checks the session until it finishes and reads safe wallet readiness before starting signup.</p>
     <p>Link keeps payment methods in its <a href="https://app.link.com/wallet">hosted wallet</a>. When Horde reports a missing payment method or verification requirement, open that wallet and complete the action there. Link’s agent wallet currently supports US accounts. Horde’s MCP tools never receive card numbers or security codes. You can reuse a Link account connected to Grok Bot, but Horde does not register or configure Link MCP support in Grok Bot.</p>
     <p>Signup is available to an unbound default-project administrative connection; worker tokens and project-scoped connections cannot use it.</p>
@@ -128,7 +129,7 @@ worker = "claude"`}</code></pre>
 horde config provider topup tuara --check
 horde config provider topup tuara --disable`}</code></pre>
     <p>The monthly budget includes fees and is shared by provider aliases for the same Tuara origin and organization within one Horde configuration directory. It does not include spending on other machines or outside this policy. An uncertain payment holds future charges until you reconcile it with Tuara and Link. Disabling stops unpaid work but cannot reverse a submitted payment.</p>
-    <p>Signup and top-ups have been tested with mock services and wallet processes. A paid live funding flow has not been validated.</p>
+    <p>For a test-mode account, set <code>--test-mode</code> on the top-up policy too. Signup and top-ups have passed mock integration tests, and a live Tuara signup quote has been validated. A complete live funding flow has not yet been validated.</p>
     <h2>Run at startup</h2>
     <pre><code>{`horde service install
 horde service status

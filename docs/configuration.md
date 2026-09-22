@@ -238,6 +238,15 @@ horde config provider signup tuara \
   --terms-version 2026-09 --accept-terms
 ```
 
+When Tuara is running in Stripe test mode, add `--test-mode` (or set
+`test_mode: true` in `provider_signup` over MCP). Horde then asks Link for a
+test credential; Link does not charge the underlying payment method. The
+test-mode choice is saved with the signup request so a later `resume` uses the
+same mode. Confirm the account is in test mode before using this option; a
+test credential will not fund a live account. You use your regular Link account
+for device approval; there is no separate Link test account, and Horde never
+asks for a test card number through MCP.
+
 The minimum credit is $5, and Link limits the total charge to $500 including
 fees. An existing provider key blocks signup unless you authorize
 `--replace-existing`. Horde preserves model settings and role assignments.
@@ -279,6 +288,10 @@ horde config provider topup tuara \
   --threshold 5 --amount 20 --max-charge 20.48 --monthly-limit 100 \
   --terms-version 2026-09 --accept-terms
 ```
+
+For a test-mode Tuara account, add `--test-mode` to the top-up policy too (or
+set `test_mode: true` in `provider_topup` over MCP). It is saved with the
+policy and used for every payment under that policy.
 
 Horde checks the balance every 60 seconds and advances one funding step per
 check. After a successful top-up it waits at least five minutes before another.

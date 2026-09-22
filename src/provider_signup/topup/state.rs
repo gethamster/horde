@@ -19,6 +19,8 @@ pub(super) struct Settings {
     pub monthly_limit_cents: u64,
     pub terms_version: String,
     pub accept_terms: bool,
+    #[serde(default)]
+    pub test_mode: bool,
 }
 
 impl Settings {
@@ -285,6 +287,7 @@ mod tests {
             monthly_limit_cents: 4096,
             terms_version: "2026-09".into(),
             accept_terms: true,
+            test_mode: false,
         }
     }
 

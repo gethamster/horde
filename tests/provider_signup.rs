@@ -110,24 +110,32 @@ impl MockTuara {
                         json!({"data":{"kind":"api","scopes":["router:invoke"],"tokenId":"fixture-token","organizationId":if scenario == "wrong_org" { "org_other" } else { "org_fixture" }}}),
                     )
                 } else if request.first.starts_with("POST /v1/agents ") && paid {
-                    (
-                        "201 Created",
-                        String::new(),
-                        json!({
-                            "organization":{"id":"org_fixture","name":"Fixture organization"},
-                            "key":{"raw_key":KEY,"scopes":["router:invoke","agent:read"]},
-                            "payment":{"charge_cents":2048,"credit_units":2_000_000_000_u64,"fee_units":48_000_000,"card":{"last4":"4242"}},
-                            "terms":{"version":"2026-09"}
-                        }),
-                    )
+                    if scenario == "rejected" {
+                        (
+                            "402 Payment Required",
+                            String::new(),
+                            json!({"code":"card_declined"}),
+                        )
+                    } else {
+                        (
+                            "201 Created",
+                            String::new(),
+                            json!({
+                                "organization":{"id":"org_fixture","name":"Fixture organization"},
+                                "key":{"raw_key":KEY,"scopes":["router:invoke","agent:read"]},
+                                "payment":{"charge_cents":2048,"credit_units":2_000_000_000_u64,"fee_units":48_000_000,"card":{"last4":"4242"}},
+                                "terms":{"version":"2026-09"}
+                            }),
+                        )
+                    }
                 } else if request.first.starts_with("POST /v1/agents ") {
                     assert!(!headers.to_ascii_lowercase().contains("authorization:"));
                     let request = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({
-                        "amount":"2048","currency":"usd","decimals":2,
+                        "amount":"2048","currency":"usd","externalId":"mppch_test",
                         "methodDetails":{"networkId":"profile_test","paymentMethodTypes":["card"]}
                     })).unwrap());
                     let header = format!(
-                        "WWW-Authenticate: Payment id=\"mppch_test\", realm=\"tuara.com\", method=\"stripe\", intent=\"charge\", request=\"{request}\"\r\n"
+                        "WWW-Authenticate: Payment id=\"mpp_challenge_id\", realm=\"tuara.com\", method=\"stripe\", intent=\"charge\", request=\"{request}\"\r\n"
                     );
                     (
                         "402 Payment Required",
@@ -473,9 +481,23 @@ fn child_provider_signup() {
     drop(db);
     let db = Store::open(&root).unwrap();
     assert_eq!(action(&db, "status")["status"], "awaiting_approval");
-    if scenario == "uncertain" {
+    if scenario == "uncertain" || scenario == "rejected" {
         attempt_resume(&db);
-        assert_eq!(action(&db, "status")["status"], "uncertain");
+        let report = action(&db, "status");
+        assert_eq!(report["status"], "uncertain");
+        if scenario == "rejected" {
+            assert!(
+                report["message"].as_str().unwrap().contains("HTTP 402"),
+                "{}",
+                report["message"]
+            );
+            assert!(
+                report["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("card_declined")
+            );
+        }
         for _ in 0..3 {
             attempt_resume(&db);
         }
@@ -679,6 +701,11 @@ fn signup_checks_charge_cap_and_challenge_terms_before_wallet() {
 #[test]
 fn signup_never_repeats_an_ambiguous_paid_request() {
     fixture("uncertain");
+}
+
+#[test]
+fn signup_reports_a_rejected_payment_without_repeating_it() {
+    fixture("rejected");
 }
 #[test]
 fn signup_preserves_newer_credentials_and_configuration_after_receiving_key() {

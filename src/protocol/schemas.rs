@@ -82,6 +82,7 @@ pub fn admin_schema(name: &str) -> Value {
             ("monthly_limit_cents", "integer"),
             ("terms_version", "string"),
             ("accept_terms", "boolean"),
+            ("test_mode", "boolean"),
         ],
         "provider_signup" => &[
             ("action", "string"),
@@ -93,6 +94,7 @@ pub fn admin_schema(name: &str) -> Value {
             ("max_charge_cents", "integer"),
             ("terms_version", "string"),
             ("accept_terms", "boolean"),
+            ("test_mode", "boolean"),
             ("replace_existing", "boolean"),
         ],
         "provider_login" => &[
@@ -412,6 +414,7 @@ pub fn admin_schema(name: &str) -> Value {
                 if *k == "timeout_seconds" { s["minimum"] = json!(1); s["maximum"] = json!(1800); }
             }
             if name == "provider_topup" {
+                if *k == "test_mode" { s["description"] = json!("Use Stripe Link test-mode credentials for this bounded automatic top-up policy."); }
                 if *k == "action" { s["enum"] = json!(["configure", "status", "disable", "check"]); }
                 if matches!(*k, "threshold_cents" | "amount_cents" | "max_charge_cents") {
                     s["minimum"] = json!(if *k == "threshold_cents" { 1 } else { 500 });
@@ -424,6 +427,7 @@ pub fn admin_schema(name: &str) -> Value {
                 if *k == "accept_terms" { s["description"] = json!("Explicit operator acceptance of this terms version and recurring charge limits; required for configure."); }
             }
             if name == "provider_signup" {
+                if *k == "test_mode" { s["description"] = json!("Create a Stripe Link test-mode payment credential for a Tuara test-mode signup; the underlying Link payment method is not charged."); }
                 if *k == "action" {
                     s["enum"] = json!(["start", "status", "resume", "cancel"]);
                 }

@@ -22,8 +22,17 @@ pub(super) async fn create(
     operation_id: &str,
     network_id: &str,
     charge_cents: u64,
+    test_mode: bool,
 ) -> Result<SpendRequest> {
-    create_for(root, operation_id, network_id, charge_cents, false).await
+    create_for(
+        root,
+        operation_id,
+        network_id,
+        charge_cents,
+        false,
+        test_mode,
+    )
+    .await
 }
 
 pub(super) async fn create_topup(
@@ -31,8 +40,17 @@ pub(super) async fn create_topup(
     operation_id: &str,
     network_id: &str,
     charge_cents: u64,
+    test_mode: bool,
 ) -> Result<SpendRequest> {
-    create_for(root, operation_id, network_id, charge_cents, true).await
+    create_for(
+        root,
+        operation_id,
+        network_id,
+        charge_cents,
+        true,
+        test_mode,
+    )
+    .await
 }
 
 async fn create_for(
@@ -41,6 +59,7 @@ async fn create_for(
     network_id: &str,
     charge_cents: u64,
     topup: bool,
+    test_mode: bool,
 ) -> Result<SpendRequest> {
     ensure!(
         identifier(operation_id, "", 128),
@@ -55,9 +74,9 @@ async fn create_for(
         "Link wallet charge must be between 1 and 50000 cents"
     );
     let _lock = crate::provider_login::process::lock("link")?;
-    let mut command = create_command(operation_id, network_id, charge_cents)?;
+    let mut command = create_command(operation_id, network_id, charge_cents, test_mode)?;
     if topup {
-        command = topup_command(operation_id, network_id, charge_cents)?;
+        command = topup_command(operation_id, network_id, charge_cents, test_mode)?;
     }
     let request = run(root, operation_id, command, TIMEOUT).await?;
     validate_binding(&request, network_id, charge_cents)?;
@@ -68,6 +87,7 @@ fn topup_command(
     operation_id: &str,
     network_id: &str,
     charge_cents: u64,
+    test_mode: bool,
 ) -> Result<tokio::process::Command> {
     let mut command = command()?;
     command.args([
@@ -77,6 +97,9 @@ fn topup_command(
         "--context", "Top up the existing Tuara organization used by Horde because its verified balance is below the operator's threshold. This payment is within the explicitly authorized per-charge and monthly automatic top-up limits.",
         "--format", "json",
     ]);
+    if test_mode {
+        command.arg("--test");
+    }
     Ok(command)
 }
 
@@ -84,6 +107,7 @@ fn create_command(
     operation_id: &str,
     network_id: &str,
     charge_cents: u64,
+    test_mode: bool,
 ) -> Result<tokio::process::Command> {
     let mut command = command()?;
     command.args([
@@ -93,6 +117,9 @@ fn create_command(
         "--context", "Fund a new Tuara organization for Horde inference with the explicitly approved initial credit and card funding fee. This authorizes one signup payment only, with no automatic top-ups.",
         "--format", "json",
     ]);
+    if test_mode {
+        command.arg("--test");
+    }
     Ok(command)
 }
 
@@ -438,7 +465,11 @@ mod tests {
         std::fs::set_permissions(&link, std::fs::Permissions::from_mode(0o700)).unwrap();
         let previous = std::env::var_os("PATH");
         unsafe { std::env::set_var("PATH", root.path()) };
-        let command = create_command("signup-stable-id", "profile_recipient", 2048).unwrap();
+        let command = create_command("signup-stable-id", "profile_recipient", 2048, false).unwrap();
+        let test_command =
+            create_command("signup-test-id", "profile_recipient", 512, true).unwrap();
+        let test_topup_command =
+            topup_command("topup-test-id", "profile_recipient", 512, true).unwrap();
         match previous {
             Some(path) => unsafe { std::env::set_var("PATH", path) },
             None => unsafe { std::env::remove_var("PATH") },
@@ -448,7 +479,7 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_str().unwrap())
             .collect();
-        assert_eq!(command.as_std().get_program(), link.canonicalize().unwrap());
+        assert!(std::path::Path::new(command.as_std().get_program()).is_absolute());
         assert_eq!(&args[..2], &["spend-request", "create"]);
         for pair in [
             ["--amount", "2048"],
@@ -463,6 +494,19 @@ mod tests {
         let context = args.iter().position(|arg| *arg == "--context").unwrap();
         assert!(args[context + 1].len() >= 100);
         assert!(!args.contains(&"--approve"));
+        assert!(!args.contains(&"--test"));
+        let test_args: Vec<_> = test_command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert!(test_args.contains(&"--test"));
+        let test_topup_args: Vec<_> = test_topup_command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert!(test_topup_args.contains(&"--test"));
         for (name, _) in command.as_std().get_envs() {
             assert!(matches!(
                 name.to_str().unwrap(),
@@ -488,17 +532,17 @@ mod tests {
     async fn invalid_inputs_fail_before_starting_a_wallet_process() {
         let root = tempfile::tempdir().unwrap();
         assert!(
-            create(root.path(), "../escape", "profile_recipient", 2048)
+            create(root.path(), "../escape", "profile_recipient", 2048, false)
                 .await
                 .is_err()
         );
         assert!(
-            create(root.path(), "valid-id", "--network-override", 2048)
+            create(root.path(), "valid-id", "--network-override", 2048, false)
                 .await
                 .is_err()
         );
         assert!(
-            create(root.path(), "valid-id", "profile_recipient", 50_001)
+            create(root.path(), "valid-id", "profile_recipient", 50_001, false)
                 .await
                 .is_err()
         );

@@ -448,6 +448,10 @@
           },
           "terms_version": {
             "type": "string"
+          },
+          "test_mode": {
+            "description": "Create a Stripe Link test-mode payment credential for a Tuara test-mode signup; the underlying Link payment method is not charged.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -502,6 +506,10 @@
           },
           "terms_version": {
             "type": "string"
+          },
+          "test_mode": {
+            "description": "Use Stripe Link test-mode credentials for this bounded automatic top-up policy.",
+            "type": "boolean"
           },
           "threshold_cents": {
             "maximum": 50000,

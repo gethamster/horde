@@ -267,8 +267,8 @@ fn inspect(root: &Path, request: &Request) -> Result<Value> {
             "wallet":crate::provider_wallet::dispatch(&Store::open(root)?, &json!({"action":"inspect"}))?,
             "signup_tool":"provider_signup",
             "topup_tool":"provider_topup",
-            "signup_choices":["organization_name","agent_name","amount_cents","max_charge_cents","terms_version","accept_terms"],
-            "topup_choices":["threshold_cents","amount_cents","max_charge_cents","monthly_limit_cents","terms_version","accept_terms"]
+            "signup_choices":["organization_name","agent_name","amount_cents","max_charge_cents","terms_version","accept_terms","test_mode"],
+            "topup_choices":["threshold_cents","amount_cents","max_charge_cents","monthly_limit_cents","terms_version","accept_terms","test_mode"]
         })
     } else {
         json!({"status":"no_tuara_provider_selected"})

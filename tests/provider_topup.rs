@@ -142,9 +142,9 @@ impl MockTuara {
                         }),
                     )
                 } else if request.first.starts_with("POST /v1/account/topup ") {
-                    let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({"amount":"2048","currency":"usd","decimals":2,"methodDetails":{"networkId":"profile_test","paymentMethodTypes":["card"]}})).unwrap());
+                    let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({"amount":"2048","currency":"usd","externalId":"mppch_topup","methodDetails":{"networkId":"profile_test","paymentMethodTypes":["card"]}})).unwrap());
                     let header = format!(
-                        "WWW-Authenticate: Payment id=\"mppch_topup\", realm=\"tuara.com\", method=\"stripe\", intent=\"charge\", request=\"{encoded}\"\r\n"
+                        "WWW-Authenticate: Payment id=\"mpp_challenge_id\", realm=\"tuara.com\", method=\"stripe\", intent=\"charge\", request=\"{encoded}\"\r\n"
                     );
                     (
                         "402 Payment Required",

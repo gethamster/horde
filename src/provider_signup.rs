@@ -29,6 +29,8 @@ struct Start {
     terms_version: String,
     accept_terms: bool,
     #[serde(default)]
+    test_mode: bool,
+    #[serde(default)]
     replace_existing: bool,
 }
 
@@ -277,6 +279,9 @@ async fn start(root: &Path, receipts: &Receipts, intent: Start) -> Result<Value>
 
 fn recover(receipts: &Receipts, record: &mut Record) -> Result<()> {
     if record.status == Status::Submitting || record.status == Status::Uncertain {
+        if record.status == Status::Uncertain && !receipts.path(&record.id, "response").exists() {
+            return Ok(());
+        }
         record.status = if receipts.path(&record.id, "response").exists() {
             Status::CredentialReceived
         } else {
@@ -312,9 +317,11 @@ async fn advance(receipts: &Receipts, record: &mut Record) -> Result<()> {
                 record.status = Status::AwaitingWallet;
                 record.message = None;
             }
-            Err(_) => {
+            Err(error) => {
                 record.status = Status::Failed;
-                record.message=Some("Tuara did not provide a valid signup quote within the authorized amount and terms. No payment was submitted.".into());
+                record.message = Some(format!(
+                    "Tuara did not provide a valid signup quote: {error}. No payment was submitted."
+                ));
             }
         }
         return receipts.write(&record.id, record);
@@ -332,7 +339,7 @@ async fn advance(receipts: &Receipts, record: &mut Record) -> Result<()> {
         return receipts.write(&record.id, record);
     }
     if record.status == Status::AwaitingWallet {
-        match wallet::create(&record.root,&record.wallet_operation_id,&challenge.network_id,challenge.charge_cents).await {
+        match wallet::create(&record.root,&record.wallet_operation_id,&challenge.network_id,challenge.charge_cents,record.intent.test_mode).await {
             Ok(spend) => {
                 record.spend_request_id=Some(spend.id);
                 record.wallet_status=Some(spend.status);
@@ -402,9 +409,11 @@ async fn advance(receipts: &Receipts, record: &mut Record) -> Result<()> {
                 "Signup response saved privately. Resume to verify and install the inference key."
                     .into(),
             );
-        } else {
+        } else if let Err(error) = result {
             record.status = Status::Uncertain;
-            record.message=Some("Tuara payment outcome is unknown. Reconcile with Tuara and your wallet; Horde will not charge again.".into());
+            record.message = Some(format!(
+                "Tuara payment outcome needs reconciliation: {error}. Horde will not charge again."
+            ));
         }
         receipts.write(&record.id, record)?;
     }
@@ -461,12 +470,12 @@ fn report(record: &Record) -> Value {
             | Status::AwaitingApproval
             | Status::CredentialReceived
     );
-    json!({"request_id":record.intent.request_id,"provider":record.intent.provider,"status":record.status,
+    json!({"request_id":record.intent.request_id,"provider":record.intent.provider,"status":record.status,"test_mode":record.intent.test_mode,
         "message":record.message,"approval_url":record.approval_url,"wallet_request_id":record.spend_request_id,
         "wallet_action_required":record.wallet_status.as_deref()==Some("requires_action"),
         "quote":record.challenge.as_ref().map(|quote|json!({"amount_cents":record.intent.amount_cents,
             "charge_cents":quote.charge_cents,"max_charge_cents":record.intent.max_charge_cents,
-            "currency":"usd","terms_version":record.intent.terms_version,"expires_at":quote.expires_at})),
+            "currency":"usd","terms_version":record.intent.terms_version,"test_mode":record.intent.test_mode,"expires_at":quote.expires_at})),
         "result":record.summary,"provider_authentication":if record.status==Status::Succeeded {"verified"} else {"not_verified"},
         "capacity":"unknown","credential_activation":if record.status==Status::Succeeded {Some("next_invocation")} else {None},
         "next_actions":if resumable {json!([{"kind":"tool","tool":"provider_signup","arguments":{"action":"resume","request_id":record.intent.request_id}}])} else {json!([])}})

@@ -202,13 +202,15 @@ mod tests {
 
     fn quote() -> (String, Value) {
         let request = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&json!({"amount":"2048", "currency":"usd", "decimals":2,
-            "methodDetails":{"networkId":"profile_test","paymentMethodTypes":["card"]}}))
+            serde_json::to_vec(
+                &json!({"amount":"2048", "currency":"usd", "externalId":"challenge_test",
+            "methodDetails":{"networkId":"profile_test","paymentMethodTypes":["card"]}}),
+            )
             .unwrap(),
         );
         (
             format!(
-                "Payment id=\"challenge_test\", realm=\"tuara.com\", method=\"stripe\", intent=\"charge\", request=\"{request}\""
+                "Payment id=\"mpp_challenge_id\", realm=\"tuara.com\", method=\"stripe\", intent=\"charge\", request=\"{request}\""
             ),
             json!({"challenge_id":"challenge_test","credit_units":2_000_000_000_u64,"fee_units":48_000_000,"fee_basis_points":240,"charge_cents":2048}),
         )

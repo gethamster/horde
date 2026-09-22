@@ -102,6 +102,10 @@ a 2048-cent total ceiling allows the documented $20 signup and fee. The Link
 limit is 50,000 cents including fees. Do not infer terms acceptance or a spending
 limit from a general request to configure a provider. Existing credentials are
 preserved unless the user authorizes `replace_existing: true`.
+When Tuara is in test mode, set `test_mode: true` on signup and any later
+top-up policy. Horde then asks Link for test credentials without charging the
+underlying payment method. A regular Link account is sufficient; do not ask
+for test card details through MCP.
 
 `start` validates a quote without paying. Follow `next_actions` with bounded
 `resume` calls using that same request ID. The first resume creates an approval

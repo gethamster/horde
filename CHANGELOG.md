@@ -18,6 +18,9 @@
   JSON. Balance monitoring funds an existing Tuara organization within approved
   per-charge and monthly limits, including fees. Spending history survives policy
   changes and restarts, and unresolved payments hold further charges.
+- Support Stripe Link test credentials for Tuara signup and top-ups. Parse Link's
+  device-login events and Tuara's live MPP challenge shape so test-mode quotes
+  and wallet connection work through the same MCP flow.
 
 ## 0.6.6 - 2026-09-22
 

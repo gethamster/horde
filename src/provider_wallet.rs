@@ -688,6 +688,9 @@ fn visit_login_frame(value: &Value, url: &mut Option<String>, phrase: &mut Optio
             }
         }
         Value::Object(row) => {
+            if let Some(data) = row.get("data") {
+                visit_login_frame(data, url, phrase);
+            }
             if let Some(value) = row
                 .get("verification_url")
                 .or_else(|| row.get("verification_uri"))
@@ -749,9 +752,13 @@ async fn verify_login(session: &Session) -> Result<bool> {
     let (bytes, status) =
         result.map_err(|_| anyhow::anyhow!("Link authentication verification timed out"))??;
     ensure!(status.success(), "Link authentication verification failed");
-    Ok(json_frames(&bytes)
-        .iter()
-        .any(|value| value.get("authenticated").and_then(Value::as_bool) == Some(true)))
+    Ok(login_authenticated(&bytes))
+}
+fn login_authenticated(bytes: &[u8]) -> bool {
+    json_frames(bytes).iter().any(|frame| match frame {
+        Value::Array(rows) => rows.iter().any(|row| row["authenticated"] == true),
+        value => value["authenticated"] == true,
+    })
 }
 async fn read_bounded(reader: impl tokio::io::AsyncRead + Unpin) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -811,6 +818,20 @@ mod tests {
         assert_eq!(output["verification_url"], "https://app.link.com/device");
         assert_eq!(output["verification_code"], "ABCD-1234");
         assert!(!output.to_string().contains("secret"));
+    }
+    #[test]
+    fn login_output_reads_link_jsonl_data_without_exposing_other_fields() {
+        let output = public_login_output(br#"{"type":"data","data":{"verification_url":"https://app.link.com/device","phrase":"ABCD-1234","access_token":"secret"}}
+{"type":"done","ok":true}"#);
+        assert_eq!(output["verification_url"], "https://app.link.com/device");
+        assert_eq!(output["verification_code"], "ABCD-1234");
+        assert!(!output.to_string().contains("secret"));
+    }
+    #[test]
+    fn login_verification_accepts_link_json_array() {
+        assert!(login_authenticated(br#"[{"authenticated":true}]"#));
+        assert!(login_authenticated(b"{\"authenticated\":true}\n"));
+        assert!(!login_authenticated(br#"[{"authenticated":false}]"#));
     }
     #[test]
     fn login_output_does_not_relay_text_or_untrusted_urls() {

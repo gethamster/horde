@@ -27,6 +27,9 @@ pub struct SignupArgs {
     /// Accept the specified terms and authorize the stated funding and charge limit.
     #[arg(long)]
     pub accept_terms: bool,
+    /// Use Stripe Link test credentials. No underlying payment method is charged.
+    #[arg(long)]
+    pub test_mode: bool,
     /// Authorize replacing an existing provider key after successful signup.
     #[arg(long)]
     pub replace_existing: bool,
@@ -67,6 +70,9 @@ pub struct TopupArgs {
     /// Accept the specified terms and authorize recurring charges within these limits.
     #[arg(long)]
     pub accept_terms: bool,
+    /// Use Stripe Link test credentials for automatic top-ups.
+    #[arg(long)]
+    pub test_mode: bool,
 }
 
 fn dollars(text: &str) -> Result<u64> {
@@ -250,7 +256,7 @@ fn signup_start(
     println!("Signup reference: {id}");
     call(
         "provider_signup",
-        json!({"action":"start","request_id":id,"provider":options.provider,"organization_name":organization,"agent_name":options.agent.as_deref().unwrap_or("horde"),"amount_cents":amount,"max_charge_cents":maximum,"terms_version":terms,"accept_terms":true,"replace_existing":options.replace_existing}),
+        json!({"action":"start","request_id":id,"provider":options.provider,"organization_name":organization,"agent_name":options.agent.as_deref().unwrap_or("horde"),"amount_cents":amount,"max_charge_cents":maximum,"terms_version":terms,"accept_terms":true,"test_mode":options.test_mode,"replace_existing":options.replace_existing}),
     )
 }
 
@@ -466,7 +472,7 @@ fn topup_settings(options: &TopupArgs, terminal: bool) -> Result<Value> {
         );
     }
     Ok(
-        json!({"action":"configure","provider":options.provider,"threshold_cents":threshold,"amount_cents":amount,"max_charge_cents":maximum,"monthly_limit_cents":monthly,"terms_version":terms,"accept_terms":true}),
+        json!({"action":"configure","provider":options.provider,"threshold_cents":threshold,"amount_cents":amount,"max_charge_cents":maximum,"monthly_limit_cents":monthly,"terms_version":terms,"accept_terms":true,"test_mode":options.test_mode}),
     )
 }
 

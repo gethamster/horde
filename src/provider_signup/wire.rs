@@ -123,10 +123,20 @@ pub(super) async fn pay(
         .map_err(|_| {
             anyhow!("Tuara signup payment outcome is unknown; do not retry automatically")
         })?;
-    ensure!(
-        response.status() == reqwest::StatusCode::CREATED,
-        "Tuara signup payment did not return success; do not retry automatically"
-    );
+    if response.status() != reqwest::StatusCode::CREATED {
+        let status = response.status().as_u16();
+        let body = bounded_body(response).await?;
+        let code = serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|value| value["code"].as_str().map(str::to_owned))
+            .filter(|code| {
+                code.len() <= 64 && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            });
+        return Err(anyhow!(
+            "Tuara payment returned HTTP {status} (code {}). Do not retry automatically",
+            code.as_deref().unwrap_or("unavailable")
+        ));
+    }
     // Save all successful response bytes before interpreting the one-time key.
     bounded_body(response).await
 }
@@ -257,10 +267,7 @@ fn parse_challenge_kind(
         "Tuara signup requires a Stripe charge challenge"
     );
     attribute(&wire, "realm")?;
-    ensure!(
-        attribute(&wire, "id")? == text(body, "challenge_id")?,
-        "Tuara payment challenge identifiers disagree"
-    );
+    attribute(&wire, "id")?;
     if let Ok(field) = attribute(&wire, "header") {
         ensure!(
             field.eq_ignore_ascii_case("Authorization"),
@@ -274,8 +281,12 @@ fn parse_challenge_kind(
     )
     .map_err(|_| invalid())?;
     ensure!(
-        text(&request, "currency")? == "usd" && number(&request, "decimals")? == 2,
-        "Tuara signup requires USD cents"
+        text(&request, "currency")? == "usd"
+            && request
+                .get("decimals")
+                .is_none_or(|_| number(&request, "decimals").ok() == Some(2))
+            && text(&request, "externalId")? == text(body, "challenge_id")?,
+        "Tuara signup requires a matching USD-cents challenge"
     );
     let amount_text = text(&request, "amount")?;
     ensure!(
@@ -402,6 +413,15 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[tokio::test]
+    #[ignore = "live Tuara test-mode quote; opt in explicitly"]
+    async fn live_test_mode_quote_contract() {
+        let url = Url::parse("https://tuara.com/v1/agents").unwrap();
+        let body = json!({"amount_dollars":5,"organization_name":"Horde Contract Test","agent":{"name":"horde-smoke","platform":"horde"},"terms_version":"2026-09"});
+        let challenge = prepare(&url, &body, 500, 512, "2026-09").await.unwrap();
+        assert_eq!(challenge.charge_cents, 512);
+    }
 
     async fn server(router: axum::Router) -> (Url, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -539,14 +559,14 @@ mod tests {
     fn fixture() -> (String, Value) {
         let request = URL_SAFE_NO_PAD.encode(
             serde_json::to_vec(&json!({
-                "amount":"2048", "currency":"usd", "decimals":2,
+                "amount":"2048", "currency":"usd", "externalId":"challenge_test",
                 "methodDetails":{"networkId":"profile_test", "paymentMethodTypes":["card"]}
             }))
             .unwrap(),
         );
         (
             format!(
-                "Payment id=\"challenge_test\", realm=\"tuara.com\", method=\"stripe\", intent=\"charge\", request=\"{request}\", opaque=\"opaque_unchanged\", description=\"A, \\\"quoted\\\" purchase\""
+                "Payment id=\"mpp_challenge_id\", realm=\"tuara.com\", method=\"stripe\", intent=\"charge\", request=\"{request}\", opaque=\"opaque_unchanged\", description=\"A, \\\"quoted\\\" purchase\""
             ),
             json!({"challenge_id":"challenge_test", "credit_units":2_000_000_000_u64,
             "fee_units":48_000_000, "charge_cents":2048,"fee_basis_points":240,
@@ -594,6 +614,7 @@ mod tests {
         for (field, value) in [
             ("amount", json!("+2048")),
             ("currency", json!("eur")),
+            ("externalId", json!("other_challenge")),
             ("decimals", json!(3)),
             ("expires", json!(null)),
             (

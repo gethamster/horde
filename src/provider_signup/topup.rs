@@ -310,6 +310,7 @@ async fn advance(receipts: &Receipts, policy: &mut Policy) -> Result<()> {
             &pending.id,
             &pending.challenge.network_id,
             pending.challenge.charge_cents,
+            policy.settings.test_mode,
         )
         .await?;
         let pending = policy.pending.as_mut().unwrap();
