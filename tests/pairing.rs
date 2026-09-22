@@ -77,6 +77,7 @@ fn workers_cannot_invoke_setup_or_accept() {
             .arg("--data-dir")
             .arg(temp.path())
             .args(args)
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
             .env("HORDE_WORKER_TOKEN", "scoped-worker")
             .output()
             .unwrap();

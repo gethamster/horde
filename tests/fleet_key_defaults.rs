@@ -51,6 +51,7 @@ impl Fixture {
         .unwrap();
         Command::new(env!("CARGO_BIN_EXE_horde"))
             .current_dir(self.dir.path())
+            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .env_remove("HORDE_WORKER_TOKEN")
             .env_remove("TUARA_WORKER_TOKEN")
             .args([

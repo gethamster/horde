@@ -105,6 +105,7 @@ fn network_cli_discovery_uses_only_user_selected_config_and_hides_credentials() 
             file.to_str().unwrap(),
             "peers",
         ])
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
         .env("TUARA_API_KEY", "fixture-secret")
         .output()
         .unwrap();
