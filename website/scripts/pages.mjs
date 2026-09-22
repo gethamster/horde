@@ -35,8 +35,26 @@ export const pages = [
   {
     path: "/docs/deployment", file: "docs/deployment.html", markdown: "docs/deployment.md",
     source: ["app/docs/deployment/page.tsx"], priority: "0.8", changefreq: "monthly",
-    title: "Deploy remote workers",
-    summary: "Pair a controller and workers over Tailscale, then inspect and update the fleet.",
+    title: "Deploy: one parent, one child",
+    summary: "Connect one child to your Horde parent, send it a task, and retrieve the result.",
+  },
+  {
+    path: "/docs/deployment/ax", file: "docs/deployment/ax.html", markdown: "docs/deployment/ax.md",
+    source: ["app/docs/deployment/ax/page.tsx"], priority: "0.8", changefreq: "monthly",
+    title: "Use an existing AX deployment",
+    summary: "Connect Horde to AX, create project workers, and run tasks with optional Docker and Compose.",
+  },
+  {
+    path: "/docs/deployment/containers", file: "docs/deployment/containers.html", markdown: "docs/deployment/containers.md",
+    source: ["app/docs/deployment/containers/page.tsx"], priority: "0.7", changefreq: "monthly",
+    title: "Containers and sandboxes",
+    summary: "Configure Horde workers on Docker, Kubernetes, E2B, or Daytona.",
+  },
+  {
+    path: "/docs/deployment/fleet", file: "docs/deployment/fleet.html", markdown: "docs/deployment/fleet.md",
+    source: ["app/docs/deployment/fleet/page.tsx"], priority: "0.7", changefreq: "monthly",
+    title: "Manage a Horde fleet",
+    summary: "Add workers, configure startup services, and manage fleet updates and project access.",
   },
   {
     path: "/about", file: "about.html", markdown: "about.md", source: ["app/(site)/about/page.tsx"],

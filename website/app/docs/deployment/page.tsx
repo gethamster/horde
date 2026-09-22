@@ -1,99 +1,43 @@
+import Link from "next/link";
 import type { Metadata } from "next";
 import { url } from "../../site";
+
 export const metadata: Metadata = {
-  title: "Deploy",
-  description: "Pair a Horde controller with remote workers over Tailscale, then inspect and update the fleet.",
+  title: "Deploy: one parent, one child",
+  description: "Connect one child worker to your Horde parent over Tailscale, send it a task, and retrieve the result. Start with two machines.",
   alternates: { canonical: url("/docs/deployment") },
 };
 
 export default function Deployment() {
   return <>
-    <h1>Deploy remote workers</h1>
-    <p>To run agents on another machine, pair a Horde controller with a worker over your Tailscale network. The controller schedules work; the worker runs the configured agents with its own credentials and resource limits.</p>
-    <h2>The easy way: invite a Tailscale peer</h2>
-    <p>Set up the controller once:</p>
-    <pre><code>{`horde network setup`}</code></pre>
-    <p>This installs Tailscale if needed (Homebrew is required on macOS), handles sign-in, and creates the controller’s certificate authority. Stop an existing unconfigured daemon first if this isn’t a fresh install.</p>
-    <p>Then, for any of your own devices on the same tailnet — no SSH access required:</p>
-    <pre><code>{`horde network invite worker
-horde runtime list`}</code></pre>
-    <p>Replace <code>worker</code> with the device’s discovered hostname (see <code>horde network peers</code>). This resolves the peer, creates a short-lived credential scoped to that one device, and sends it over Tailscale’s built-in Taildrop — one command, no manual file handling. It prints the exact command to run on the worker once the file arrives:</p>
+    <h1>One parent, one child</h1>
+    <p>Your machine is the parent: you submit work and review the results there. A second machine is the child: it runs the agents. Horde calls these the controller and worker.</p>
+    <p>Start with <Link href="/docs">Horde installed</Link> on both machines and both signed into the same Tailscale account. The child needs Git and its own <Link href="/docs/configuration">model provider configuration and login</Link>. Use versions of Horde that include <code>network invite</code>.</p>
+    <h2>1. Invite the child from the parent</h2>
+    <p>For first-time networking setup, run on the parent:</p>
+    <pre><code>{`horde stop
+horde network setup
+horde network peers
+horde network invite worker`}</code></pre>
+    <p>Replace <code>worker</code> with your child’s hostname from <code>network peers</code>. Setup handles the parent’s Tailscale connection and Horde identity; automatic Tailscale installation on macOS needs Homebrew. If Horde networking is already configured, start with <code>network peers</code>.</p>
+    <p>The invitation is sent through Tailscale’s Taildrop to your other device. It lasts one hour and admits one worker. This path needs Taildrop between your devices, not SSH. Your tailnet must allow the child to reach the parent’s runtime and enrollment addresses.</p>
+    <h2>2. Join on the child</h2>
+    <p>Receive the Taildrop file, then run the join command printed by the parent. For example:</p>
     <pre><code>{`horde network join ~/Downloads/horde-invite-worker.json`}</code></pre>
-    <p>Accept the Taildrop transfer in the Tailscale menu bar if prompted. Configure the worker’s executor login separately; Horde never copies the controller’s provider credentials.</p>
-    <h2>With Tailscale SSH: pair in one step</h2>
-    <p>If the worker already has Tailscale SSH enabled with a non-root account, skip the Taildrop step entirely:</p>
-    <pre><code>{`horde network peers
-horde network add alice@worker
-horde runtime list`}</code></pre>
-    <p>Replace <code>alice@worker</code> with the SSH user and discovered host. This installs Horde on the worker if absent, generates a unique certificate, and waits for an authenticated outbound handshake — the whole pairing in one command, but only works if Tailscale SSH is already on. On a Linux worker, prepare that access with <code>horde network setup --worker</code>; on macOS, enable Tailscale SSH from the Tailscale app.</p>
-    <p>Use <code>network setup --service</code> for controller boot startup. Use <code>network add alice@worker --service</code> for the worker; this requires passwordless sudo on that host.</p>
-    <h2>Inspect and update</h2>
-    <p>Use the runtime ID returned by <code>runtime list</code>:</p>
-    <pre><code>{`horde runtime inspect RUNTIME_ID
-horde runtime update RUNTIME_ID --version 0.3.0 --request-id update-worker-030
-horde runtime restart RUNTIME_ID --request-id restart-worker-1
-horde call management_events '{"after":0}'`}</code></pre>
-    <p>Reuse a request ID only to retry the same operation. Wait for an update to report <code>succeeded</code> before updating the next host. Failed or uncertain updates pause the fleet; inspect the result before resuming it.</p>
-    <p>Binary updates verify signatures and checksums, drain active work, and restart. If the replacement cannot start and its helper was terminated by the service manager, operator recovery is required. Worker certificates expire after 30 days; renewal currently requires operator-managed re-enrollment.</p>
-    <h2>Containers and sandboxes</h2>
-    <p>Horde also supports Docker, Kubernetes, E2B, and Daytona profiles in <code>runtimes.toml</code>. Docker and Kubernetes require a digest-pinned image. Replace <code>IMAGE_FROM_SIGNED_RELEASE_MANIFEST</code> with the <code>image</code> value, including its immutable digest, from <a href="/releases/latest/manifest.json">the release manifest</a>.</p>
-    <pre><code>{`# Top-level enrollment settings; use your controller's CA and address.
-issuer_key = "/absolute/path/to/controller/ca.key"
-controller_address = "CONTROLLER_TAILNET_IP:7443"
-controller_tls_name = "controller.your-tailnet.ts.net"
-
-[profiles.containers]
-provider = "docker"
-context = "default"
-image = "IMAGE_FROM_SIGNED_RELEASE_MANIFEST"
-concurrency = 4
-cpus = 2
-memory_mb = 2048
-executor_roles = ["planner", "worker", "reviewer"]`}</code></pre>
-    <p>The issuer key must match the controller’s configured CA and have mode <code>0600</code>. Selected executor roles must use API authentication, Tuara, or the simulated executor. Provider credentials remain on the controller.</p>
-    <pre><code>{`horde runtime create worker-1 --profile containers --request-id create-worker-1
-horde runtime inspect worker-1
-horde runtime stop worker-1 --request-id stop-worker-1
-horde runtime start worker-1 --request-id start-worker-1`}</code></pre>
-    <p>For Kubernetes, use <code>provider = "kubernetes"</code> with a kubeconfig <code>context</code> and <code>namespace</code>. Each runtime gets a StatefulSet and persistent storage. Make sure the cluster can pull the configured image.</p>
-    <p>E2B and Daytona require a prepared Horde template or snapshot with persistent runtime data and a restart supervisor. They do not provision from an arbitrary blank image:</p>
-    <pre><code>{`[profiles.e2b]
-provider = "e2b"
-api_key_env = "E2B_API_KEY"
-image = "YOUR_HORDE_TEMPLATE_ID"
-lifetime_seconds = 3600
-
-[profiles.daytona]
-provider = "daytona"
-api_key_env = "DAYTONA_API_KEY"
-image = "YOUR_HORDE_SNAPSHOT_NAME"
-lifetime_seconds = 3600`}</code></pre>
-    <p>Install the signed binary inside the template, configure its executor credentials, and use this supervisor as its start command. Keep its data directory on persistent storage:</p>
-    <pre><code>{`curl -fsSL https://horde.sh/install | bash -s -- --no-service`}</code></pre>
-    <pre><code>{`#!/bin/sh
-# Use as the start command of an E2B template or Daytona snapshot after installing
-# an official release with install.sh --no-service. Storage must survive restarts.
-set -u
-export HORDE_SUPERVISED=1
-horde_data_dir=\${HORDE_DATA_DIR:-}
-set --
-[ -z "$horde_data_dir" ] || set -- --data-dir "$horde_data_dir"
-child=''
-stop() {
-  if [ -n "$child" ]; then kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; fi
-  exit 0
-}
-trap stop TERM INT
-while :; do
-  "$HOME/.local/bin/horde" "$@" daemon &
-  child=$!
-  wait "$child"
-  result=$?
-  child=''
-  [ "$result" -ne 0 ] || exit 0
-  sleep 2
-done
-`}</code></pre>
-    <p>A provisioned resource becomes ready only after its authenticated controller connection is established.</p>
+    <p>Use the file’s actual downloaded path and accept the transfer if Tailscale prompts. Join enrolls and starts the child, then waits for its authenticated connection. Invitation expiry does not disconnect an enrolled worker; see <Link href="/docs/deployment/fleet#certificates">certificate renewal and offline recovery</Link> for longer-term use. Provider logins are not copied from the parent.</p>
+    <h2>3. Send it a task</h2>
+    <p>Back on the parent, check that the child is ready. Use its runtime ID and a clean repository with your changes committed:</p>
+    <pre><code>{`horde runtime list
+horde --project default submit --on RUNTIME_ID --repo /path/to/repo "Run the tests and fix failures"
+horde watch TASK_ID
+horde result TASK_ID`}</code></pre>
+    <p>Replace <code>RUNTIME_ID</code> with the child’s runtime ID and <code>TASK_ID</code> with the ID returned by submission. Wait for the task to succeed before retrieving its result. For this first task, use a repository that has not been assigned to a named Horde project. The command selects the default project explicitly.</p>
+    <p>Horde sends the committed repository to the child. The result is a separate checkout on the parent for you to review; your original branch stays unchanged. If the child goes offline, its work waits rather than running on the parent.</p>
+    <h2>When you need more</h2>
+    <ul>
+      <li><Link href="/docs/deployment/fleet">Manage a fleet</Link>: add more children, run at startup, update workers, and manage projects.</li>
+      <li><Link href="/docs/deployment/ax">Use an existing AX deployment</Link>: run project workers in gVisor with optional Docker and Compose. Experimental.</li>
+      <li><Link href="/docs/deployment/containers">Containers and sandboxes</Link>: configure Docker, Kubernetes, E2B, or Daytona workers.</li>
+    </ul>
   </>;
 }

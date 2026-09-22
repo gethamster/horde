@@ -1,58 +1,56 @@
-# Experimental AX runtimes
+# Deploy Horde workers on AX
 
-Horde can run workers through [Google AX](https://github.com/google/ax). Horde
-still owns projects, repositories, workflows, and model accounts. AX creates one
-Task for each project-bound worker and runs it on Agent Substrate with gVisor.
+Connect an existing AX deployment to Horde, publish a Horde runner image, and
+create a worker for your project. Horde keeps ownership of workflows,
+repositories, and model accounts; AX runs each worker as a Task on gVisor.
+This integration is experimental and intended for a trusted fleet.
 
-This backend targets a trusted fleet. AX and Substrate are early projects whose
-APIs can change. Keep their API and router on your private management network;
-Horde uses the existing fleet enrollment and account mechanisms.
+## Prerequisites
 
-```mermaid
-flowchart LR
-  Horde[Horde controller] -->|Lifecycle RPCs| AX[AX control plane]
-  AX -->|Create or resume| Runner[Horde runner in gVisor]
-  Horde -->|Private bootstrap POST| Router[Substrate router]
-  Router --> Runner
-  Runner -->|Outbound mTLS control| Horde
-  Runner --> State[Persistent workspace]
-```
+Before creating a worker, have:
 
-## Prepare AX and the runner image
+- An existing AX and Agent Substrate deployment using the supported revisions below.
+- A running [Horde controller](installing.md) built from an AX-capable revision, with its
+  [enrollment signer and network address](runtime-management.md#enrollment-and-outbound-control) configured.
+  Use the same Horde revision for the controller and runner; older releases may not include AX.
+- A Horde [project with its repository and model accounts configured](configuration.md#separate-projects-and-provider-accounts).
+- A registry your Substrate workers can pull from, plus a Linux AMD64 Horde binary for the runner image.
 
-Use these upstream base revisions:
-
-| Component | Revision |
+| Component | Supported upstream base revision |
 | --- | --- |
 | AX | `d8ed0fe38bceb7842d3c47817d53d16ccdfcb601` |
 | Agent Substrate | `672533541dbf`, as selected by AX's `go.mod` |
 
-The stock configuration supports ordinary Horde workers. Optional nested Docker
-uses the [AX base-template patch](../containers/ax/patches/README.md) and a
-separately configured gVisor sandbox, described below. Agent Substrate's source
-remains unchanged.
+The controller must reach both the AX gRPC API and Substrate's HTTP router.
+The worker must reach the controller's Horde network listener. The examples use
+private tunnels bound to the controller's loopback interface for AX and the
+router; keep those tunnels running while managing workers. They do not replace
+the worker's outbound connection to Horde.
 
-Follow the pinned [Substrate development setup](https://github.com/agent-substrate/substrate/tree/672533541dbf#quickstart-development)
-to create a kind cluster and install its services. Then deploy the pinned
-[AX control plane](https://github.com/google/ax/tree/d8ed0fe38bceb7842d3c47817d53d16ccdfcb601#quick-start)
-against that Substrate installation. Retain the image digests produced by the
-builds in your deployment configuration. Horde does not install or scale the
-cluster for you.
+If AX is not installed yet, use the upstream
+[AX setup](https://github.com/google/ax/tree/d8ed0fe38bceb7842d3c47817d53d16ccdfcb601#quick-start)
+and [Substrate setup](https://github.com/agent-substrate/substrate/tree/672533541dbf#quickstart-development).
+Horde does not install or scale that infrastructure. For persistence across host
+restarts, AX needs Redis with persistent storage and AOF enabled; Substrate needs
+its PostgreSQL and object-store volumes retained. See
+[recovery and upgrades](#recovery-and-upgrades) for the development deployment's
+storage and host-restart limits.
 
-Configure Redis with persistent storage and append-only file (AOF) persistence
-before starting the AX controller. The upstream development Redis manifest has
-neither, so it cannot preserve AX metadata across host stop/start reliably.
-Retain Substrate's PostgreSQL and object-store volumes as well. Existing workspace
-snapshots do not restore lost AX Task metadata.
+## Build the runner image
 
-`ax_revision` checks that the profile selects Horde's supported revision. AX has
-no version RPC, so verify the deployed control-plane images against your recorded
-digests when installing or upgrading it. For a patched controller, record the
-patch checksum alongside its image digest; `ax_revision` remains the upstream
-base commit.
+Horde does not currently publish an AX-specific runner image. Build and push one
+from the Horde checkout; the standard Horde container image is not the AX runner.
+Place a Linux AMD64 Horde executable compatible with the Ubuntu 24.04 runner
+at `dist/amd64/horde`. On an Ubuntu 24.04 AMD64 build host with Rust installed,
+you can build it from that checkout:
 
-Build the Horde runner from the repository root after placing a Linux AMD64
-Horde executable at `dist/amd64/horde`:
+```sh
+cargo build --locked --release
+mkdir -p dist/amd64
+cp target/release/horde dist/amd64/horde
+```
+
+Then build and publish the image:
 
 ```sh
 docker build --platform linux/amd64 -f containers/ax/Dockerfile \
@@ -63,28 +61,16 @@ docker inspect --format '{{index .RepoDigests 0}}' REGISTRY/horde-ax:experimenta
 
 Replace `REGISTRY` with a registry your Substrate workers can reach. Use the
 resulting `image@sha256:...` reference in the Horde profile. The image includes
-Git, Docker/Compose and Buildx tools, and pinned Codex and Claude CLIs. For tests with mocked
-providers, build with `--build-arg INSTALL_HARNESSES=false` to omit those CLIs.
-
-The runner prepares `/workspace/.horde` for Horde's database, configuration,
-caches, and home directory. It receives Horde's enrollment packet through a
-private HTTP POST after AX starts the Task. Credentials never appear in the AX
-Task specification. An identical bootstrap retry succeeds; a different packet
-for an existing workspace fails. Existing state and identity survive resume.
-AX workspace goals and debug execution are disabled; Horde prepares repositories
-and runs the workflows.
-
-The runner starts `tini`, then a Python supervisor, then Horde. The init process
-reaps orphaned descendants, and the supervisor restarts Horde after a nonzero
-exit while retaining its persistent workspace. Horde's recovery rules still
-govern interrupted attempts.
+Git, Docker/Compose and Buildx tools, and pinned Codex and Claude CLIs. For tests
+with mocked providers, build with `--build-arg INSTALL_HARNESSES=false` to omit
+those CLIs. For Docker workloads, complete the
+[optional nested Docker setup](#optional-nested-docker) and add
+`--build-arg ENABLE_DOCKER=true`; the default runner leaves Docker disabled.
 
 ## Configure a project runtime
 
-First configure the controller's [enrollment signer and reachable address](runtime-management.md#enrollment-and-outbound-control).
-Make the AX gRPC API and Substrate HTTP router reachable through private tunnels
-bound to the controller's loopback interface. Add a profile to
-`~/.config/horde/runtimes.toml`:
+Run `horde project inspect PROJECT` to find the immutable project UUID. On the
+controller, add a profile to `~/.config/horde/runtimes.toml` (or its XDG equivalent):
 
 ```toml
 [profiles.ax-worker]
@@ -125,6 +111,64 @@ The `cpus` and `memory_mb` values are sent to AX. This experimental integration
 does not establish that upstream enforces per-Task limits. Configure Substrate
 worker capacity for your workload and use Horde's concurrency limits to control
 how much work it dispatches. `disk_gb` does not allocate an AX disk quota.
+
+## Create and verify a worker
+
+Run these commands on the controller, replacing `PROJECT` with your project slug:
+
+```sh
+horde --project PROJECT runtime create ax-1 --profile ax-worker --request-id create-ax-1
+horde --project PROJECT runtime inspect ax-1
+horde --project PROJECT runtime list
+horde --project PROJECT call runtime_capabilities '{}'
+```
+
+Wait for authenticated Horde readiness in the worker's capability record.
+An AX Task becoming ready only confirms that its runner is available; it does
+not confirm the Horde control connection. Check that the inventory reports the
+expected executors and `gvisor` isolation. A gVisor worker does not satisfy a
+project's `vm` requirement.
+
+## Run work
+
+Commit the source changes you want to send and keep the registered repository
+clean. Select the AX worker explicitly:
+
+```sh
+horde --project PROJECT submit --on ax-1 --repo /path/to/repo "Run the tests"
+horde --project PROJECT inspect TASK_ID
+```
+
+Use the returned task ID for inspection. After the task succeeds, retrieve its
+result in a separate local checkout for review:
+
+```sh
+horde --project PROJECT result TASK_ID
+```
+
+Result retrieval does not modify your original repository.
+Selected remote work stays queued while the worker is offline. A disconnect does
+not move it to local execution or replay uncertain work.
+
+To select from several AX workers, use the existing
+[execution selection interface](delegation.md#let-your-agent-arrange-the-work)
+with `requirements.isolation = "gvisor"` and an allowed pool containing those
+workers. Docker and Compose are advertised only when their probes succeed;
+requirements accept `docker = true` and `compose = true` for work that needs them.
+The runner never mounts a host Docker socket.
+
+## Stop and start a worker
+
+```sh
+horde --project PROJECT runtime stop ax-1 --request-id stop-ax-1
+horde --project PROJECT runtime start ax-1 --request-id start-ax-1
+horde --project PROJECT runtime inspect ax-1
+```
+
+Stop drains Horde work before suspending the AX Task. Start resumes its saved
+files and identity, then waits for authenticated Horde readiness. Suspension is
+intended for idle workers. Use a new request ID for each operation; reuse an ID
+only when retrying the same request with the same arguments.
 
 ## Optional nested Docker
 
@@ -222,53 +266,33 @@ configuration. Existing derived AX templates are retained and are not updated
 in place. Template preparation errors fail the AX Task rather than starting it
 with a fallback template.
 
-## Create and use workers
+## Recovery and upgrades
+
+`ax_revision` checks that the profile selects Horde's supported upstream base
+revision. AX has no version RPC, so verify the deployed control-plane images
+against your recorded digests. For a patched controller, record the patch checksum
+with its image digest; `ax_revision` remains the upstream base commit.
+
+Configure persistent Redis storage and append-only file (AOF) persistence before
+starting the AX controller. The upstream development Redis manifest has neither.
+Retain Substrate's PostgreSQL and object-store volumes too; workspace snapshots
+do not restore lost AX Task metadata.
+
+Lost replies and unavailable services leave operations waiting or uncertain.
+Inspect the AX Task and Horde operation before reconciling the resource name
+reported by `runtime inspect`:
 
 ```sh
-horde --project PROJECT runtime create ax-1 --profile ax-worker --request-id create-ax-1
-horde --project PROJECT runtime inspect ax-1
-horde --project PROJECT runtime list
-horde --project PROJECT call runtime_capabilities '{}'
-horde --project PROJECT submit --on ax-1 --repo /path/to/repo "Run the tests"
+horde --project PROJECT runtime reconcile ax-1 --resource AX_RESOURCE_NAME --request-id reconcile-ax-1
 ```
 
-An AX Task becoming ready only confirms that its runner is available. Horde waits
-for the worker's authenticated control connection before dispatching work.
-Capability inventory reports `gvisor` isolation. It does not satisfy a project's
-`vm` requirement. The submitted repository must be clean, with the source changes
-you want to send committed.
-
-For an AX-only fleet, select its workers through `--on`, or use the existing
-[execution selection interface](delegation.md#let-your-agent-arrange-the-work)
-with `requirements.isolation = "gvisor"` and an allowed pool containing your AX
-workers. Selected remote work remains queued while its worker is offline;
-disconnects do not move it to a local runtime or replay uncertain work.
-
-Docker and Compose are advertised only when their probes succeed. Installing the
-tools in the image does not supply a running Docker daemon, and the runner does
-not mount a host Docker socket. Tasks requiring Docker or Compose need a worker
-that reports those capabilities. Execution requirements accept `docker = true`
-and `compose = true` to select such workers.
-
-## Stop, resume, and recover
+An absent AX Task remains uncertain during reconciliation; it does not cause a
+replacement worker to be created. To permanently remove a worker and its data:
 
 ```sh
-horde --project PROJECT runtime stop ax-1 --request-id stop-ax-1
-horde --project PROJECT runtime start ax-1 --request-id start-ax-1
-horde --project PROJECT runtime inspect ax-1
-horde --project PROJECT runtime reconcile ax-1 --resource AX_RESOURCE_NAME --request-id reconcile-ax-1
 horde --project PROJECT runtime destroy ax-1 --request-id destroy-ax-1
 ```
 
-Use the resource name from inspection when reconciling. Repeat a request ID only
-with the same arguments. Stop drains Horde work before suspending the AX Task;
-start resumes the saved worker and waits for authenticated readiness. Suspension
-is intended for idle workers, not as a way to pause active model calls.
-
-Lost replies and unavailable services leave operations waiting or uncertain.
-Inspect the AX Task and Horde operation before reconciling the recorded resource.
-An absent AX Task remains uncertain during reconciliation; it does not cause a
-replacement worker to be created.
 Destroy waits for the actor to disappear before deleting its Gateway and
 Workspace. Destroy is permanent cleanup; use stop to retain a warm worker.
 
@@ -292,12 +316,38 @@ Tasks, Workspaces, and snapshots. Use this recovery when those addresses differ,
 and require authenticated Horde readiness before dispatching work. AX API health
 or a Task's ready status alone does not confirm that its worker is reachable.
 
+## How the runner connects
+
+```mermaid
+flowchart LR
+  Horde[Horde controller] -->|Lifecycle RPCs| AX[AX control plane]
+  AX -->|Create or resume| Runner[Horde runner in gVisor]
+  Horde -->|Private bootstrap POST| Router[Substrate router]
+  Router --> Runner
+  Runner -->|Outbound mTLS control| Horde
+  Runner --> State[Persistent workspace]
+```
+
+The runner prepares `/workspace/.horde` for Horde's database, configuration,
+caches, and home directory. It receives Horde's enrollment packet through a
+private HTTP POST after AX starts the Task. Credentials never appear in the AX
+Task specification. An identical bootstrap retry succeeds; a different packet
+for an existing workspace fails. Existing state and identity survive resume.
+AX workspace goals and debug execution are disabled; Horde prepares repositories
+and runs the workflows.
+
+The runner starts `tini`, then a Python supervisor, then Horde. The init process
+reaps orphaned descendants, and the supervisor restarts Horde after a nonzero
+exit while retaining its persistent workspace. Horde's recovery rules still
+govern interrupted attempts.
+
 ## Validation and current limits
 
 The pinned AX/gVisor deployment ran two projects concurrently and completed four
 workflows, with two repositories and distinct account credentials per project. Eight
 synthetic model calls overlapped across the projects; no live model providers
-were called. Stop/start preserved all four workflows' files and task records,
+were called. Live model-provider checks remain opt-in. Stop/start preserved all
+four workflows' files and task records,
 along with worker certificate identities. Submissions using `--on` while workers
 were offline stayed queued without local execution.
 
