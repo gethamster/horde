@@ -362,6 +362,9 @@ fn an_unreachable_webhook_is_recorded_and_the_task_still_finishes() {
 fn notify_settings_load_validate_and_default_sanely() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join(".horde.toml");
+    // An empty user layer keeps the developer's own config out of these results.
+    let user = tempfile::tempdir().unwrap();
+    let load = || Settings::load_with_user_dir(dir.path(), user.path());
     let defaults = Settings::default().notify;
     assert!(!defaults.enabled());
     assert_eq!(
@@ -375,7 +378,7 @@ fn notify_settings_load_validate_and_default_sanely() {
         "[notify]\nwebhook_env = \"HORDE_WEBHOOK_URL\"\nevents = [\"task.finished\", \"task.blocked\"]\nchildren = true\n",
     )
     .unwrap();
-    let loaded = Settings::load(dir.path()).unwrap().notify;
+    let loaded = load().unwrap().notify;
     assert!(loaded.enabled());
     assert_eq!(loaded.webhook_env.as_deref(), Some("HORDE_WEBHOOK_URL"));
     assert!(loaded.wants("task.blocked"));
@@ -383,7 +386,7 @@ fn notify_settings_load_validate_and_default_sanely() {
     assert!(loaded.children);
     // The starter file documents [notify] without changing any default.
     std::fs::write(&config, horde::config::STARTER).unwrap();
-    assert!(!Settings::load(dir.path()).unwrap().notify.enabled());
+    assert!(!load().unwrap().notify.enabled());
     for (body, expected) in [
         ("[notify]\nslack = \"x\"\n", "unknown field"),
         ("[notify]\nevents = [\"step.started\"]\n", "unknown hook"),
@@ -392,7 +395,7 @@ fn notify_settings_load_validate_and_default_sanely() {
         ("[notify]\nwebhook = \"\"\n", "webhook"),
     ] {
         std::fs::write(&config, body).unwrap();
-        let error = Settings::load(dir.path()).unwrap_err().to_string();
+        let error = load().unwrap_err().to_string();
         assert!(error.contains(expected), "{body}: {error}");
     }
 }

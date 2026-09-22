@@ -233,7 +233,8 @@ fn configured_resources_are_reviewed_and_pinned_with_an_accepted_override() {
     let accepted = policy::propose(&db, &args).unwrap();
     apply(&db, &repo, &accepted);
     std::fs::write(source.join("reference.txt"), "third reference").unwrap();
-    let settings = Settings::load(&repo).unwrap();
+    let user = tempfile::tempdir().unwrap();
+    let settings = Settings::load_with_user_dir(&repo, user.path()).unwrap();
     let pinned = skills::capture_effective(&db, &repo, &settings.skills).unwrap();
     assert_eq!(
         hex::decode(&pinned["custom"].files["reference.txt"].hex).unwrap(),
