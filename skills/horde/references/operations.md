@@ -28,7 +28,7 @@ for those calls.
 | `horde metrics ID` | `metrics` |
 | `horde cancel ID` | `cancel` |
 | `horde resume ID` | `resume` |
-| `horde answer ID QID ANSWER` | `answer_question` |
+| `horde answer ID QID ANSWER [--human]` | `answer_question`; `--human` sends `human: true` |
 | `horde config get/set concurrency N` | `runtime_config_get` / `runtime_config_set` |
 | `horde usage` | `account_status` |
 | `horde runtime status/drain/resume/list/inspect/create/...` | `runtime_*` |

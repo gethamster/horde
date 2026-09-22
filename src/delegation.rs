@@ -395,6 +395,8 @@ pub fn ask(db: &Store, oid: &str, args: &Value) -> Result<Value> {
   Ok(json!({"id":qid,"waiting":true,"instruction":"Finish this invocation with accepted=false. Only dependent work waits; the caller may answer or escalate."}))
  })
 }
+/// Refusal for a `human_only` answer sent without the external caller's `human` attestation.
+pub const HUMAN_ATTESTATION_REQUIRED: &str = "human-only question requires caller attestation";
 pub fn question_action(db: &Store, caller: &str, args: &Value, escalate: bool) -> Result<Value> {
     let qid = args["question"].as_str().context("question ID")?;
     let route=db.rows("SELECT r.*,q.answer FROM question_routes r JOIN questions q ON q.id=r.question WHERE r.question=?",&[&qid])?.into_iter().next().context("routed question missing")?;
@@ -451,7 +453,7 @@ pub fn question_action(db: &Store, caller: &str, args: &Value, escalate: bool) -
   }
   let answer=args["answer"].as_str().context("answer")?;
   if !route["answer"].is_null(){ensure!(route["answer"]==answer,"question already has a different answer");return Ok(json!({"answered":true,"duplicate":true}));}
-  if route["human_only"]==1 {ensure!(args["human"]==true && args["worker"].is_null(),"human-only question requires caller attestation");}
+  if route["human_only"]==1 {ensure!(args["human"]==true && args["worker"].is_null(),HUMAN_ATTESTATION_REQUIRED);}
   let author=args["worker"].as_str().unwrap_or("external caller");
   db.conn.execute("UPDATE questions SET answer=? WHERE id=?",params![answer,qid])?;
   db.conn.execute("UPDATE question_routes SET answerer=? WHERE question=?",params![author,qid])?;

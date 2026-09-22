@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `--human` to `horde answer` so an operator can answer a `human_only`
+  question after a person gives the answer. Without the flag, the refusal now
+  says to rerun with `--human`.
+
 ## 0.6.6 - 2026-09-22
 
 - Accept Jev score legends returned as indexed objects as well as arrays,

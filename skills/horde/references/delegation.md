@@ -88,8 +88,17 @@ authority. Root questions surface to the external CLI or MCP caller, which may
 answer within its own authority or fetch the user's answer from whatever chat
 surface it owns.
 
-`human_only` questions require `"human": true` from the external caller. That is
-an attestation by your trusted local integration, not authentication of a human.
+`human_only` questions require `"human": true` from the external caller, an
+attestation by your trusted local integration rather than authentication of a
+human. On the command line, `--human` sends that attestation. Put the question to
+a person, then pass their answer:
+
+```sh
+horde answer CALLER_ID QUESTION_ID "Leave email addresses out" --human
+```
+
+Never add `--human` to an answer you chose yourself. When `horde answer` refuses a
+`human_only` question and suggests `--human`, take that as the cue to ask a person.
 
 An unanswered question holds only its assigned worker's task; unrelated branches
 keep running. Native workers see pending questions at tool boundaries; CLI

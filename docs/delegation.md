@@ -157,8 +157,17 @@ no caller rewrites the question into a new question. The worker that created a
 child can decide its questions; another worker cannot take over that authority.
 Root questions surface to the external CLI/MCP caller. That caller may answer
 within its own authority or obtain the user's answer in Grokbot, Slack, or another
-UI. A `human_only` question requires `human: true` from the external caller. This
-is an attestation by the trusted local integration, not authentication of a human.
+UI. A `human_only` question requires `human: true` from the external caller, an
+attestation by the trusted local integration rather than authentication of a human.
+On the command line, `--human` sends that attestation, so add it only after a
+person has given the answer:
+
+```sh
+horde answer CALLER QUESTION_ID "Leave email addresses out" --human
+```
+
+Without `--human`, `horde answer` refuses a `human_only` question and says to rerun
+with the flag. Worker credentials cannot attest, even with `--human`.
 
 An unanswered question holds its assigned worker's step, allowing unrelated steps
 to continue. An idle caller worker is notified. Native workers receive questions
