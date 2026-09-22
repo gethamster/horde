@@ -1319,13 +1319,16 @@ pub fn apply_remote_answers(db: &Store, oid: &str, questions: &Value) -> Result<
     })
 }
 
+/// Serve one request that arrived on the outbound control stream, reading user
+/// settings from `config_dir`.
 pub fn handle_control(
     root: PathBuf,
+    config_dir: &Path,
     config: NetworkConfig,
     peer: &str,
     packet: &Value,
 ) -> Result<Value> {
-    let db = Store::open(&root)?;
+    let db = Store::open_with_config_dir(&root, config_dir)?;
     Service { root, config }.handle(
         &db,
         peer,

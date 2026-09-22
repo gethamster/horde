@@ -61,6 +61,7 @@ impl federation::wire::federation_server::Federation for Controller {
         let args: Value = serde_json::from_str(&request.json).unwrap();
         let response = federation::handle_control(
             self.root.clone(),
+            &self.root.join("config"),
             NetworkConfig::default(),
             "worker",
             &json!({"method":request.method,"args":args}),

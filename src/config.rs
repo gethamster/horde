@@ -736,12 +736,18 @@ impl Settings {
 
 /// Daemon-side credentials for boot services; this file is never sent to workers.
 pub fn credential(name: &str) -> Result<String> {
-    if !credential_file_overrides()?.contains(name)
+    credential_in(&crate::branding::config_dir(), name)
+}
+
+/// Look up a credential as `credential` does, but with `credentials.env` and
+/// its overrides read from a stated configuration directory.
+pub(crate) fn credential_in(directory: &Path, name: &str) -> Result<String> {
+    if !credential_file_overrides(directory)?.contains(name)
         && let Ok(value) = std::env::var(name)
     {
         return Ok(value);
     }
-    let path = Settings::credentials_path();
+    let path = directory.join("credentials.env");
     use std::os::unix::fs::PermissionsExt;
     let metadata = std::fs::metadata(&path)
         .with_context(|| format!("missing {name} in daemon environment or credentials.env"))?;
@@ -754,8 +760,8 @@ pub fn credential(name: &str) -> Result<String> {
         .with_context(|| format!("credential {name} is not configured"))
 }
 
-fn credential_file_overrides() -> Result<std::collections::BTreeSet<String>> {
-    let path = crate::branding::config_dir().join("credential-overrides.json");
+fn credential_file_overrides(directory: &Path) -> Result<std::collections::BTreeSet<String>> {
+    let path = directory.join("credential-overrides.json");
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).context("invalid credential override settings"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
@@ -768,9 +774,9 @@ fn credential_file_overrides() -> Result<std::collections::BTreeSet<String>> {
 /// retain the existing environment-first behavior. This file contains names only.
 pub(crate) fn activate_saved_credential(name: &str) -> Result<()> {
     use std::io::Write;
-    let mut names = credential_file_overrides()?;
-    names.insert(name.to_owned());
     let directory = crate::branding::config_dir();
+    let mut names = credential_file_overrides(&directory)?;
+    names.insert(name.to_owned());
     let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
     temporary.write_all(&serde_json::to_vec(&names)?)?;
     temporary.as_file().sync_all()?;

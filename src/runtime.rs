@@ -1008,7 +1008,14 @@ pub async fn daemon(root: &Path) -> Result<()> {
                     Ok(config.clone())
                 };
                 let result = match current {
-                    Ok(current) => crate::control::connect(root.clone(), current).await,
+                    Ok(current) => {
+                        crate::control::connect(
+                            root.clone(),
+                            crate::branding::config_dir(),
+                            current,
+                        )
+                        .await
+                    }
                     Err(error) => Err(error),
                 };
                 if let Err(e) = result {
