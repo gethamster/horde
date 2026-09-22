@@ -1,0 +1,7 @@
+{
+  "upstream_repository": "https://github.com/google/ax",
+  "upstream_commit": "d8ed0fe38bceb7842d3c47817d53d16ccdfcb601",
+  "patch_file": "base-template.patch",
+  "patch_sha256": "e4a120d80c9a9927e37d147528ec4cf95bbc9ae2c34cf1a3b0eda88903aad844",
+  "license": "Apache-2.0"
+}

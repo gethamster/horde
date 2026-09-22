@@ -20,12 +20,17 @@ flowchart LR
 
 ## Prepare AX and the runner image
 
-Use these upstream revisions without patches:
+Use these upstream base revisions:
 
 | Component | Revision |
 | --- | --- |
 | AX | `d8ed0fe38bceb7842d3c47817d53d16ccdfcb601` |
 | Agent Substrate | `672533541dbf`, as selected by AX's `go.mod` |
+
+The stock configuration supports ordinary Horde workers. Optional nested Docker
+uses the [AX base-template patch](../containers/ax/patches/README.md) and a
+separately configured gVisor sandbox, described below. Agent Substrate's source
+remains unchanged.
 
 Follow the pinned [Substrate development setup](https://github.com/agent-substrate/substrate/tree/672533541dbf#quickstart-development)
 to create a kind cluster and install its services. Then deploy the pinned
@@ -42,7 +47,9 @@ snapshots do not restore lost AX Task metadata.
 
 `ax_revision` checks that the profile selects Horde's supported revision. AX has
 no version RPC, so verify the deployed control-plane images against your recorded
-digests when installing or upgrading it.
+digests when installing or upgrading it. For a patched controller, record the
+patch checksum alongside its image digest; `ax_revision` remains the upstream
+base commit.
 
 Build the Horde runner from the repository root after placing a Linux AMD64
 Horde executable at `dist/amd64/horde`:
@@ -56,7 +63,7 @@ docker inspect --format '{{index .RepoDigests 0}}' REGISTRY/horde-ax:experimenta
 
 Replace `REGISTRY` with a registry your Substrate workers can reach. Use the
 resulting `image@sha256:...` reference in the Horde profile. The image includes
-Git, Docker/Compose tools, and pinned Codex and Claude CLIs. For tests with mocked
+Git, Docker/Compose and Buildx tools, and pinned Codex and Claude CLIs. For tests with mocked
 providers, build with `--build-arg INSTALL_HARNESSES=false` to omit those CLIs.
 
 The runner prepares `/workspace/.horde` for Horde's database, configuration,
@@ -118,6 +125,102 @@ The `cpus` and `memory_mb` values are sent to AX. This experimental integration
 does not establish that upstream enforces per-Task limits. Configure Substrate
 worker capacity for your workload and use Horde's concurrency limits to control
 how much work it dispatches. `disk_gb` does not allocate an AX disk quota.
+
+## Optional nested Docker
+
+Nested Docker needs a different guest configuration from the stock AX template.
+The [packaged AX patch](../containers/ax/patches/README.md) lets a custom runner
+inherit the selected base template's guest `SecurityContext` and gVisor
+`SandboxConfig`. It adds no capabilities by itself and leaves the stock setup
+available for workers that do not need Docker.
+
+Apply the patch to its recorded upstream revision, run its tests, and build and
+pin the resulting AX controller image. Create a separate base ActorTemplate and
+select it with the controller's `--template` and `--template-atespace` arguments.
+Configure that template's `guest` container with the capabilities required by
+[Docker inside gVisor](https://gvisor.dev/docs/tutorials/docker-in-gvisor/).
+These capabilities apply inside the sandbox. Use the following fields in the
+Substrate ActorTemplate JSON, preserving its other required settings:
+
+```json
+{
+  "containers": [{
+    "name": "guest",
+    "securityContext": {
+      "capabilities": {
+        "drop": ["ALL"],
+        "add": ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL",
+                "SETGID", "SETUID", "SETPCAP", "NET_BIND_SERVICE",
+                "NET_ADMIN", "NET_RAW", "SYS_CHROOT", "SYS_PTRACE",
+                "SYS_ADMIN", "MKNOD", "AUDIT_WRITE", "SETFCAP"]
+      }
+    }
+  }],
+  "sandboxConfig": {
+    "sandboxClass": "SANDBOX_CLASS_GVISOR",
+    "configName": "horde-docker"
+  }
+}
+```
+
+Create a separate Kubernetes `SandboxConfig` named `horde-docker`, with
+`spec.sandboxClass: gvisor`, a pinned pause image, and a checksummed gVisor asset.
+The upstream configuration has no runtime-argument field. Horde's
+[runsc wrapper](../containers/ax/runsc-wrapper/main.go) supplies
+`--net-raw=true --allow-packet-socket-write=true`, then executes the unchanged
+upstream binary named `runsc.real` beside it.
+
+To package the AMD64 asset, use a Linux build host with Go 1.26.1, GNU tar, and
+zstd. Download the pinned release from the upstream
+[gVisor SandboxConfig](https://github.com/agent-substrate/substrate/blob/672533541dbfcd29084e4de2475267088bda3651/manifests/ate-install/sandboxconfig-gvisor.yaml)
+and verify its SHA-256 before extraction. From the Horde repository root:
+
+```sh
+AX_GVISOR_ARCHIVE=/absolute/path/to/verified/gvisor.tar.zstd
+AX_GVISOR_STAGE="$(mktemp -d)"
+tar --zstd -xf "$AX_GVISOR_ARCHIVE" -C "$AX_GVISOR_STAGE"
+mv "$AX_GVISOR_STAGE/runsc" "$AX_GVISOR_STAGE/runsc.real"
+(
+  cd containers/ax/runsc-wrapper
+  go test ./...
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -buildvcs=false -trimpath -ldflags='-s -w -buildid=' \
+    -o "$AX_GVISOR_STAGE/runsc" .
+)
+tar -C "$AX_GVISOR_STAGE" -czf gvisor-horde-docker.tar.gz \
+  runsc runsc.real gvisor-bin containerd-shim-runsc-v1
+sha256sum gvisor-horde-docker.tar.gz
+```
+
+Keep `runsc.real`, `gvisor-bin`, and `containerd-shim-runsc-v1` byte-identical to the
+upstream release. Publish the resulting archive where Substrate can fetch it, then set
+`spec.assets.amd64.gvisor.url` and `sha256` to that archive's location and hash.
+Record both the upstream archive hash and your new bundle hash. Substrate and
+gVisor require no source patches.
+
+Build the runner with `--build-arg ENABLE_DOCKER=true` in the earlier Docker build
+command. The default is `false`; enabling it sets `HORDE_AX_DOCKER=true` in the
+image. Push and pin this new image digest in its Horde profile.
+
+After enrollment bootstrap arrives, the runner prepares guest cgroups and
+networking, then starts Docker asynchronously. It uses `vfs`, the `cgroupfs`
+driver, and `containerd-snapshotter=false`. Docker's firewall handling is disabled;
+the runner configures TCP/UDP source NAT with `iptables-legacy` inside the guest
+and matches the parent interface's MTU. Ordinary Docker and Compose commands use
+the guest-owned `/var/run/docker.sock`; no host Docker socket is mounted.
+
+Docker stores images, caches, and volumes in `/workspace/.horde/docker/data`.
+Its transient execution state lives in `/run/horde-docker`, and diagnostics are
+written to `/workspace/.horde/docker/dockerd.log`. Preparation is bounded. If it
+fails or the daemon later exits, Horde remains reachable for inspection, draining,
+and work that does not require Docker. Capability probes report the actual daemon
+state. Docker is not restarted automatically; explicitly stop and start the
+runtime to retry preparation without replaying uncertain workflow attempts.
+
+Create a new Horde runtime after changing the base template or its sandbox
+configuration. Existing derived AX templates are retained and are not updated
+in place. Template preparation errors fail the AX Task rather than starting it
+with a fallback template.
 
 ## Create and use workers
 
@@ -205,24 +308,25 @@ worker's create request twice retained one operation per worker.
 An explicit Horde runtime restart also completed through the supervisor and
 restored authenticated readiness.
 
-In the tested runner, Docker 29.1.3 could not start a nested daemon, including
-with `--feature containerd-snapshotter=false`, the `vfs` storage driver, and
-Docker bridge networking and firewall rules disabled. Bounded Docker build and
-Compose 2.40.3 startup attempts both failed to connect to a daemon, so the worker
-reports `docker = false` and `compose = false`.
+The Docker-enabled runner completed the same four-workflow, two-project scenario
+with eight overlapping synthetic model calls. In both projects, ordinary Docker
+builds executed `RUN` instructions and reached an HTTP service over bridge
+networking. `docker compose up --build` also executed BuildKit `RUN` instructions;
+two services communicated through Compose DNS. Project-specific image markers
+and different digests remained separate, and each project's Docker daemon could
+not find the other project's test image.
 
-The runner ran as root with only `AUDIT_WRITE`, `KILL`, and `NET_BIND_SERVICE`
-capabilities and no mounted cgroup filesystem. Mount, network, and PID namespace
-creation failed with `EPERM`; a tmpfs mount was also denied. A rootless
-user-namespace attempt failed when writing `uid_map`.
+Terminating the managed Docker daemon left Horde authenticated and reachable.
+After the capability cache refreshed, Docker and Compose both reported
+unavailable, and a later check confirmed that the daemon had not restarted.
+Explicit runtime stop/start restored Docker and Compose on both workers. Each
+worker retained its original image digest and project marker; neither worker
+could access the other project's cached image.
 
-[gVisor supports nested Docker](https://gvisor.dev/docs/tutorials/docker-in-gvisor/)
-with additional capabilities inside the sandbox. Docker 29 also requires
-`runsc --net-raw --allow-packet-socket-write` and a compatible storage setup.
-The pinned [AX actor template](https://github.com/google/ax/blob/d8ed0fe38bceb7842d3c47817d53d16ccdfcb601/internal/substrate/client.go#L213)
-omits a security context, so it receives
-[Substrate's minimal capabilities](https://github.com/agent-substrate/substrate/blob/672533541dbfcd29084e4de2475267088bda3651/cmd/atelet/oci.go#L45).
-The pinned [Substrate backend](https://github.com/agent-substrate/substrate/blob/672533541dbfcd29084e4de2475267088bda3651/cmd/ateom-gvisor/runsc.go#L74)
-exposes no `runsc` argument configuration. Changing Docker daemon options alone
-cannot supply these missing prerequisites; this limitation
-applies to the tested stock AX/Substrate path, not to gVisor generally.
+With the stock AX template, nested Docker 29.1.3 startup and Docker/Compose
+commands failed, so workers correctly reported both capabilities unavailable.
+The unpatched [AX actor template](https://github.com/google/ax/blob/d8ed0fe38bceb7842d3c47817d53d16ccdfcb601/internal/substrate/client.go#L213)
+receives [Substrate's minimal guest capabilities](https://github.com/agent-substrate/substrate/blob/672533541dbfcd29084e4de2475267088bda3651/cmd/atelet/oci.go#L45).
+The optional configuration above supplies the guest capabilities and runtime
+flags required for [Docker inside gVisor](https://gvisor.dev/docs/tutorials/docker-in-gvisor/).
+Published container ports (`-p`) have not been validated.

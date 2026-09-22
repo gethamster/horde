@@ -87,6 +87,48 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.accept(), 200)
         self.assertEqual(self.spawn.call_count, 2)
 
+    def test_docker_bootstrap_is_fast_and_waits_for_readiness(self):
+        docker = Mock(state="starting")
+        self.worker.docker = docker
+        self.assertEqual(self.accept(), 202)
+        self.assertEqual(self.accept(), 200)
+        self.spawn.assert_not_called()
+        self.assertEqual(docker.start.call_count, 1)
+        docker.state = "ready"
+        self.worker.observe_exit()
+        self.spawn.assert_called_once()
+
+    def test_docker_loss_keeps_horde_control_reachable_without_restart(self):
+        docker = Mock(state="ready")
+        self.worker.docker = docker
+        self.accept()
+        docker.state = "failed"
+        with patch.object(self.worker, "terminate_group") as terminate:
+            self.worker.observe_exit()
+        self.assertFalse(self.worker.stopping)
+        terminate.assert_not_called()
+        docker.stop.assert_not_called()
+        self.assertEqual(self.spawn.call_count, 1)
+
+    def test_failed_docker_start_enrolls_horde_without_replaying_start(self):
+        docker = Mock(state="starting")
+        self.worker.docker = docker
+        self.accept()
+        self.spawn.assert_not_called()
+        docker.state = "failed"
+        self.worker.observe_exit()
+        self.worker.observe_exit()
+        self.spawn.assert_called_once()
+        docker.start.assert_called_once()
+
+    def test_stopping_cancels_docker_before_horde_was_started(self):
+        docker = Mock(state="starting")
+        self.worker.docker = docker
+        self.accept()
+        self.worker.stop()
+        docker.stop.assert_called_once()
+        self.spawn.assert_not_called()
+
     def test_child_exit_does_not_replay_on_bootstrap_retry(self):
         self.accept()
         self.worker.child.poll.return_value = 42

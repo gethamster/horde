@@ -45,6 +45,12 @@ class Worker:
         self.stopping = False
         self.reported_exit = False
         self.restart_at = None
+        self.docker = None
+        self.pending = None
+        self.pending_retry = 0
+        if environ.get("HORDE_AX_DOCKER") in ("1", "true"):
+            from ax_docker import DockerService
+            self.docker = DockerService(self.workspace)
 
     def validate(self, raw):
         if len(raw) > MAX_PACKET:
@@ -81,8 +87,15 @@ class Worker:
     def launch(self, raw):
         if self.child is not None:
             return
+        if self.docker is not None and self.docker.state not in ("ready", "failed"):
+            if self.docker.state == "stopped":
+                raise OSError("Managed Docker is unavailable")
+            if self.pending is None:
+                self.pending = raw
+                self.docker.start()
+            return
         locations = {"HOME": "home", "XDG_CONFIG_HOME": "config", "XDG_CACHE_HOME": "cache"}
-        env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
+        env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8",
                "HORDE_SUPERVISED": "1", "HORDE_ISOLATION": "ax-gvisor",
                "HORDE_BOOTSTRAP_JSON": raw.decode("utf-8"),
                "AX_METADATA_URL": "http://127.0.0.1:80"}
@@ -95,6 +108,7 @@ class Worker:
             cwd=str(self.workspace), env=env, stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
+        self.pending = None
 
     def accept(self, raw):
         value = self.validate(raw)
@@ -117,7 +131,15 @@ class Worker:
             self.accept(self.bootstrap.read_bytes())
 
     def observe_exit(self):
+        if self.docker is not None:
+            self.docker.check()
         with self.lock:
+            if not self.stopping and self.pending is not None and time.monotonic() >= self.pending_retry:
+                try:
+                    self.launch(self.pending)
+                except OSError:
+                    self.pending_retry = time.monotonic() + 2
+                    print("Horde launch failed after Docker startup; retrying after backoff", flush=True)
             if self.stopping or self.child is None:
                 return
             code = self.child.poll()
@@ -150,9 +172,11 @@ class Worker:
         with self.lock:
             self.stopping = True
             child = self.child
-        if child is None:
-            return
-        self.terminate_group(child, grace)
+            self.pending = None
+        if child is not None:
+            self.terminate_group(child, grace)
+        if self.docker is not None:
+            self.docker.stop()
 
     @staticmethod
     def terminate_group(child, grace):

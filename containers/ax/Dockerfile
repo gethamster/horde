@@ -3,7 +3,10 @@ FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffb
 LABEL org.opencontainers.image.description="Experimental Horde runner for Google AX"
 LABEL io.horde.ax.revision="d8ed0fe38bceb7842d3c47817d53d16ccdfcb601"
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git openssh-client procps python3 ripgrep tini curl nodejs npm docker.io docker-compose-v2 \
+    ca-certificates git openssh-client procps python3 ripgrep tini curl nodejs npm \
+    docker.io docker-compose-v2 docker-buildx busybox-static iproute2 iptables \
+    && update-alternatives --set iptables /usr/sbin/iptables-legacy \
+    && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy \
     && rm -rf /var/lib/apt/lists/*
 ARG INSTALL_HARNESSES=true
 ARG CODEX_VERSION=0.153.4
@@ -15,6 +18,7 @@ ARG TARGETARCH
 COPY dist/${TARGETARCH}/horde /usr/local/bin/horde
 COPY skills /usr/local/bin/skills
 COPY scripts/ax_runner.py /usr/local/libexec/horde-ax-runner.py
+COPY scripts/ax_docker.py /usr/local/libexec/ax_docker.py
 COPY containers/ax/ax-task-runner /usr/local/bin/ax-task-runner
 RUN chmod 0755 /usr/local/bin/ax-task-runner /usr/local/libexec/horde-ax-runner.py
 ENV HOME=/workspace/.horde/home
@@ -22,6 +26,8 @@ ENV XDG_CONFIG_HOME=/workspace/.horde/config
 ENV XDG_CACHE_HOME=/workspace/.horde/cache
 ENV HORDE_SUPERVISED=1
 ENV HORDE_ISOLATION=ax-gvisor
+ARG ENABLE_DOCKER=false
+ENV HORDE_AX_DOCKER=${ENABLE_DOCKER}
 EXPOSE 80
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/ax-task-runner"]
