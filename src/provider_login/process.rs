@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-pub(super) fn lock(kind: &str) -> Result<std::fs::File> {
+pub(crate) fn lock(kind: &str) -> Result<std::fs::File> {
     use fs2::FileExt;
     // The CLI commands use HOME, even when daemons have different XDG config roots.
     let directory =
@@ -52,14 +52,14 @@ struct Receipt {
     identity: String,
 }
 
-pub(super) struct Guard {
+pub(crate) struct Guard {
     pid: u32,
     path: PathBuf,
     stopped: AtomicBool,
 }
 
 impl Guard {
-    pub(super) fn record(root: &Path, id: &str, pid: u32) -> Result<Self> {
+    pub(crate) fn record(root: &Path, id: &str, pid: u32) -> Result<Self> {
         let directory = root.join("provider-logins");
         let guard = Self {
             pid,
@@ -83,7 +83,7 @@ impl Guard {
         }
         Ok(guard)
     }
-    pub(super) fn stop(&self) {
+    pub(crate) fn stop(&self) {
         if !self.stopped.swap(true, Ordering::AcqRel) {
             unsafe {
                 libc::kill(-(self.pid as i32), libc::SIGKILL);

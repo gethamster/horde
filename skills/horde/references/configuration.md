@@ -232,6 +232,59 @@ account OAuth tokens do not grant inference access. Successful verification
 leaves quota unknown. The preset reuses the matching configured provider and
 preserves its model and role settings.
 
+For a new funded account, `provider_signup` automates Tuara signup and captures
+its new inference key privately. It requires an unbound default-project
+administrative connection and explicit authorization for the credit amount,
+total-charge ceiling including fees, and terms version. Before signup, the agent
+uses `provider_wallet`: `inspect`, then `install` and `status` when Link is
+missing, then `login_start` and `status` to supervise device login. It relays
+the Link verification URL and phrase, and uses `details` to confirm safe readiness.
+`details` returns no payment details. It returns the fixed Link wallet URL for
+the user to add a payment method or finish verification at
+[app.link.com/wallet](https://app.link.com/wallet). PANs and CVCs are never MCP
+inputs or outputs. When the private installation succeeds, Horde uses its pinned
+Link CLI under its configuration directory. Node.js and npm must already be
+available on the host. An existing
+Link account used with Grok Bot can be reused, but Horde does not register or
+configure Link MCP support in Grok Bot.
+
+```sh
+horde config provider signup tuara
+```
+
+The command accepts dollar amounts with at most two decimal places; Link limits
+the total charge to $500 including fees. Existing credentials block signup unless
+`replace_existing: true` is explicitly authorized. Model and role settings stay intact. Start obtains a
+quote without paying. The guided command asks for dollar amounts and terms
+acceptance. It prints a reference when Link approval is needed; continue with
+`horde config provider signup tuara --request-id REFERENCE`. Scripts can use the
+corresponding named flags. Internally, `resume` with the same request ID creates
+or checks approval for the individual payment, submits one paid signup after approval, and later
+verifies and installs its privately saved key. `status` inspects saved progress
+without provider calls, and `cancel` is available before paid submission.
+
+Receipts in the configuration directory's private `provider-signups/` survive
+daemon restart. At `credential_received`, resume to finish key installation
+without another payment. At `uncertain`, reconcile with Tuara and the wallet;
+never start another payment to recover a lost response. Only `succeeded` proves
+the key was verified and saved, and quota remains unknown. Signup does not enable
+automatic top-ups.
+
+Configure a separate recurring policy with:
+
+```sh
+horde config provider topup tuara
+```
+
+The walkthrough asks for a balance threshold, credit per charge, fee-inclusive
+per-charge maximum, fee-inclusive UTC calendar-month limit, terms version, and
+explicit recurring authorization. Use `--status`, `--check`, or `--disable` to
+inspect, advance, or stop the policy. Link may require approval for each charge.
+The policy is shared by aliases for one Tuara origin and verified organization
+within one configuration directory. Pending or uncertain charges hold later
+payments. See [the signup and top-up guide](../../../docs/configuration.md#create-a-funded-tuara-account)
+and [operation arguments](operations.md#provider-account-setup).
+
 For subscription sign-in, call `provider_login` with `action: "start"`, the
 `provider`, and a stable `request_id`. Poll `status` with the returned `session_id`
 and relay the CLI's login URL and any device code to the user. Submit a manual

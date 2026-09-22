@@ -186,6 +186,9 @@ fn inspect(root: &Path, request: &Request) -> Result<Value> {
         if provider["credential"] == "missing" {
             blockers.push(json!({"code":"provider_credential_missing","provider":provider["provider"],"credential_env":provider["api_key_env"]}));
             next.push(tool(json!({"action":"configure_provider","provider":provider["provider"],"credential_env":provider["api_key_env"]})));
+            if provider["kind"] == "tuara" {
+                next.push(json!({"kind":"tool","tool":"provider_wallet","arguments":{"action":"inspect"},"reason":"For a new Tuara account, set up the Link wallet through MCP, collect signup choices conversationally, then use provider_signup. Existing accounts can use provider_login."}));
+            }
         }
         if let Some(kind @ ("codex" | "claude")) = provider["kind"].as_str() {
             let program = settings

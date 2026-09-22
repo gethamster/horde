@@ -105,7 +105,26 @@ worker = "claude"`}</code></pre>
     <h2>Credentials</h2>
     <p>For API-backed executors, configure <code>kind</code>, <code>auth_mode = "api"</code>, <code>base_url</code>, and <code>api_key_env</code> on the provider. Each role selects it with <code>provider = "name"</code>. Set the named key in the daemon environment before starting it. Boot services also read a private <code>credentials.env</code> beside <code>config.toml</code>; set that file’s permissions to <code>0600</code>.</p>
     <p>Keep credentials out of repository settings. Pairing a remote does not copy your subscription login or provider keys.</p>
-    <p>Tuara supports agent signup through Stripe’s Machine Payments Protocol (MPP), as described in its <a href="https://tuara.com/docs/agents/signup/index.md">agent signup guide</a>. Horde does not yet automate paid signup or top-ups. Obtain an inference key through Tuara or an external MPP client, then import it with <code>horde config provider add tuara</code>. Horde’s Tuara login flow guides you through obtaining a key and verifies and saves the key you supply.</p>
+    <p>For an existing Tuara account, import its inference key with <code>horde config provider add tuara</code>, or ask your connected agent to use <code>provider_login</code>. That flow guides you to Tuara’s key page, verifies the key you supply, and saves it.</p>
+    <h3 id="tuara-signup">Create a funded Tuara account</h3>
+    <p>Horde can create a Tuara organization, fund it through Stripe’s Link wallet, and save its new inference key privately. Signup uses Tuara’s <a href="https://tuara.com/docs/agents/signup/index.md">Machine Payments Protocol endpoint</a>. You do not need to copy the new key or write operation JSON.</p>
+    <p>Your connected agent first inspects the private Link wallet connection. If Link is missing, Horde uses the host’s Node.js and npm to install a pinned Link CLI under its configuration directory. If either prerequisite is missing, the agent receives a clear setup action. After installation succeeds, it starts device login and relays Link’s verification URL and phrase. The agent checks the session until it finishes and reads safe wallet readiness before starting signup.</p>
+    <p>Link keeps payment methods in its <a href="https://app.link.com/wallet">hosted wallet</a>. When Horde reports a missing payment method or verification requirement, open that wallet and complete the action there. Link’s agent wallet currently supports US accounts. Horde’s MCP tools never receive card numbers or security codes. You can reuse a Link account connected to Grok Bot, but Horde does not register or configure Link MCP support in Grok Bot.</p>
+    <p>Signup is available to an unbound default-project administrative connection; worker tokens and project-scoped connections cannot use it.</p>
+    <p>Run the guided command to authorize the initial credit, maximum total charge including fees, and a specific <a href="https://tuara.com/terms/">Tuara terms version</a>:</p>
+    <pre><code>{`horde config provider signup tuara`}</code></pre>
+    <p>The walkthrough proposes $20 credit with a $20.48 total-charge ceiling. The minimum credit is $5, and Link limits the total charge to $500 including fees. An existing provider key requires <code>--replace-existing</code>. Horde preserves the provider’s model and role assignments.</p>
+    <p>When wallet setup or approval needs more time, continue with <code>horde config provider signup tuara --request-id REFERENCE</code>. Link may require approval for the individual payment in its app. Only successful completion means the verified key is ready for the next invocation; model capacity remains unknown.</p>
+    <p>Reuse the same request ID after a lost reply or daemon restart. Private receipts in <code>provider-signups/</code> beside your configuration preserve progress and the signup response. If payment’s outcome is <code>uncertain</code>, Horde puts later payment work on hold until you reconcile it with Tuara and your wallet; it will not charge again or create another account. Before paid submission, use <code>cancel</code> with the same request ID to stop signup. Cancellation cannot reverse a submitted payment.</p>
+    <h3 id="tuara-topups">Automatic Tuara top-ups</h3>
+    <p>Signup does not enable recurring charges. Configure a separate policy with an explicit threshold, credit amount, maximum total per charge including fees, UTC calendar-month limit including fees, terms version, and recurring authorization:</p>
+    <pre><code>{`horde config provider topup tuara`}</code></pre>
+    <p>Horde checks the balance every 60 seconds and waits five minutes after a successful charge. Link may require approval for each payment. Inspect, advance, or disable the policy with:</p>
+    <pre><code>{`horde config provider topup tuara --status
+horde config provider topup tuara --check
+horde config provider topup tuara --disable`}</code></pre>
+    <p>The monthly budget includes fees and is shared by provider aliases for the same Tuara origin and organization within one Horde configuration directory. It does not include spending on other machines or outside this policy. An uncertain payment holds future charges until you reconcile it with Tuara and Link. Disabling stops unpaid work but cannot reverse a submitted payment.</p>
+    <p>Signup and top-ups have been tested with mock services and wallet processes. A paid live funding flow has not been validated.</p>
     <h2>Run at startup</h2>
     <pre><code>{`horde service install
 horde service status

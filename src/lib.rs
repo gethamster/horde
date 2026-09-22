@@ -15,6 +15,8 @@ pub mod network;
 pub mod notify;
 pub mod protocol;
 pub mod provider_login;
+pub mod provider_signup;
+pub mod provider_wallet;
 pub mod provisioning;
 pub mod runtime;
 pub mod store;

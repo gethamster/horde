@@ -890,6 +890,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
     lock.try_lock_exclusive()
         .context("another daemon is already running")?;
     crate::provider_login::recover(root)?;
+    crate::provider_wallet::recover(root)?;
     crate::enrollment::bootstrap(root)?;
     crate::fleet_enrollment::worker::bootstrap(root).await?;
     crate::projects::local_runtime(&db)?;
@@ -920,6 +921,15 @@ pub async fn daemon(root: &Path) -> Result<()> {
         limit: crate::management::limit(&db)?,
     };
     let remote_ready = std::rc::Rc::new(std::cell::Cell::new(false));
+    let funding_root = root.to_owned();
+    let funding = tokio::task::spawn_local(async move {
+        loop {
+            if let Err(error) = crate::provider_signup::topup::tick(&funding_root).await {
+                eprintln!("Provider funding maintenance: {error:#}");
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
     let maintenance_ready = remote_ready.clone();
     let maintenance_root = root.to_owned();
     let maintenance = tokio::task::spawn_local(async move {
@@ -1066,6 +1076,8 @@ pub async fn daemon(root: &Path) -> Result<()> {
     }
     skills_bootstrap.abort();
     let _ = skills_bootstrap.await;
+    funding.abort();
+    let _ = funding.await;
     if let Some(reverse) = reverse {
         reverse.abort();
         let _ = reverse.await;
@@ -1081,6 +1093,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
         let _ = network.await;
     }
     crate::provider_login::shutdown(root);
+    crate::provider_wallet::shutdown(root);
     maintenance.abort();
     let _ = maintenance.await;
     scheduler.decisions.shutdown(&db).await;

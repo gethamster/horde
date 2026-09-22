@@ -83,6 +83,25 @@ fn discovery_reports_missing_access_and_agent_execution_options_without_secret_v
 }
 
 #[test]
+fn missing_tuara_key_offers_mcp_wallet_onboarding() {
+    let f = Fixture::new();
+    let directory = f.dir.path().join("config/horde");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("config.toml"),
+        "[providers.default]\nkind='tuara'\nauth_mode='api'\nbase_url='https://tuara.com/router/v1'\napi_key_env='TUARA_API_KEY'\nmodel='auto'\n[executors.worker]\nprovider='default'\n").unwrap();
+    let report = f.run(json!({"action":"inspect"}), &[]);
+    assert!(
+        report["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["tool"] == "provider_wallet"
+                && action["arguments"]["action"] == "inspect"),
+        "{report}"
+    );
+}
+
+#[test]
 fn provider_setup_consumes_existing_secret_reference_and_preserves_unrelated_configuration() {
     let f = Fixture::new();
     let config_dir = f.dir.path().join("config/horde");

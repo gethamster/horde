@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-pub(super) fn origin(config: &ExecutorConfig) -> Result<reqwest::Url> {
+pub(crate) fn origin(config: &ExecutorConfig) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(&config.base_url).context("invalid Tuara endpoint")?;
     let loopback = url.host_str().is_some_and(|host| {
         host == "localhost"
@@ -85,7 +85,15 @@ async fn cancelled(receiver: &mut mpsc::Receiver<Control>) {
     }
 }
 
-async fn verify(url: reqwest::Url, key: &str) -> Result<()> {
+pub(crate) async fn verify(url: reqwest::Url, key: &str) -> Result<()> {
+    verify_identity(url, key, None).await
+}
+
+pub(crate) async fn verify_signup(url: reqwest::Url, key: &str, organization: &str) -> Result<()> {
+    verify_identity(url, key, Some(organization)).await
+}
+
+async fn verify_identity(url: reqwest::Url, key: &str, organization: Option<&str>) -> Result<()> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(15))
@@ -118,23 +126,36 @@ async fn verify(url: reqwest::Url, key: &str) -> Result<()> {
                 .is_some_and(|scopes| scopes.iter().any(|scope| scope == "router:invoke")),
         "Tuara key does not grant inference access"
     );
+    ensure!(
+        organization.is_none_or(|expected| body["data"]["organizationId"] == expected),
+        "Tuara key does not belong to the new signup organization"
+    );
     Ok(())
 }
 
 async fn save(session: &Session, key: String) -> Result<()> {
-    let current = configuration(&session.provider)?;
+    save_key(&session.root, &session.provider, &session.config, key).await
+}
+
+pub(crate) async fn save_key(
+    root: &std::path::Path,
+    requested_provider: &str,
+    config: &ExecutorConfig,
+    key: String,
+) -> Result<()> {
+    let current = configuration(requested_provider)?;
     ensure!(
-        current.kind == session.config.kind
-            && current.auth_mode == session.config.auth_mode
-            && current.base_url == session.config.base_url
-            && current.api_key_env == session.config.api_key_env,
+        current.kind == config.kind
+            && current.auth_mode == config.auth_mode
+            && current.base_url == config.base_url
+            && current.api_key_env == config.api_key_env,
         "provider configuration changed during login; start a new login"
     );
     let settings = Settings::load_user()?;
     // The 'tuara' preset normally resolves to 'default'. Preserve that provider's
     // model and role settings instead of applying preset defaults a second time.
-    let provider = if settings.providers.contains_key(&session.provider) {
-        session.provider.clone()
+    let provider = if settings.providers.contains_key(requested_provider) {
+        requested_provider.to_owned()
     } else {
         settings
             .providers
@@ -146,10 +167,10 @@ async fn save(session: &Session, key: String) -> Result<()> {
                     && provider.api_key_env == current.api_key_env
             })
             .map(|(name, _)| name.clone())
-            .unwrap_or_else(|| session.provider.clone())
+            .unwrap_or_else(|| requested_provider.to_owned())
     };
     let result = crate::agent_setup::run(
-        &session.root,
+        root,
         &json!({
             "action":"configure_provider", "provider":provider, "credential":key,
             "kind":"tuara", "auth_mode":"api", "base_url":current.base_url,

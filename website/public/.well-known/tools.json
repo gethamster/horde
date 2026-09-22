@@ -1,5 +1,5 @@
 {
-  "count": 99,
+  "count": 102,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -385,6 +385,170 @@
           },
           "timeout_seconds": {
             "default": 600,
+            "maximum": 1800,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Create a funded Tuara account using an authorized Stripe Link wallet, with durable payment recovery and private inference-key installation",
+      "name": "provider_signup",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "accept_terms": {
+            "description": "Explicit operator acceptance of the supplied Tuara terms_version; required for start.",
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "start",
+              "status",
+              "resume",
+              "cancel"
+            ],
+            "type": "string"
+          },
+          "agent_name": {
+            "type": "string"
+          },
+          "amount_cents": {
+            "maximum": 50000,
+            "minimum": 500,
+            "type": "integer"
+          },
+          "max_charge_cents": {
+            "description": "Maximum authorized USD card charge including fees. Link wallets support at most 50000 cents.",
+            "maximum": 50000,
+            "minimum": 500,
+            "type": "integer"
+          },
+          "organization_name": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "replace_existing": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "terms_version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Configure, inspect, disable, or check automatic Tuara top-ups within explicitly authorized per-charge and monthly limits",
+      "name": "provider_topup",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "accept_terms": {
+            "description": "Explicit operator acceptance of this terms version and recurring charge limits; required for configure.",
+            "type": "boolean"
+          },
+          "action": {
+            "enum": [
+              "configure",
+              "status",
+              "disable",
+              "check"
+            ],
+            "type": "string"
+          },
+          "amount_cents": {
+            "maximum": 50000,
+            "minimum": 500,
+            "type": "integer"
+          },
+          "max_charge_cents": {
+            "maximum": 50000,
+            "minimum": 500,
+            "type": "integer"
+          },
+          "monthly_limit_cents": {
+            "description": "Explicitly authorized UTC calendar-month total for this Horde policy, including funding fees. Disabling or reconfiguring preserves spending history.",
+            "maximum": 100000000,
+            "minimum": 500,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "terms_version": {
+            "type": "string"
+          },
+          "threshold_cents": {
+            "maximum": 50000,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Set up the Link wallet through MCP: inspect readiness, install Link, authenticate through a verification link, and guide payment-detail entry on Link before Tuara signup or funding",
+      "name": "provider_wallet",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "inspect",
+              "install",
+              "login_start",
+              "status",
+              "cancel",
+              "login_status",
+              "login_cancel",
+              "details"
+            ],
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "request_id": {
+            "description": "Stable caller ID for install or login_start; reuse after a lost reply.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Session returned by install or login_start, used for status or cancel.",
+            "type": "string"
+          },
+          "timeout_seconds": {
             "maximum": 1800,
             "minimum": 1,
             "type": "integer"

@@ -144,6 +144,61 @@ the key for a bounded, non-redirecting account introspection request. Horde save
 the key only after confirming API-key identity and `router:invoke` scope. The
 handoff uses no Tuara CLI, and its output never contains the key or HTTP body.
 
+Administrative `provider_wallet` supervises private Link installation and device
+login on an unbound default-project connection. `inspect` returns readiness and
+the next action. `install` and `login_start` accept a stable request ID and an
+optional bounded timeout, while `status` and `cancel` use a returned session ID;
+`login_status` and `login_cancel` remain aliases. On successful installation,
+Horde uses a pinned Link CLI below its configuration directory, installed with
+the host's Node.js and npm. Device login
+returns Link's verification URL and phrase. `details` returns safe readiness
+information and directs the user to [Link Wallet](https://app.link.com/wallet)
+when payment details or identity verification need attention. It never exposes
+PANs, CVCs, or full payment details through MCP. Installation and login have
+bounded, root-bound process recovery records.
+
+Administrative `provider_signup` creates a funded Tuara organization through
+MPP after `provider_wallet` reports a ready Stripe Link wallet. It is available
+only through an unbound default-project connection. The operator supplies an
+initial credit amount, a total-charge ceiling, and explicit acceptance of a
+specific terms version. Horde validates the quote before asking Link for a spend
+request, then waits for approval of that individual payment before submitting the
+paid request. Wallet processes receive a cleaned environment and have bounded private output and
+deadlines; process recovery receipts let the daemon stop interrupted process
+groups.
+
+Signup state is authoritative private filesystem state in `provider-signups/`
+beside the user configuration, within the same namespace as provider credentials.
+Atomic, fsynced receipts pin the request, provider target, and wallet spend ID
+across daemon restarts. No SQLite migration is involved. Horde persists
+`submitting` before the paid POST and saves its raw successful response privately
+before parsing or importing the key. That response permits verification and
+installation retries without another payment. A missing response after submission
+leaves the outcome `uncertain`; the daemon never replays that payment. The
+operator must reconcile it with Tuara and the wallet. Public operation results
+exclude payment tokens and API keys, and signup preserves model/role settings.
+See [funded Tuara signup](configuration.md#create-a-funded-tuara-account).
+
+Administrative `provider_topup` stores a separate recurring funding policy in
+`provider-topups/` beside the configuration. A daemon task checks the verified
+account balance every 60 seconds, obtains a fee-inclusive quote below the policy
+threshold, and advances one bounded payment phase at a time. Each approved
+charge has its own immutable receipt; the policy receipt holds the settings and
+monthly ledger. The ledger counts paid submissions, including fees, in the UTC
+calendar month. It survives a disable or reconfiguration and is shared by
+provider aliases for the same origin and verified organization within one Horde
+configuration directory. It does not aggregate spending on another machine or
+outside the policy.
+
+The policy requires an explicit per-charge ceiling, monthly limit, terms
+acceptance, and Link wallet authorization. Link may require approval for an
+individual charge, so automatic checking does not promise unattended payment.
+Horde records a pending or uncertain charge before allowing another payment.
+Disabling cancels unpaid work but cannot reverse a submitted payment. A saved
+response can be recorded after restart without repaying; an uncertain outcome
+holds future charges until the operator reconciles it with Tuara and Link. See
+[automatic Tuara top-ups](configuration.md#automatic-tuara-top-ups).
+
 Login success requires a successful CLI authentication-status check or Tuara
 key introspection. Effective
 API key changes and verified logins invalidate affected provider capacity
@@ -165,7 +220,7 @@ The native loop offers file reads, search, full-file writes, unified patches, co
 - `delivery.rs`: GitHub/Actions/health reconciliation.
 - `metrics.rs`: reported usage, costs, latency and coordination counts.
 - `decision/`: tool-free shadow routing and work-product review, provider-neutral SystemOne transport validation, and durable advisory evidence.
-- `agent_setup.rs` / `provider_login.rs`: administrative setup and supervised provider sign-in.
+- `agent_setup.rs` / `provider_login.rs` / `provider_wallet.rs` / `provider_signup.rs`: administrative setup, supervised provider sign-in and private Link wallet onboarding, plus durable Tuara signup and top-up policies with private payment recovery records.
 
 - `delegation.rs`: root limits, context sources, questions, caller receipts.
 - `secrets.rs` / `environment.rs`: app bundle inheritance, redaction, owned lifecycles.
