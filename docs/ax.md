@@ -205,8 +205,24 @@ worker's create request twice retained one operation per worker.
 An explicit Horde runtime restart also completed through the supervisor and
 restored authenticated readiness.
 
-In the tested runner, Docker 29.1.3 could not start a nested daemon. Bounded Docker
-build and Compose 2.40.3 startup attempts both failed to connect to a daemon, so
-the worker reports `docker = false` and `compose = false`. This result applies
-to the tested image and deployment; it does not establish a general gVisor
-limitation.
+In the tested runner, Docker 29.1.3 could not start a nested daemon, including
+with `--feature containerd-snapshotter=false`, the `vfs` storage driver, and
+Docker bridge networking and firewall rules disabled. Bounded Docker build and
+Compose 2.40.3 startup attempts both failed to connect to a daemon, so the worker
+reports `docker = false` and `compose = false`.
+
+The runner ran as root with only `AUDIT_WRITE`, `KILL`, and `NET_BIND_SERVICE`
+capabilities and no mounted cgroup filesystem. Mount, network, and PID namespace
+creation failed with `EPERM`; a tmpfs mount was also denied. A rootless
+user-namespace attempt failed when writing `uid_map`.
+
+[gVisor supports nested Docker](https://gvisor.dev/docs/tutorials/docker-in-gvisor/)
+with additional capabilities inside the sandbox. Docker 29 also requires
+`runsc --net-raw --allow-packet-socket-write` and a compatible storage setup.
+The pinned [AX actor template](https://github.com/google/ax/blob/d8ed0fe38bceb7842d3c47817d53d16ccdfcb601/internal/substrate/client.go#L213)
+omits a security context, so it receives
+[Substrate's minimal capabilities](https://github.com/agent-substrate/substrate/blob/672533541dbfcd29084e4de2475267088bda3651/cmd/atelet/oci.go#L45).
+The pinned [Substrate backend](https://github.com/agent-substrate/substrate/blob/672533541dbfcd29084e4de2475267088bda3651/cmd/ateom-gvisor/runsc.go#L74)
+exposes no `runsc` argument configuration. Changing Docker daemon options alone
+cannot supply these missing prerequisites; this limitation
+applies to the tested stock AX/Substrate path, not to gVisor generally.
