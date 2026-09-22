@@ -218,6 +218,11 @@ Answer within your authority or, if you are an intermediate caller, escalate the
 original envelope one level with `escalate_question`. Never rewrite a question
 into a different question.
 
+A question marked `human_only` in `pending_questions` needs a person's answer, and
+`horde answer` refuses it without `--human`. Ask the user, then send their answer
+with `--human`, which attests that a person gave it. Never add the flag to an
+answer you chose.
+
 To stop or restart work:
 
 ```sh

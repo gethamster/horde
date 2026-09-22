@@ -97,7 +97,8 @@ fn managed_rotation_fences_old_observations_without_resetting_account_quota() {
 #[test]
 fn legacy_login_rotation_does_not_change_managed_account_quota() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Store::open(dir.path()).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db = Store::open_with_config_dir(dir.path(), &dir.path().join("config")).unwrap();
     let account = managed(&db, "private");
     observe(&db, &account);
     // A pinned default-project task may explicitly select a managed account.

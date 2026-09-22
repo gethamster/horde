@@ -70,7 +70,9 @@ Choose IDs appropriate for the claim and retry; a changed claim cannot reuse an 
 If the task declares `knowledge_topics`, the topic must be in that vocabulary.
 Calls supply task/step attribution automatically. Workers cannot self-verify,
 impersonate another task or step, revise another task's claims, or use administrative
-operations. Question answering keeps the existing caller and human-only rules.
+operations. Question answering keeps the existing caller and human-only rules, so
+a command holding this token cannot attest a human answer, even with
+`horde answer --human`.
 The token rotates on retry and is redacted from captured stdout/stderr. It is not
 a provider API key. Other application environment values retain their existing
 bundle checks and redaction. Nested native commands and environment lifecycle

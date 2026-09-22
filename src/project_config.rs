@@ -7,7 +7,7 @@ impl Settings {
     pub fn load_project_user(db: &Store, project: &str) -> Result<Self> {
         let project = projects::resolve(db, project)?;
         if project == projects::DEFAULT_PROJECT {
-            return Self::load_user();
+            return Self::load_dir(&db.user_config_dir());
         }
         Self::load_dir(&projects::storage_root(db, &project)?)
     }
