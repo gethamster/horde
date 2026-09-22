@@ -86,8 +86,15 @@ horde answer TASK_ID QUESTION_ID "Use CSV and omit identifying fields"
 The question envelope is immutable. Repeating the same answer is harmless;
 a conflicting answer is rejected. A `human_only` question requires the external
 caller to assert `human: true`, which is an attestation by your trusted local
-integration, not proof of a human. Answering advances the family context version,
-which invalidates results pinned to an older version. See `delegation.md`.
+integration, not proof of a human. Put a `human_only` question to a person and
+send their answer with `--human`:
+
+```sh
+horde answer TASK_ID QUESTION_ID "Leave email addresses out" --human
+```
+
+Never add `--human` to your own answer. Answering advances the family context
+version, which invalidates results pinned to an older version. See `delegation.md`.
 
 ## Results
 

@@ -121,10 +121,17 @@ enum Commands {
     Resume {
         task: String,
     },
+    /// Answer a task's pending question.
     Answer {
         task: String,
         question: String,
         answer: String,
+        /// Attest that a person gave this answer, as human_only questions require.
+        ///
+        /// Use it only when a person supplied the answer. Horde accepts this attestation
+        /// from the local operator without verifying it; worker credentials cannot attest.
+        #[arg(long)]
+        human: bool,
     },
     /// Send an operator message to workers on a task; omit --worker to fan out.
     Steer {
@@ -974,11 +981,23 @@ async fn main() -> Result<()> {
             task,
             question,
             answer,
-        } => request(
-            &root,
-            "answer_question",
-            json!({"task":task,"question":question,"answer":answer}),
-        )?,
+            human,
+        } => {
+            let mut args = json!({"task":task,"question":question,"answer":answer});
+            // The attestation is sent only when the operator asks for it.
+            if human {
+                args["human"] = json!(true);
+            }
+            request(&root, "answer_question", args).map_err(|error| {
+                if !human && error.to_string() == horde::delegation::HUMAN_ATTESTATION_REQUIRED {
+                    error.context(format!(
+                        "question {question} is marked human_only; if a person gave this answer, rerun with --human"
+                    ))
+                } else {
+                    error
+                }
+            })?
+        }
         Commands::Steer {
             task,
             body,
