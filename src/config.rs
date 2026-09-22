@@ -517,6 +517,10 @@ impl Settings {
         Self::load_files(&[directory.join("config.toml")])
     }
     pub fn load(project: &Path) -> Result<Self> {
+        Self::load_with_user_dir(project, &crate::branding::config_dir())
+    }
+    /// Load as `load` does, but with user settings from a stated configuration directory.
+    pub fn load_with_user_dir(project: &Path, directory: &Path) -> Result<Self> {
         for file in [
             project.join(".horde.toml"),
             crate::branding::project_config(project),
@@ -536,7 +540,7 @@ impl Settings {
             }
         }
         Self::load_files(&[
-            Self::user_path(),
+            directory.join("config.toml"),
             project.join(".horde.toml"),
             crate::branding::project_config(project),
         ])

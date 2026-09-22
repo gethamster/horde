@@ -44,12 +44,8 @@ impl Daemon {
         self.root.parent().unwrap().join("config/horde/config.toml")
     }
     fn spawn(root: &Path) -> Child {
-        let config = root.parent().unwrap().join("config");
-        std::fs::create_dir_all(config.join("horde")).unwrap();
-        Command::new(BIN)
-            .env("XDG_CONFIG_HOME", config)
-            .arg("--data-dir")
-            .arg(root)
+        std::fs::create_dir_all(root.parent().unwrap().join("config/horde")).unwrap();
+        cli(root)
             .arg("daemon")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -133,13 +129,21 @@ impl Drop for Daemon {
         support::stop_daemon(&mut self.child, &self.root);
     }
 }
+/// Builds a `horde` command for `root` that shares the daemon's user config
+/// directory, so no test process reads the developer's own configuration.
+fn cli(root: &Path) -> Command {
+    let mut command = Command::new(BIN);
+    command
+        .env("XDG_CONFIG_HOME", root.parent().unwrap().join("config"))
+        .arg("--data-dir")
+        .arg(root);
+    command
+}
 mod support;
 #[test]
 fn execution_outlives_cli_and_mcp_clients_and_survives_restart() {
     let mut d = Daemon::new();
-    let output = Command::new(BIN)
-        .arg("--data-dir")
-        .arg(&d.root)
+    let output = cli(&d.root)
         .args([
             "submit",
             "finish disconnected",
@@ -161,9 +165,7 @@ fn execution_outlives_cli_and_mcp_clients_and_survives_restart() {
         .to_owned();
     let v = d.wait(&oid, "succeeded");
     assert_eq!(v["attempts"].as_array().unwrap().len(), 4);
-    let mut mcp = Command::new(BIN)
-        .arg("--data-dir")
-        .arg(&d.root)
+    let mut mcp = cli(&d.root)
         .arg("mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -186,9 +188,7 @@ fn messaging_across_independent_cli_processes_recovers_after_restart() {
     let b = d.call("register_worker", json!({"task":oid}));
     let mid = horde::store::id();
     let args = json!({"task":oid,"worker":a["id"],"id":mid,"destination":b["id"],"body":"new interface","actionable":true});
-    let status = Command::new(BIN)
-        .arg("--data-dir")
-        .arg(&d.root)
+    let status = cli(&d.root)
         .args(["call", "send_message", &args.to_string()])
         .stdout(Stdio::null())
         .status()
@@ -377,9 +377,7 @@ fn solo_worker_task_broadcast_reaches_itself_over_daemon() {
     let solo = v["workers"][0]["id"].clone();
     let mid = horde::store::id();
     let args = json!({"task":oid,"worker":solo,"id":mid,"destination":"task","body":"note to self","actionable":false});
-    let output = Command::new(BIN)
-        .arg("--data-dir")
-        .arg(&d.root)
+    let output = cli(&d.root)
         .args(["call", "send_message", &args.to_string()])
         .output()
         .unwrap();
@@ -406,9 +404,7 @@ fn operator_steer_wakes_solo_worker_from_cli() {
     let solo = v["workers"][0]["id"].clone();
     let operator = horde::store::operator_id(&oid);
     let steer = |args: &[&str]| {
-        let output = Command::new(BIN)
-            .arg("--data-dir")
-            .arg(&d.root)
+        let output = cli(&d.root)
             .args(["steer", &oid])
             .args(args)
             .output()
@@ -1028,9 +1024,7 @@ fn worker_mcp_lists_pinned_knowledge_topics() {
     )
     .unwrap();
     let worker = d.call("register_worker", json!({"task":task}));
-    let mut process = Command::new(BIN)
-        .arg("--data-dir")
-        .arg(&d.root)
+    let mut process = cli(&d.root)
         .arg("mcp")
         .env("HORDE_WORKER_TOKEN", worker["token"].as_str().unwrap())
         .stdin(Stdio::piped())
