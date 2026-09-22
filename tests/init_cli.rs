@@ -120,6 +120,7 @@ impl Drop for RunningDaemon<'_> {
             .arg("--data-dir")
             .arg(self.0.path().join("data"))
             .arg("stop")
+            .env("XDG_CONFIG_HOME", self.0.path().join("config"))
             .env_remove("HORDE_WORKER_TOKEN")
             .output();
     }
