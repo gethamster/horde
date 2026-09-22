@@ -6,26 +6,33 @@ Installing runs `horde config init`, which writes a starter `config.toml` and a 
 
 ## Decision models and advisory routing
 
-Horde can record decision-model routing advice without changing which executor runs a step. The feature is disabled by default and can be enabled only in the operator's user configuration. A repository `.horde.toml` cannot enable or alter it. Fresh decision settings name Tuara as the default provider and Jev as the launch model, but contain no Tuara decision endpoint or credential source. Enabling that default fails until the operator configures a verified compatible endpoint. This example explicitly selects the documented TypeSafe service for development:
+Horde can record decision-model routing advice without changing which executor runs a step. The feature is disabled by default and can be enabled only in operator-owned configuration. A repository `.horde.toml` cannot enable or alter it. Fresh decision settings name Tuara as the provider but leave the endpoint and credential source empty. This example uses the Tuara Jev catalog ID validated by the [live smoke test](decision-routing-v1-report.md):
 
 ```toml
 [decision]
 mode = "shadow"
-backend = "typesafe"
-base_url = "https://api.typesafe.ai"
-api_key_env = "TYPESAFE_API_KEY"
-model = "jev-1.13.0"
+backend = "tuara"
+base_url = "https://tuara.com/router"
+api_key_env = "TUARA_API_KEY"
+model = "XXXXTSJV130XXX"
 protocol = "systemone-v1"
 policy = "routing-v1"
-deadline_ms = 5000
+deadline_ms = 30000
 max_attempts = 2
 max_decisions_per_task = 64
 
 [[decision.capability_guidance]]
 runtime = "local"
-capability = "codex"
-description = "Use for repository changes that need the Codex coding harness."
+capability = "worker"
+description = "Use the configured worker for repository changes and their verification."
 ```
+
+Horde appends `/v1/systemone` to this decision base URL. Generative providers use
+their separate `/router/v1` base URL. To use TypeSafe directly, set
+`backend = "typesafe"`, `base_url = "https://api.typesafe.ai"`,
+`api_key_env = "TYPESAFE_API_KEY"`, and `model = "jev-1.13.0"`.
+Add `review_enabled = true` inside `[decision]` for advisory work-product reviews.
+The guidance capability must match the actual role or execution-policy binding.
 
 Put the key named by `api_key_env` in the private `credentials.env` file or the daemon environment. Horde snapshots only the variable name. Before every request, the daemon confirms that the current user configuration still authorizes the task's pinned provider, endpoint, protocol, model, policy, and limits. A custom decision endpoint requires an explicit `backend` and `api_key_env`; Horde never sends the TypeSafe key to one implicitly. Legacy mode-only enabled settings retain the TypeSafe defaults.
 
@@ -103,6 +110,12 @@ cancellation, or expiry leaves the existing key intact. Success reports
 `provider_authentication: "verified"` and `credential_activation: "next_invocation"`;
 it does not prove available quota. This requires no Tuara CLI or inference request.
 Tuara's account OAuth grants do not include inference access.
+
+Tuara also documents [agent signup through the Machine Payments Protocol](https://tuara.com/docs/agents/signup/index.md).
+An external MPP client with an authorized payment credential can create a funded
+organization and receive an inference key. Horde does not currently create that
+account, authorize payment, or perform automatic top-ups. Import the resulting
+key through the same provider setup flow after completing signup.
 
 You can also name an existing Tuara provider. The `tuara` preset reuses a matching
 configured provider, usually `default`, and preserves its model and role settings.

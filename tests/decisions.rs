@@ -119,7 +119,7 @@ fn generic_request_accepts_a_pinned_nonlaunch_model_and_rejects_a_stale_reply() 
 #[tokio::test]
 async fn explicit_tuara_compatible_mock_supports_operator_opted_in_actions() {
     let _lock = CONFIG_LOCK.lock().await;
-    let (base_url, mut bodies) = server(vec![("200 OK", response_json(), 0)]).await;
+    let (base_url, mut bodies) = server(vec![("200 OK", indexed_legend_response_json(), 0)]).await;
     let key = format!("HORDE_DECISION_GENERIC_KEY_{}", std::process::id());
     unsafe { std::env::set_var(&key, "mock-generic-key") };
     let decision = Decision {
@@ -255,6 +255,75 @@ fn validates_a_mixed_response_and_rejects_unoffered_or_inconsistent_answers() {
     let mut invalid = response;
     invalid["answers"]["difficulty"]["score"] = json!(0.1);
     assert!(validate_response(&input, &invalid).is_err());
+}
+
+#[test]
+fn accepts_identical_score_legends_as_arrays_or_indexed_objects() {
+    let input = request();
+    let array = validate_response(&input, &serde_json::from_str(response_json()).unwrap()).unwrap();
+    let indexed = validate_response(
+        &input,
+        &serde_json::from_str(indexed_legend_response_json()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(array).unwrap(),
+        serde_json::to_value(indexed).unwrap()
+    );
+}
+
+#[test]
+fn rejects_malformed_indexed_legends_and_preserves_score_validation() {
+    let input = horde::decision::DecisionRequest {
+        questions: vec![request().questions[1].clone()],
+        ..request()
+    };
+    let response = |legend, score, probabilities, confidence| {
+        json!({"model":input.model,"answers":{"difficulty":{
+            "type":"score","score":score,"confidence":confidence,
+            "legend":legend,"probabilities":probabilities
+        }}})
+    };
+    let probabilities = json!({"0":0.1,"1":0.5,"2":0.4});
+    for legend in [
+        json!({"0":"routine","1":"moderate"}),
+        json!({"0":"routine","1":"moderate","2":"complex","3":"extra"}),
+        json!({"0":"routine","1":"complex","2":"moderate"}),
+        json!({"0":"routine","1":"moderate","02":"complex"}),
+        json!({"0":"routine","1":"moderate","3":"complex"}),
+        json!({"0":"routine","1":"moderate","2":2}),
+        json!(["routine", "complex", "moderate"]),
+        json!(null),
+    ] {
+        let error = validate_response(
+            &input,
+            &response(legend.clone(), 1.3, probabilities.clone(), 0.6),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("score legend"),
+            "{legend}: {error}"
+        );
+    }
+    let legend = json!({"0":"routine","1":"moderate","2":"complex"});
+    for (score, probabilities, confidence, expected_error) in [
+        (0.1, probabilities.clone(), 0.6, "weighted legend index"),
+        (
+            1.3,
+            json!({"0":0.1,"1":0.5,"3":0.4}),
+            0.6,
+            "probability keys",
+        ),
+        (1.3, json!({"0":0.1,"1":0.5,"2":0.3}), 0.6, "sum to one"),
+        (1.3, probabilities, 1.1, "confidence"),
+    ] {
+        let error = validate_response(
+            &input,
+            &response(legend.clone(), score, probabilities, confidence),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error}");
+    }
 }
 
 #[test]

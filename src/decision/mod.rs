@@ -222,6 +222,26 @@ pub fn wire_request(request: &DecisionRequest) -> Value {
     serde_json::json!({"model":request.model,"state":request.state,"questions":questions})
 }
 
+fn score_legend_matches(value: &Value, expected: &[String]) -> bool {
+    match value {
+        Value::Array(labels) => {
+            labels.len() == expected.len()
+                && labels
+                    .iter()
+                    .zip(expected)
+                    .all(|(actual, expected)| actual.as_str() == Some(expected.as_str()))
+        }
+        Value::Object(labels) => {
+            labels.len() == expected.len()
+                && expected.iter().enumerate().all(|(index, expected)| {
+                    labels.get(&index.to_string()).and_then(Value::as_str)
+                        == Some(expected.as_str())
+                })
+        }
+        _ => false,
+    }
+}
+
 pub fn validate_response(request: &DecisionRequest, value: &Value) -> Result<DecisionResponse> {
     request.validate()?;
     ensure!(
@@ -279,7 +299,7 @@ pub fn validate_response(request: &DecisionRequest, value: &Value) -> Result<Dec
             }
             Question::Score(question) => {
                 ensure!(
-                    row["legend"] == serde_json::json!(question.legend),
+                    score_legend_matches(&row["legend"], &question.legend),
                     "score legend does not match the request"
                 );
                 let probability_keys = (0..question.legend.len())

@@ -147,6 +147,14 @@ describe("agent-friendly 404", () => {
 });
 
 describe("markdown content negotiation", () => {
+  test("configuration Markdown retains every protocol comparison row", () => {
+    const markdown = read("docs/configuration.md");
+    assert.match(markdown, /^\| Protocol \| Horde integration \| Use it for \|$/m);
+    for (const protocol of ["Responses", "Chat Completions", "Messages", "Decisions (SystemOne v1)"]) {
+      assert.ok(markdown.includes(`| ${protocol} |`), `missing protocol row: ${protocol}`);
+    }
+  });
+
   for (const page of pages) {
     test(`${page.path} has a Markdown variant`, () => {
       const markdown = read(page.markdown);
