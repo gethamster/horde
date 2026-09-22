@@ -8,6 +8,16 @@ on:
 permissions:
   contents: read
 jobs:
+  ax-wrapper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.1'
+          cache: false
+      - run: go test ./...
+        working-directory: containers/ax/runsc-wrapper
   format:
     runs-on: ubuntu-latest
     steps:
@@ -55,4 +65,6 @@ jobs:
       - run: python3 scripts/test_lima_guard.py
         if: matrix.check == 'test'
       - run: python3 scripts/test_lima_live_probes.py
+        if: matrix.check == 'test'
+      - run: python3 -m unittest discover -s scripts -p 'test_ax*.py'
         if: matrix.check == 'test'

@@ -1,0 +1,2 @@
+# Unified diffs prefix context lines with a space, including blank/tabbed lines.
+*.patch whitespace=-blank-at-eol,-space-before-tab

@@ -11,6 +11,37 @@ fn selection() -> Value {
 fn linux_guest_cannot_satisfy_macos_task() {
     assert!(execution_selection::prepare_inventory(&inventory(), &selection(), None).is_err());
 }
+
+#[test]
+fn ax_gvisor_selection_does_not_accept_native_or_lima_fallbacks() {
+    let mut report = inventory();
+    report["runtimes"][0]["platform"]["isolation"] = json!("gvisor");
+    let request = json!({"selected":{"runtime":"linux-worker","capability":"test"},"requirements":{"os":"linux","isolation":"gvisor"}});
+    let policy = execution_selection::prepare_inventory(&report, &request, None).unwrap();
+    assert_eq!(policy["requirements"]["isolation"], "gvisor");
+    for isolation in ["native", "lima"] {
+        report["runtimes"][0]["platform"]["isolation"] = json!(isolation);
+        assert!(execution_selection::prepare_inventory(&report, &request, Some(&policy)).is_err());
+    }
+}
+
+#[test]
+fn compose_selection_requires_an_observed_capability() {
+    let mut report = inventory();
+    report["runtimes"][0]["platform"]["isolation"] = json!("gvisor");
+    let mut request = json!({"selected":{"runtime":"linux-worker","capability":"test"},"requirements":{"compose":true}});
+    assert!(execution_selection::prepare_inventory(&report, &request, None).is_err());
+    report["runtimes"][0]["platform"]["compose"] = json!(false);
+    assert!(execution_selection::prepare_inventory(&report, &request, None).is_err());
+    report["runtimes"][0]["platform"]["compose"] = json!(true);
+    assert!(execution_selection::prepare_inventory(&report, &request, None).is_ok());
+    request["requirements"]["compose"] = json!(false);
+    report["runtimes"][0]["platform"]
+        .as_object_mut()
+        .unwrap()
+        .remove("compose");
+    assert!(execution_selection::prepare_inventory(&report, &request, None).is_ok());
+}
 #[test]
 fn project_selection_rejects_peer_without_project_protocol() {
     let mut runtimes = inventory();

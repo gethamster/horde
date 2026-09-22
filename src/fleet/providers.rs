@@ -59,6 +59,7 @@ pub(super) async fn provision(
 ) -> Result<String> {
     let name = format!("horde-{id}");
     match p.provider.as_str() {
+        "ax" => super::ax::provision(db, p, id, bootstrap).await,
         "lima" => crate::lima::provision(db, p, id, bootstrap).await,
         "docker" => {
             let volume = format!("{name}-data");
@@ -173,6 +174,7 @@ pub(super) async fn lifecycle(
         "invalid provider resource ID"
     );
     match p.provider.as_str() {
+        "ax" => super::ax::lifecycle(db, p, id, resource, action).await,
         "lima" => crate::lima::lifecycle(db, p, id, resource, action).await,
         "docker" => {
             let object = command(&docker(p, vec!["inspect".into(), resource.into()]), None).await?;

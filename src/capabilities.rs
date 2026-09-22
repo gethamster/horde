@@ -16,6 +16,7 @@ use std::{
 const MAX_INVENTORY: usize = 64 * 1024;
 const FRESH_SECONDS: i64 = 30;
 const PREFIX: &str = "runtime_capabilities:";
+mod docker;
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +72,8 @@ struct Platform {
     os: String,
     arch: String,
     docker: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compose: Option<bool>,
     isolation: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -121,7 +124,7 @@ fn validate(record: &RuntimeInventory) -> Result<()> {
         label(&platform.os, 32)?;
         label(&platform.arch, 32)?;
         ensure!(
-            ["native", "lima"].contains(&platform.isolation.as_str()),
+            ["native", "lima", "gvisor"].contains(&platform.isolation.as_str()),
             "unsupported runtime isolation"
         );
     }
@@ -346,6 +349,8 @@ fn local_from(
             Ok(record)
         })
         .collect::<Result<Vec<_>>>()?;
+    let isolation = management::value(db, "isolation")?.unwrap_or_else(|| "native".into());
+    let docker_support = (isolation == "gvisor").then(docker::support);
     let record = RuntimeInventory {
         runtime,
         name: Some(crate::runtime_directory::local_name(db)?),
@@ -379,8 +384,10 @@ fn local_from(
         platform: Some(Platform {
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
-            docker: executable("docker") == Evidence::Available,
-            isolation: management::value(db, "isolation")?.unwrap_or_else(|| "native".into()),
+            docker: docker_support
+                .map_or_else(|| executable("docker") == Evidence::Available, |s| s.docker),
+            compose: docker_support.map(|s| s.compose),
+            isolation,
         }),
     };
     validate(&record)?;
@@ -527,7 +534,9 @@ fn inventory_from(db: &Store, local: RuntimeInventory) -> Result<Value> {
             continue;
         }
         let fresh = (now() - FRESH_SECONDS..=now() + 1).contains(&record.observed_at);
+        let held = management::value(db, &format!("ax_hold:{runtime}"))?.as_deref() == Some("true");
         let ready = fresh
+            && !held
             && record.protocol.version == 1
             && crate::runtime_directory::resolve(db, &runtime).is_ok();
         let current = RuntimeInventory {
@@ -538,6 +547,10 @@ fn inventory_from(db: &Store, local: RuntimeInventory) -> Result<Value> {
             ..record
         };
         let mut value = serde_json::to_value(current)?;
+        if held {
+            value["capacity"]["draining"] = json!(true);
+            value["capacity"]["available"] = json!(0);
+        }
         let presence = db.rows(
             "SELECT status FROM runtime_presence WHERE runtime=?",
             &[&runtime],
@@ -953,6 +966,33 @@ mod tests {
         assert_eq!(
             inventory_from(&db, local).unwrap()["runtimes"][1]["ready"],
             false
+        );
+    }
+
+    #[test]
+    fn ax_hold_prevents_dispatch_with_a_fresh_ready_heartbeat() {
+        let root = tempfile::tempdir().unwrap();
+        let db = store(root.path());
+        let local = local_from(&db, &settings("/missing"), |_| Evidence::Unknown).unwrap();
+        let mut remote = local.clone();
+        remote.runtime = "ax-worker".into();
+        remote.local = false;
+        remote.platform.as_mut().unwrap().isolation = "gvisor".into();
+        db.conn.execute("INSERT INTO runtime_enrollments VALUES('ax-worker','fingerprint','',9999999999,'active')", []).unwrap();
+        observe(&db, "ax-worker", &serde_json::to_value(remote).unwrap()).unwrap();
+        assert_eq!(
+            inventory_from(&db, local.clone()).unwrap()["runtimes"][1]["ready"],
+            true
+        );
+        management::set(&db, "ax_hold:ax-worker", "true").unwrap();
+        let held = inventory_from(&db, local.clone()).unwrap();
+        assert_eq!(held["runtimes"][1]["fresh"], true);
+        assert_eq!(held["runtimes"][1]["ready"], false);
+        assert_eq!(held["runtimes"][1]["capacity"]["available"], 0);
+        management::set(&db, "ax_hold:ax-worker", "false").unwrap();
+        assert_eq!(
+            inventory_from(&db, local).unwrap()["runtimes"][1]["ready"],
+            true
         );
     }
     #[test]

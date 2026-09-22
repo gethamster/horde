@@ -105,9 +105,9 @@ pub fn issue(db: &Store, id: &str, profile: &crate::fleet::Profile) -> Result<Op
             );
         }
     }
-    db.conn.execute("INSERT INTO runtime_enrollments(runtime,fingerprint,token_hash,expires,state) VALUES(?,?,?,?,'pending')",params![id,fingerprint,crate::store::hash(token.as_bytes()),now()+if profile.provider == "lima" {3600} else {900}])?;
+    db.conn.execute("INSERT INTO runtime_enrollments(runtime,fingerprint,token_hash,expires,state) VALUES(?,?,?,?,'pending')",params![id,fingerprint,crate::store::hash(token.as_bytes()),now()+if ["lima","ax"].contains(&profile.provider.as_str()) {3600} else {900}])?;
     Ok(Some(
-        json!({"id":id,"network":network,"ca":ca,"certificate":cert.pem(),"key":key.serialize_pem(),"concurrency":concurrency,"project":project_record,"isolation":if profile.provider == "lima" { "lima" } else { "native" },"dedicated":profile.provider != "tailscale","settings":settings,"credentials":credentials}),
+        json!({"id":id,"network":network,"ca":ca,"certificate":cert.pem(),"key":key.serialize_pem(),"concurrency":concurrency,"project":project_record,"isolation":match profile.provider.as_str() { "lima" => "lima", "ax" => "gvisor", _ => "native" },"dedicated":profile.provider != "tailscale","settings":settings,"credentials":credentials}),
     ))
 }
 pub fn identity(db: &Store, fingerprint: &str) -> Result<Option<String>> {
@@ -281,7 +281,7 @@ pub fn apply_bootstrap(root: &Path, raw: &str) -> Result<()> {
     }
     if let Some(isolation) = packet["isolation"].as_str() {
         ensure!(
-            ["native", "lima"].contains(&isolation),
+            ["native", "lima", "gvisor"].contains(&isolation),
             "invalid bootstrap isolation"
         );
         crate::management::set(&db, "isolation", isolation)?;

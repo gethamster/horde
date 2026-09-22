@@ -1,0 +1,277 @@
+diff --git a/internal/controller/reconciler.go b/internal/controller/reconciler.go
+index 31c399b..a75cc05 100644
+--- a/internal/controller/reconciler.go
++++ b/internal/controller/reconciler.go
+@@ -170,7 +170,9 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, gat
+ 
+ 		tmpl, err := r.client.EnsureActorTemplateWithImage(ctx, templateAtespace, templateName, atespace, customTemplateName, task.Spec.Image, extraEnv)
+ 		if err != nil {
+-			slog.Warn("could not create custom ActorTemplate, falling back to default template", "error", err)
++			r.setNotReady(task, "ActorTemplateCreationFailed", err.Error(), now)
++			task.Status.Phase = "Failed"
++			return task, fmt.Errorf("creating custom actor template: %w", err)
+ 		} else if tmpl != nil && tmpl.Metadata != nil {
+ 			templateAtespace = tmpl.Metadata.Atespace
+ 			templateName = tmpl.Metadata.Name
+diff --git a/internal/controller/reconciler_test.go b/internal/controller/reconciler_test.go
+index e699ee0..66d17e2 100644
+--- a/internal/controller/reconciler_test.go
++++ b/internal/controller/reconciler_test.go
+@@ -26,10 +26,13 @@ import (
+ 	"github.com/google/ax/internal/substrate"
+ 	"github.com/google/ax/pkg/apis/v1alpha1"
+ 	"google.golang.org/grpc"
++	"google.golang.org/grpc/codes"
+ 	"google.golang.org/grpc/credentials/insecure"
++	"google.golang.org/grpc/status"
+ )
+ 
+ type mockControlServer struct {
++	templateError error
+ 	ateapipb.UnimplementedControlServer
+ 	workerIP         string
+ 	createdAtespaces []string
+@@ -136,6 +139,17 @@ func (m *mockControlServer) DeleteActorTemplate(ctx context.Context, req *ateapi
+ 	return &ateapipb.ActorTemplate{Metadata: &ateapipb.ResourceMetadata{Name: name}}, nil
+ }
+ 
++func (m *mockControlServer) GetActorTemplate(ctx context.Context, req *ateapipb.GetActorTemplateRequest) (*ateapipb.ActorTemplate, error) {
++	return nil, status.Error(codes.NotFound, "template not found")
++}
++
++func (m *mockControlServer) CreateActorTemplate(ctx context.Context, req *ateapipb.CreateActorTemplateRequest) (*ateapipb.ActorTemplate, error) {
++	if m.templateError != nil {
++		return nil, m.templateError
++	}
++	return req.ActorTemplate, nil
++}
++
+ func TestTaskReconciler(t *testing.T) {
+ 	ctx := context.Background()
+ 
+@@ -454,3 +468,41 @@ func TestReconcileDelete_RemovesActorAndTemplates(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func TestTaskReconciler_CustomTemplateFailureDoesNotLaunchFallback(t *testing.T) {
++	lis, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer lis.Close()
++	mockSrv := &mockControlServer{templateError: status.Error(codes.PermissionDenied, "template creation denied")}
++	server := grpc.NewServer()
++	ateapipb.RegisterControlServer(server, mockSrv)
++	go server.Serve(lis)
++	defer server.Stop()
++	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer client.Close()
++	reconciler := controller.NewTaskReconciler(client, "configured-base", "base-space")
++	reconciler.SecretResolver = noSecrets
++	reconciler.WorkspaceReadyTimeout = time.Millisecond
++	task := &v1alpha1.Task{Metadata: &v1alpha1.ObjectMeta{Name: "must-not-fallback", Atespace: "task-space"}, Spec: &v1alpha1.TaskSpec{Image: "selected-image"}}
++	got, err := reconciler.Reconcile(context.Background(), task, nil)
++	if err == nil {
++		t.Fatal("custom template failure silently launched fallback")
++	}
++	if len(mockSrv.createdActors) != 0 || len(mockSrv.resumedActors) != 0 {
++		t.Fatal("created or resumed an actor after template failure")
++	}
++	if got == nil || got.Status.Phase != "Failed" {
++		t.Fatalf("task failure not retained: %v", got)
++	}
++	for _, condition := range got.Status.Conditions {
++		if condition.Type == "Ready" && condition.Status == "False" && condition.Reason == "ActorTemplateCreationFailed" {
++			return
++		}
++	}
++	t.Fatal("missing visible template failure condition")
++}
+diff --git a/internal/substrate/client.go b/internal/substrate/client.go
+index bacb078..c0587ee 100644
+--- a/internal/substrate/client.go
++++ b/internal/substrate/client.go
+@@ -31,6 +31,7 @@ import (
+ 	"google.golang.org/grpc/credentials"
+ 	"google.golang.org/grpc/credentials/insecure"
+ 	"google.golang.org/grpc/status"
++	"google.golang.org/protobuf/proto"
+ 	"google.golang.org/protobuf/types/known/emptypb"
+ )
+ 
+@@ -291,6 +292,27 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
+ 	}
+ 
+ 	tmpl := BuildActorTemplate(targetAtespace, targetTemplate, image, envMap, nil, "")
++	if baseTemplate != "" {
++		base, err := c.GetActorTemplate(ctx, baseAtespace, baseTemplate)
++		if err != nil && status.Code(err) != codes.NotFound {
++			return nil, fmt.Errorf("reading base actor template %s/%s: %w", baseAtespace, baseTemplate, err)
++		}
++		// Keep AX's image, environment, workspace and snapshot construction.
++		// Only the explicitly selected base guest's process security settings
++		// and gVisor sandbox config carry over. A missing base preserves defaults.
++		if config := base.GetSandboxConfig(); config != nil {
++			if config.GetSandboxClass() != ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR {
++				return nil, fmt.Errorf("base actor template %s/%s must use the gVisor sandbox class", baseAtespace, baseTemplate)
++			}
++			tmpl.SandboxConfig = proto.Clone(config).(*ateapipb.SandboxConfig)
++		}
++		for _, container := range base.GetContainers() {
++			if container.GetName() == "guest" && container.GetSecurityContext() != nil {
++				tmpl.Containers[0].SecurityContext = proto.Clone(container.SecurityContext).(*ateapipb.SecurityContext)
++				break
++			}
++		}
++	}
+ 	req := &ateapipb.CreateActorTemplateRequest{
+ 		ActorTemplate: tmpl,
+ 	}
+diff --git a/internal/substrate/template_security_test.go b/internal/substrate/template_security_test.go
+new file mode 100644
+index 0000000..225dc69
+--- /dev/null
++++ b/internal/substrate/template_security_test.go
+@@ -0,0 +1,138 @@
++// Copyright 2026 Google LLC
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//	http://www.apache.org/licenses/LICENSE-2.0
++package substrate
++
++import (
++	"context"
++	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
++	"google.golang.org/grpc"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
++	"google.golang.org/protobuf/proto"
++	"testing"
++)
++
++type templateControl struct {
++	ateapipb.ControlClient
++	base      *ateapipb.ActorTemplate
++	existing  *ateapipb.ActorTemplate
++	created   *ateapipb.ActorTemplate
++	baseError error
++	baseReads int
++}
++
++func (c *templateControl) GetActorTemplate(_ context.Context, req *ateapipb.GetActorTemplateRequest, _ ...grpc.CallOption) (*ateapipb.ActorTemplate, error) {
++	if req.ActorTemplate.Name == "configured-base" {
++		c.baseReads++
++		if c.baseError != nil {
++			return nil, c.baseError
++		}
++		if c.base != nil {
++			return c.base, nil
++		}
++	} else if c.existing != nil {
++		return c.existing, nil
++	}
++	return nil, status.Error(codes.NotFound, "missing template")
++}
++func (c *templateControl) CreateActorTemplate(_ context.Context, req *ateapipb.CreateActorTemplateRequest, _ ...grpc.CallOption) (*ateapipb.ActorTemplate, error) {
++	c.created = req.ActorTemplate
++	return c.created, nil
++}
++func createDerived(control *templateControl) (*ateapipb.ActorTemplate, error) {
++	client := &Client{control: control}
++	return client.EnsureActorTemplateWithImage(context.Background(), "base-space", "configured-base", "task-space", "task-derived", "runner@sha256:abc", map[string]string{"AX_TASK_YAML": "public-task-spec"})
++}
++func TestDerivedTemplateInheritsGuestSecurityContext(t *testing.T) {
++	security := &ateapipb.SecurityContext{Capabilities: &ateapipb.Capabilities{Add: []string{"SYS_ADMIN", "NET_ADMIN"}, Drop: []string{"ALL"}}}
++	control := &templateControl{base: &ateapipb.ActorTemplate{
++		Containers: []*ateapipb.Container{{Name: "sidecar", SecurityContext: &ateapipb.SecurityContext{Capabilities: &ateapipb.Capabilities{Add: []string{"SYS_PTRACE"}}}}, {Name: "guest", Image: "base-image", Command: []string{"base-command"}, Env: []*ateapipb.EnvVar{{Name: "BASE_SECRET", Value: "must-not-inherit"}}, SecurityContext: security}},
++		Volumes:    []*ateapipb.Volume{{Name: "base-volume"}},
++	}}
++	before := proto.Clone(control.base)
++	got, err := createDerived(control)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !proto.Equal(got.Containers[0].SecurityContext, security) {
++		t.Fatalf("guest security context=%v, want %v", got.Containers[0].SecurityContext, security)
++	}
++	expected := BuildActorTemplate("task-space", "task-derived", "runner@sha256:abc", map[string]string{"AX_TASK_YAML": "public-task-spec"}, nil, "")
++	expected.Containers[0].SecurityContext = proto.Clone(security).(*ateapipb.SecurityContext)
++	if !proto.Equal(got, expected) {
++		t.Fatal("derived template changed image, environment, workspace, or snapshot defaults")
++	}
++	got.Containers[0].SecurityContext.Capabilities.Add[0] = "CHOWN"
++	if !proto.Equal(control.base, before) {
++		t.Fatal("derived security context aliases the base template")
++	}
++}
++func TestDerivedTemplateWithoutSecurityContextPreservesDefaults(t *testing.T) {
++	for _, base := range []*ateapipb.ActorTemplate{nil, {}, {Containers: []*ateapipb.Container{{Name: "guest"}}}, {Containers: []*ateapipb.Container{{Name: "sidecar", SecurityContext: &ateapipb.SecurityContext{Capabilities: &ateapipb.Capabilities{Add: []string{"SYS_ADMIN"}}}}}}} {
++		control := &templateControl{base: base}
++		got, err := createDerived(control)
++		if err != nil {
++			t.Fatal(err)
++		}
++		expected := BuildActorTemplate("task-space", "task-derived", "runner@sha256:abc", map[string]string{"AX_TASK_YAML": "public-task-spec"}, nil, "")
++		if !proto.Equal(got, expected) {
++			t.Fatal("default template behavior changed")
++		}
++	}
++}
++func TestExistingDerivedTemplateIsNotReconfigured(t *testing.T) {
++	existing := &ateapipb.ActorTemplate{Metadata: &ateapipb.ResourceMetadata{Name: "task-derived"}}
++	control := &templateControl{existing: existing}
++	got, err := createDerived(control)
++	if err != nil || got != existing || control.created != nil || control.baseReads != 0 {
++		t.Fatalf("existing immutable template was reconfigured: result=%v error=%v", got, err)
++	}
++}
++func TestBaseTemplateLookupFailureDoesNotSilentlyDiscardSecurityContext(t *testing.T) {
++	control := &templateControl{baseError: status.Error(codes.PermissionDenied, "denied")}
++	_, err := createDerived(control)
++	if err == nil {
++		t.Fatal("base lookup failure silently discarded requested security context")
++	}
++	if control.created != nil {
++		t.Fatal("created a fallback template after failed base lookup")
++	}
++}
++
++func TestDerivedTemplateInheritsGVisorSandboxConfig(t *testing.T) {
++	config := &ateapipb.SandboxConfig{SandboxClass: ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR, ConfigName: "horde-dind-v1"}
++	control := &templateControl{base: &ateapipb.ActorTemplate{SandboxConfig: config}}
++	before := proto.Clone(control.base)
++	got, err := createDerived(control)
++	if err != nil {
++		t.Fatal(err)
++	}
++	expected := BuildActorTemplate("task-space", "task-derived", "runner@sha256:abc", map[string]string{"AX_TASK_YAML": "public-task-spec"}, nil, "")
++	expected.SandboxConfig = proto.Clone(config).(*ateapipb.SandboxConfig)
++	if !proto.Equal(got, expected) {
++		t.Fatalf("sandbox config=%v; expected selected gVisor config with other defaults unchanged", got.SandboxConfig)
++	}
++	got.SandboxConfig.ConfigName = "changed-derived-config"
++	if !proto.Equal(control.base, before) {
++		t.Fatal("derived sandbox config aliases the base template")
++	}
++}
++
++func TestDerivedTemplateRejectsNonGVisorSandboxConfig(t *testing.T) {
++	for _, class := range []ateapipb.SandboxClass{ateapipb.SandboxClass_SANDBOX_CLASS_UNSPECIFIED, ateapipb.SandboxClass_SANDBOX_CLASS_MICROVM} {
++		t.Run(class.String(), func(t *testing.T) {
++			control := &templateControl{base: &ateapipb.ActorTemplate{SandboxConfig: &ateapipb.SandboxConfig{SandboxClass: class, ConfigName: "unsupported"}}}
++			_, err := createDerived(control)
++			if err == nil {
++				t.Fatal("accepted a non-gVisor base sandbox config")
++			}
++			if control.created != nil {
++				t.Fatal("created a template with an unsupported sandbox class")
++			}
++		})
++	}
++}

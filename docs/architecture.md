@@ -221,6 +221,14 @@ excluded from worker-token scope and remote management grants are independent
 of execution grants. See [runtime management](runtime-management.md) and
 [installation](installing.md) for operational boundaries and configuration.
 
+The experimental [AX backend](ax.md) maps each project-bound worker to an AX
+Task, Workspace, and Gateway. A custom runner receives the existing Horde
+enrollment packet through the private router and keeps its state under
+`/workspace/.horde`. Horde retains workflow and account ownership; AX supplies
+gVisor execution and suspend/resume. Durable management operations retain
+resource identity across uncertain replies, and stop drains the worker before
+suspension.
+
 User-directed Tailscale setup creates controller trust in its private data directory.
 Pairing discovers candidates through the local Tailscale client, bootstraps only
 the selected non-root host over Tailscale SSH, and confirms readiness through the

@@ -68,8 +68,13 @@ pub async fn run(root: &Path, task: &str, options: &Options) -> Result<i32> {
     };
     let started = Instant::now();
     loop {
-        let status = match watch.poll().await {
-            Ok(Some(status)) => status,
+        let result = match watch.poll().await {
+            Ok(Some(status)) => watch.finish().map(|summary| Some((status, summary))),
+            Ok(None) => Ok(None),
+            Err(error) => Err(error),
+        };
+        let (status, summary) = match result {
+            Ok(Some(outcome)) => outcome,
             Ok(None) => {
                 if let Some(limit) = options.timeout()
                     && started.elapsed() >= limit
@@ -83,7 +88,7 @@ pub async fn run(root: &Path, task: &str, options: &Options) -> Result<i32> {
                 tokio::time::sleep(options.interval()).await;
                 continue;
             }
-            Err(error) if daemon_gone(root) => {
+            Err(error) if daemon_gone(&error) => {
                 watch.line(
                     "watch.error",
                     json!({"error":"daemon unavailable","detail":error.to_string()}),
@@ -92,7 +97,6 @@ pub async fn run(root: &Path, task: &str, options: &Options) -> Result<i32> {
             }
             Err(error) => return Err(error),
         };
-        let summary = watch.finish()?;
         if options.summary_text() {
             eprint!("{}", human(&summary));
         }
@@ -185,8 +189,20 @@ fn is_terminal(status: &str) -> bool {
     ["succeeded", "failed", "cancelled"].contains(&status)
 }
 
-fn daemon_gone(root: &Path) -> bool {
-    std::os::unix::net::UnixStream::connect(root.join("daemon.sock")).is_err()
+fn daemon_gone(error: &anyhow::Error) -> bool {
+    use std::io::ErrorKind;
+    error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+        matches!(
+            error.kind(),
+            ErrorKind::NotFound
+                | ErrorKind::ConnectionRefused
+                | ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::NotConnected
+                | ErrorKind::BrokenPipe
+                | ErrorKind::UnexpectedEof
+        )
+    })
 }
 
 fn pending_questions(inspect: &Value) -> Vec<Value> {

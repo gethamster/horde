@@ -1365,13 +1365,17 @@
                     ],
                     "type": "string"
                   },
+                  "compose": {
+                    "type": "boolean"
+                  },
                   "docker": {
                     "type": "boolean"
                   },
                   "isolation": {
                     "enum": [
                       "native",
-                      "lima"
+                      "lima",
+                      "gvisor"
                     ],
                     "type": "string"
                   },
@@ -2079,13 +2083,17 @@
                     ],
                     "type": "string"
                   },
+                  "compose": {
+                    "type": "boolean"
+                  },
                   "docker": {
                     "type": "boolean"
                   },
                   "isolation": {
                     "enum": [
                       "native",
-                      "lima"
+                      "lima",
+                      "gvisor"
                     ],
                     "type": "string"
                   },
