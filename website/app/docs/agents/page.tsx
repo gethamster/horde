@@ -36,6 +36,7 @@ export default function Agents() {
       If the agent cannot find Horde, use the absolute path to <code>~/.local/bin/horde</code>.
       This bridge has administrative access to your daemon.
     </p>
+    <p>To keep an agent’s work within one project, follow <Link href="/docs/projects#mcp">Connect an agent to a project</Link>. Add <code>--project PROJECT</code> before <code>mcp</code> to bind that connection and restrict its operations to the selected project.</p>
 
     <h2>Agent skills</h2>
     <p>

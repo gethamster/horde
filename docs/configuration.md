@@ -284,7 +284,7 @@ Create managed accounts using the provider's executor kind, authentication mode,
 and endpoint. Save the returned account ID for inspection, grants, or pinning:
 
 ```sh
-horde --project horde account create subscription-one --provider codex --auth-mode login --concurrency 2
+horde --project horde account create subscription-one --provider codex --auth-mode login --base-url https://api.openai.com/v1 --concurrency 2
 horde --project horde account credential-set ACCOUNT_ID /private/path/credential.json
 horde --project horde account list
 horde account grant ACCOUNT_ID hamster
