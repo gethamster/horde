@@ -3,7 +3,8 @@ use horde::{capacity, config::ExecutorConfig, store::Store};
 #[test]
 fn rotation_invalidates_provider_observations_but_preserves_budgets_and_other_accounts() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Store::open(dir.path()).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db = Store::open_with_config_dir(dir.path(), &dir.path().join("config")).unwrap();
     let config = ExecutorConfig {
         kind: "codex".into(),
         auth_mode: "api".into(),
@@ -39,7 +40,8 @@ fn rotation_invalidates_provider_observations_but_preserves_budgets_and_other_ac
 #[test]
 fn rotation_rejects_old_api_and_subscription_observations() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Store::open(dir.path()).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db = Store::open_with_config_dir(dir.path(), &dir.path().join("config")).unwrap();
     for auth_mode in ["api", "login"] {
         let config = ExecutorConfig {
             kind: "codex".into(),

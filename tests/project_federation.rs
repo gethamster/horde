@@ -87,7 +87,9 @@ fn remote_accept_rejects_an_ungranted_project_before_creating_repository() {
 #[test]
 fn project_inventory_hides_ungranted_runtimes_and_ambient_capabilities() {
     let dir = tempfile::tempdir().unwrap();
-    let db = horde::store::Store::open(dir.path()).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db =
+        horde::store::Store::open_with_config_dir(dir.path(), &dir.path().join("config")).unwrap();
     let project = horde::projects::dispatch(&db, "project_create", &json!({"slug":"hamster"}))
         .unwrap()
         .unwrap();
@@ -148,7 +150,12 @@ fn remote_task_ids_cannot_cross_project_authorization() {
 #[test]
 fn automatic_placement_enforces_isolation_capacity_and_workflow_stickiness() {
     let dir = tempfile::tempdir().unwrap();
-    let db = horde::store::Store::open(&dir.path().join("data")).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db = horde::store::Store::open_with_config_dir(
+        &dir.path().join("data"),
+        &dir.path().join("config"),
+    )
+    .unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
     for args in [

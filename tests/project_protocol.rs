@@ -160,7 +160,9 @@ fn project_binding_protects_task_ids_artifact_hashes_and_workers() {
 #[test]
 fn submission_receipts_are_project_scoped_and_keep_legacy_default_retries() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Store::open(&dir.path().join("data")).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db =
+        Store::open_with_config_dir(&dir.path().join("data"), &dir.path().join("config")).unwrap();
     let legacy_task = task(&db, dir.path(), "default");
     let legacy_args = json!({"request_id":"legacy","objective":"old request","repo":dir.path().join("default"),"template":"simulated"});
     let legacy_hash = horde::store::hash(&serde_json::to_vec(&legacy_args).unwrap());

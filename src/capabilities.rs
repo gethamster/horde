@@ -400,7 +400,7 @@ pub fn local(db: &Store) -> Result<Value> {
     }
     Ok(serde_json::to_value(local_from(
         db,
-        &Settings::load_user()?,
+        &Settings::load_dir(&db.user_config_dir())?,
         credential_evidence,
     )?)?)
 }
@@ -595,7 +595,11 @@ pub fn inventory(db: &Store) -> Result<Value> {
     }
     inventory_from(
         db,
-        local_from(db, &Settings::load_user()?, credential_evidence)?,
+        local_from(
+            db,
+            &Settings::load_dir(&db.user_config_dir())?,
+            credential_evidence,
+        )?,
     )
 }
 
