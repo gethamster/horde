@@ -391,3 +391,67 @@ fn watch_reports_timeout_and_missing_daemon_with_distinct_codes() {
     assert_eq!(last["kind"], "watch.error", "{last}");
     assert_eq!(last["data"]["error"], "daemon unavailable");
 }
+
+fn watch_with_interrupted_reply(interrupted: usize, reply: &'static str) -> Stream {
+    let directory = tempfile::Builder::new()
+        .prefix("watch-reply-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let listener =
+        std::os::unix::net::UnixListener::bind(directory.path().join("daemon.sock")).unwrap();
+    let (finished, wait) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let responses = [
+            ("events", json!([])),
+            ("inspect", json!({"task":{"status":"succeeded"}})),
+            ("events", json!([])),
+            ("summary", json!({"status":"succeeded"})),
+        ];
+        for (index, (method, response)) in responses.into_iter().enumerate() {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = String::new();
+            std::io::BufReader::new(&socket)
+                .read_line(&mut request)
+                .unwrap();
+            let request: Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(request["method"], method);
+            if index == interrupted {
+                socket.write_all(reply.as_bytes()).unwrap();
+                drop(socket);
+                // A reconnect can still succeed even though this request lost
+                // its daemon. Classification must use the actual RPC failure.
+                wait.recv_timeout(Duration::from_secs(10)).unwrap();
+                return;
+            }
+            writeln!(socket, "{}", json!({"result":response})).unwrap();
+        }
+    });
+    let stream = watch(directory.path(), &["watch", "fixture-task"]);
+    finished.send(()).unwrap();
+    server.join().unwrap();
+    stream
+}
+
+#[test]
+fn watch_reports_empty_replies_as_disconnects_during_polling_and_summary() {
+    for interrupted in 0..4 {
+        let stream = watch_with_interrupted_reply(interrupted, "");
+        assert_eq!(stream.code, 4, "request {interrupted}: {}", stream.stderr);
+        let last = stream.lines.last().unwrap();
+        assert_eq!(last["kind"], "watch.error");
+        assert_eq!(last["data"]["error"], "daemon unavailable");
+    }
+}
+
+#[test]
+fn watch_keeps_malformed_nonempty_replies_distinct_from_disconnects() {
+    for interrupted in 0..4 {
+        let stream = watch_with_interrupted_reply(interrupted, "{\n");
+        assert_eq!(stream.code, 1, "request {interrupted}: {}", stream.stderr);
+        assert!(stream.stderr.contains("invalid daemon response"));
+        assert!(!stream.kinds().contains(&"watch.error"));
+    }
+}

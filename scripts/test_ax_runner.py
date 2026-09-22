@@ -236,7 +236,11 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/readyz?check=workspace")[0], 503)
 
     def test_http_rejects_oversized_empty_and_chunked_requests(self):
-        self.assertEqual(self.request("POST", "/bootstrap", b"x" * (runner.MAX_PACKET + 1))[0], 413)
+        # Rejection happens from Content-Length, before reading the body. Sending
+        # that body concurrently races the server closing the rejected request.
+        self.assertEqual(self.request("POST", "/bootstrap", headers={
+            "Content-Length": str(runner.MAX_PACKET + 1),
+        })[0], 413)
         self.assertEqual(self.request("POST", "/bootstrap", b"")[0], 400)
         self.assertEqual(self.request("POST", "/bootstrap", b"{}", {"Transfer-Encoding": "chunked"})[0], 400)
         self.spawn.assert_not_called()

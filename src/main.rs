@@ -534,7 +534,13 @@ fn request(root: &std::path::Path, method: &str, mut args: Value) -> Result<Valu
         json!({"method":method,"args":args,"token":token})
     )?;
     let mut line = String::new();
-    std::io::BufReader::new(stream).read_line(&mut line)?;
+    if std::io::BufReader::new(stream).read_line(&mut line)? == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "daemon closed the connection without a response",
+        )
+        .into());
+    }
     let response: Value = serde_json::from_str(&line).context("invalid daemon response")?;
     if let Some(error) = response.get("error") {
         bail!("{}", error.as_str().unwrap_or("daemon error"));
