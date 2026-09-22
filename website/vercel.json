@@ -20,6 +20,13 @@
       "continue": true
     },
     {
+      "src": "^/docs/projects$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
       "src": "^/docs/agents$",
       "headers": {
         "Vary": "Accept, Accept-Encoding"
@@ -94,6 +101,16 @@
     },
     {
       "src": "^/docs\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs/projects\\.md$",
       "headers": {
         "Content-Type": "text/markdown; charset=utf-8",
         "Vary": "Accept, Accept-Encoding",
@@ -328,6 +345,20 @@
       ]
     },
     {
+      "src": "^/docs/projects$",
+      "headers": {
+        "Location": "/docs/projects.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
       "src": "^/docs/agents$",
       "headers": {
         "Location": "/docs/agents.md"
@@ -509,6 +540,10 @@
     {
       "src": "^/docs$",
       "dest": "/docs.html"
+    },
+    {
+      "src": "^/docs/projects$",
+      "dest": "/docs/projects.html"
     },
     {
       "src": "^/docs/agents$",

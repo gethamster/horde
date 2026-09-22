@@ -42,6 +42,11 @@ horde stop
 horde update --check
 horde update`}</code></pre>
     <p>The default data directory is <code>~/.local/share/horde</code>. Use <code>--data-dir /absolute/path</code> consistently for a different instance. Stopping the daemon keeps its durable state.</p>
+    <h2>When you need more</h2>
+    <ul>
+      <li><Link href="/docs/projects">Work in a project</Link>: give each project its own tasks, settings, provider accounts, and worker access.</li>
+      <li><Link href="/docs/deployment">Deploy remote workers</Link>: connect a child machine and send it work.</li>
+    </ul>
     <Link className="next" href="/docs/configuration">Configure executors and concurrency →</Link>
   </>;
 }

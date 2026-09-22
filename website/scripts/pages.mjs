@@ -21,6 +21,12 @@ export const pages = [
     summary: "Install, run a first task, and connect your own agent over MCP.",
   },
   {
+    path: "/docs/projects", file: "docs/projects.html", markdown: "docs/projects.md",
+    source: ["app/docs/projects/page.tsx"], priority: "0.8", changefreq: "monthly",
+    title: "Work in a project",
+    summary: "Create a project, register repositories, grant account and worker access, and connect a project-bound agent.",
+  },
+  {
     path: "/docs/agents", file: "docs/agents.html", markdown: "docs/agents.md",
     source: ["app/docs/agents/page.tsx"], priority: "0.9", changefreq: "weekly",
     title: "Horde MCP and CLI reference",

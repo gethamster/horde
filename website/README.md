@@ -2,7 +2,7 @@
 
 A minimal Next.js 16.3 landing page with a copyable install command, an
 explanation of what Horde is and when to use it, and guides at `/docs`,
-`/docs/agents`, `/docs/configuration`, and `/docs/deployment`, plus `/about`,
+`/docs/projects`, `/docs/agents`, `/docs/configuration`, and `/docs/deployment`, plus `/about`,
 `/contact`, and `/privacy`. Copy success appears as a checkmark, with
 confirmation text available to screen readers.
 
