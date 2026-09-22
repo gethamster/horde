@@ -38,13 +38,26 @@ function inline(html) {
   return decode(text).replace(/\s+/g, " ").trim();
 }
 
+function tableCell(html) {
+  const escape = (text) => text.replace(/[\\|]/g, "\\$&");
+  return inline(html).split(/(`[^`]*`)/g).map((part) => {
+    if (!part.startsWith("`") || !part.endsWith("`")) return escape(part);
+    const code = part.slice(1, -1);
+    if (!code.includes("|")) return part; // Backslashes are literal inside code.
+    // GFM pipe escaping cannot preserve every backslash run inside code spans.
+    // Keep that text literal without code styling, including Markdown syntax.
+    if (code.includes("\\")) return code.replace(/[\\|`*_~[\]<>&]/g, "\\$&");
+    return escape(part);
+  }).join("");
+}
+
 /** Convert simple semantic tables to pipe tables without losing the first row. */
 function table(html) {
   const rows = [...html.matchAll(/<tr\b[^>]*>(.*?)<\/tr>/gis)]
     .map(([, row]) => ({
       header: /<th\b/i.test(row),
       cells: [...row.matchAll(/<(th|td)\b[^>]*>(.*?)<\/\1>/gis)]
-        .map(([, , cell]) => inline(cell).replace(/\|/g, "\\|")),
+        .map(([, , cell]) => tableCell(cell)),
     }))
     .filter((row) => row.cells.length);
   if (!rows.length) return "";

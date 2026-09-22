@@ -37,3 +37,30 @@ test("tables without a header keep the first data row and pad missing cells", ()
 test("empty tables do not emit empty Markdown blocks", () => {
   assert.equal(toMarkdown("<main><p>Before.</p><table></table><p>After.</p></main>"), "Before.\n\nAfter.");
 });
+
+test("table prose escapes backslashes before pipes and preserves literal backslashes", () => {
+  const html = String.raw`<main><table><tr><th>Path</th></tr><tr><td>C:\work\ | a\|b | \\server\file</td></tr></table></main>`;
+  assert.equal(toMarkdown(html), [
+    "| Path |",
+    "| --- |",
+    String.raw`| C:\\work\\ \| a\\\|b \| \\\\server\\file |`,
+  ].join("\n"));
+});
+
+test("table code keeps literal path backslashes and preserves backslash-pipe text without code delimiters", () => {
+  const html = String.raw`<main><table><tr><th>Code</th></tr><tr><td><code>C:\work\file</code> and <code>a\|b</code> and <code>a\\|b</code></td></tr></table></main>`;
+  assert.equal(toMarkdown(html), [
+    "| Code |",
+    "| --- |",
+    '| `C:\\work\\file` and ' + String.raw`a\\\|b and a\\\\\|b |`,
+  ].join("\n"));
+});
+
+test("table code rendered as plain text keeps Markdown syntax literal", () => {
+  const html = String.raw`<main><table><tr><th>Code</th></tr><tr><td><code>\|**literal** [name](url) &amp;</code></td></tr></table></main>`;
+  assert.equal(toMarkdown(html), [
+    "| Code |",
+    "| --- |",
+    String.raw`| \\\|\*\*literal\*\* \[name\](url) \& |`,
+  ].join("\n"));
+});
