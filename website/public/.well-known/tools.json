@@ -676,7 +676,7 @@
       "scope": "worker"
     },
     {
-      "description": "Inspect or arrange Horde setup using available access; report missing credentials or access without exposing secrets",
+      "description": "Inspect a client-neutral parent, configure child worker roles and providers, and guide fleet and billing setup without exposing secrets",
       "name": "agent_setup",
       "parameters": {
         "additionalProperties": false,
@@ -686,6 +686,7 @@
               "inspect",
               "verify",
               "configure_provider",
+              "configure_workers",
               "configure_controller",
               "create_fleet_key",
               "join_worker",
@@ -752,10 +753,16 @@
           "provider": {
             "type": "string"
           },
+          "repo": {
+            "description": "Absolute repository path to inspect for parent registration. Follow a project_repo_add next action when unregistered.",
+            "type": "string"
+          },
           "roles": {
+            "description": "Child executor role names. configure_workers requires at least one role and changes only role assignments for an existing provider.",
             "items": {
               "type": "string"
             },
+            "maxItems": 32,
             "type": "array"
           }
         },

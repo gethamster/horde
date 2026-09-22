@@ -150,6 +150,8 @@ changing credentials.
 
 | Operation | Arguments | Result |
 | --- | --- | --- |
+| `agent_setup` | `action: "inspect"` or `"verify"`; optional `provider`, absolute `repo` | Reports the administrative parent, repository registration, child roles and concurrency, provider state, and Tuara wallet and billing readiness. An unregistered repository returns a `project_repo_add` next action. No provider or wallet request is made. |
+| `agent_setup` | `action: "configure_workers"`, `provider`*, `roles[]`* | Assigns one to 32 child executor roles to an existing provider without requiring, replacing, or exposing its credential. Authentication remains a separate step. |
 | `agent_setup` | `action: "configure_provider"`, `provider`*, optional `credential`, `credential_env`, or `credential_file`; optional provider settings and `roles[]` | Saves the provider and key. Choose at most one credential source. The response omits the key and reports activation separately from verification. |
 | `provider_login` | `action: "start"`, `provider`*, `request_id`*, `timeout_seconds` | Starts a Tuara key-page handoff, `codex login --device-auth`, or `claude auth login`; returns a `session_id`. The timeout defaults to 600 seconds and accepts 1 through 1800. |
 | `provider_login` | `action: "status"`, `session_id`* | Returns status, bounded `output`, expiry, and authentication evidence. Relay the login instructions to the user. `method` is `api_key` for Tuara or `cli_login` for Codex/Claude. |

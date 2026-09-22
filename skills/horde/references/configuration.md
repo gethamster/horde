@@ -214,6 +214,15 @@ instead.
 
 Two modes, per provider.
 
+Any unbound administrative MCP client can act as Horde's parent. Call
+`agent_setup` action `inspect` to see configured child executor roles,
+concurrency, authentication blockers, and Tuara wallet readiness. Assign a
+configured provider to one or more roles with action `configure_workers` and
+`roles`, without providing or replacing its credential. Use `configure_provider`
+for provider details, then the login or wallet and signup operations below for
+authentication and billing. The MCP client constructs these arguments from the
+user's ordinary-language choices; users do not need to provide JSON.
+
 A user without terminal access can give a trusted agent a key for `agent_setup`
 action `configure_provider`. Pass the value as `credential`, or choose one
 existing `credential_env` or `credential_file` reference. The response omits the

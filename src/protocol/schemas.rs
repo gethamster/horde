@@ -105,6 +105,7 @@ pub fn admin_schema(name: &str) -> Value {
         ],
         "agent_setup" => &[
             ("action", "string"),
+            ("repo", "string"),
             ("provider", "string"),
             ("roles", "array"),
             ("model", "string"),
@@ -399,7 +400,7 @@ pub fn admin_schema(name: &str) -> Value {
                 s = json!({"type":"object","minProperties":1,"maxProperties":32,"additionalProperties":{"type":"object","additionalProperties":false,"required":["runtime","models"],"properties":{"runtime":{"type":"string"},"models":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string"}}}},"description":"Named work roles, each with a machine and an allowed model/executor pool; the parent chooses which member to use."});
             }
             if name == "agent_setup" && *k == "action" {
-                s["enum"] = json!(["inspect","verify","configure_provider","configure_controller","create_fleet_key","join_worker","restart_local"]);
+                s["enum"] = json!(["inspect","verify","configure_provider","configure_workers","configure_controller","create_fleet_key","join_worker","restart_local"]);
             }
             if name == "provider_login" && *k == "action" {
                 s["enum"] = json!(["start", "status", "submit", "cancel"]);
@@ -444,6 +445,13 @@ pub fn admin_schema(name: &str) -> Value {
             }
             if name == "agent_setup" && *k == "credential" {
                 s["description"] = json!("Provider API key supplied by the user through their trusted agent. Use exactly one of credential, credential_env, credential_file. Never repeat the value in responses.");
+            }
+            if name == "agent_setup" && *k == "roles" {
+                s["maxItems"] = json!(32);
+                s["description"] = json!("Child executor role names. configure_workers requires at least one role and changes only role assignments for an existing provider.");
+            }
+            if name == "agent_setup" && *k == "repo" {
+                s["description"] = json!("Absolute repository path to inspect for parent registration. Follow a project_repo_add next action when unregistered.");
             }
             if name == "skill_apply" && *k == "accepted" {
                 s["const"] = json!(true);

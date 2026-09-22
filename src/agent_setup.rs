@@ -22,6 +22,7 @@ enum Action {
     Inspect,
     Verify,
     ConfigureProvider,
+    ConfigureWorkers,
     ConfigureController,
     CreateFleetKey,
     JoinWorker,
@@ -43,6 +44,7 @@ struct Request {
     credential: Option<String>,
     credential_env: Option<String>,
     credential_file: Option<PathBuf>,
+    repo: Option<PathBuf>,
     invitation_file: Option<PathBuf>,
     output_file: Option<PathBuf>,
     name: Option<String>,
@@ -82,6 +84,7 @@ pub async fn run(root: &Path, args: &Value) -> Result<Value> {
     match request.action {
         Action::Inspect | Action::Verify => inspect(root, &request),
         Action::ConfigureProvider => configure_provider(root, &request),
+        Action::ConfigureWorkers => configure_workers(&request),
         Action::ConfigureController => configure_controller(root).await,
         Action::CreateFleetKey => create_key(root, &request).await,
         Action::JoinWorker => {
@@ -162,7 +165,12 @@ fn inspect(root: &Path, request: &Request) -> Result<Value> {
             vec![]
         }
     };
+    if let Some(repo) = request.repo.as_deref() {
+        ensure!(repo.is_absolute(), "repository path must be absolute");
+    }
     let settings = Settings::load_user().ok();
+    let project_settings = request.repo.as_deref().map(Settings::load).transpose()?;
+    let worker_settings = project_settings.as_ref().or(settings.as_ref());
     for provider in &providers {
         if request
             .provider
@@ -225,8 +233,112 @@ fn inspect(root: &Path, request: &Request) -> Result<Value> {
     if controller["configured"] == false {
         next.push(tool(json!({"action":"configure_controller"})));
     }
+    let children = worker_settings
+        .map(|settings| {
+            settings
+                .executors
+                .iter()
+                .map(|(role, executor)| {
+                    let provider = executor.provider();
+                    json!({"role":role,"provider":provider,"kind":settings.providers.get(provider).map(|config|config.kind.as_str())})
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let selected = request.provider.as_deref().unwrap_or("default");
+    let billing_provider = providers
+        .iter()
+        .find(|provider| provider["kind"] == "tuara" && provider["provider"] == selected)
+        .or_else(|| {
+            request
+                .provider
+                .is_none()
+                .then(|| {
+                    providers
+                        .iter()
+                        .find(|provider| provider["kind"] == "tuara")
+                })
+                .flatten()
+        });
+    let billing = if let Some(provider) = billing_provider {
+        json!({
+            "provider":provider["provider"],
+            "credential":provider["credential"],
+            "wallet":crate::provider_wallet::dispatch(&Store::open(root)?, &json!({"action":"inspect"}))?,
+            "signup_tool":"provider_signup",
+            "topup_tool":"provider_topup",
+            "signup_choices":["organization_name","agent_name","amount_cents","max_charge_cents","terms_version","accept_terms"],
+            "topup_choices":["threshold_cents","amount_cents","max_charge_cents","monthly_limit_cents","terms_version","accept_terms"]
+        })
+    } else {
+        json!({"status":"no_tuara_provider_selected"})
+    };
+    let repository = if let Some(repo) = request.repo.as_deref() {
+        let repo = repo.canonicalize().context("repository unavailable")?;
+        let owner = crate::projects::infer(&Store::open(root)?, &repo)?;
+        match owner.as_deref() {
+            None => {
+                next.push(json!({"kind":"tool","tool":"project_repo_add","arguments":{"project":"default","path":repo}}));
+                json!({"status":"unregistered","path":repo})
+            }
+            Some(crate::projects::DEFAULT_PROJECT) => {
+                json!({"status":"registered","path":repo,"project":"default"})
+            }
+            Some(project) => {
+                blockers
+                    .push(json!({"code":"repository_owned_by_other_project","project":project}));
+                json!({"status":"other_project","path":repo,"project":project})
+            }
+        }
+    } else {
+        json!({"status":"not_selected"})
+    };
     Ok(
-        json!({"status":if blockers.is_empty(){"inspected"}else{"blocked"},"data_dir":root,"providers":providers,"daemon":daemon,"controller":controller,"checks":{"local_daemon":if daemon.is_some(){"responsive"}else{"unavailable"},"provider_api":"not_probed","subscription_authentication":"not_probed","controller_listener":"not_probed"},"access":access(),"presets":provisioning::PRESETS.iter().map(|preset|json!({"name":preset.name,"kind":preset.kind,"auth_mode":preset.auth_mode,"base_url":preset.base_url,"api_key_env":preset.api_key_env,"model":preset.model})).collect::<Vec<_>>(),"blockers":blockers,"next_actions":next}),
+        json!({"status":if blockers.is_empty(){"inspected"}else{"blocked"},"data_dir":root,"parent":{"connection":"admin_mcp","client":"any_mcp_client","repository":repository},"children":{"roles":children,"concurrency":worker_settings.map(|settings|settings.concurrency),"configure_tool":"agent_setup","configure_action":"configure_workers"},"billing":billing,"providers":providers,"daemon":daemon,"controller":controller,"checks":{"local_daemon":if daemon.is_some(){"responsive"}else{"unavailable"},"provider_api":"not_probed","subscription_authentication":"not_probed","controller_listener":"not_probed"},"access":access(),"presets":provisioning::PRESETS.iter().map(|preset|json!({"name":preset.name,"kind":preset.kind,"auth_mode":preset.auth_mode,"base_url":preset.base_url,"api_key_env":preset.api_key_env,"model":preset.model})).collect::<Vec<_>>(),"blockers":blockers,"next_actions":next}),
+    )
+}
+
+fn validate_roles(roles: &[String]) -> Result<()> {
+    ensure!(
+        !roles.is_empty()
+            && roles.len() <= 32
+            && roles.iter().all(|role| !role.is_empty()
+                && role.len() <= 48
+                && role
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))),
+        "provide 1-32 valid executor roles"
+    );
+    Ok(())
+}
+
+fn configure_workers(request: &Request) -> Result<Value> {
+    let provider = request.provider.as_deref().context("provider required")?;
+    validate_roles(&request.roles)?;
+    let settings = Settings::load_user()?;
+    ensure!(
+        settings.providers.contains_key(provider),
+        "provider is not configured"
+    );
+    let summary = provisioning::apply(
+        &crate::branding::config_dir(),
+        &provisioning::Spec {
+            name: provider.into(),
+            roles: request.roles.clone(),
+            ..Default::default()
+        },
+        None,
+    )?;
+    let configured = provisioning::list(&crate::branding::config_dir())?
+        .into_iter()
+        .find(|item| item["provider"] == provider)
+        .context("configured provider missing")?;
+    let mut next = vec![tool(json!({"action":"verify"}))];
+    if configured["kind"] == "tuara" && configured["credential"] == "missing" {
+        next.push(json!({"kind":"tool","tool":"provider_wallet","arguments":{"action":"inspect"}}));
+    }
+    Ok(
+        json!({"status":"configured","provider":provider,"roles":request.roles,"credential":configured["credential"],"summary":summary,"next_actions":next}),
     )
 }
 

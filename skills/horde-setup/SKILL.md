@@ -8,8 +8,30 @@ and internal IDs inside tool calls; ask the user only for a missing preference,
 credential access, or interactive login that the agent cannot supply. Existing
 authorization remains sufficient for actions within that scope.
 
-When the user asks to make Horde the default for repository work, use
-`horde init --agent codex --delegate always` or
+Any MCP client connected to Horde's unbound administrative `horde mcp`
+connection can be the parent agent. Start with `agent_setup` action `inspect`
+and include an absolute `repo` path when one is known.
+Its `parent` field confirms the administrative surface, `children.roles` shows
+the configured executor roles, and `billing` shows Tuara credential and Link
+wallet readiness. Use `configure_workers` with a configured `provider` and a
+list of role names to assign child roles before or after authentication. This
+action never requires a provider key and does not replace one. Use
+`configure_provider` to add a provider or set its model and credential, and
+`provider_login`, `provider_wallet`, `provider_signup`, and `provider_topup` for
+their respective authentication and billing phases. Collect spending caps and
+terms acceptance conversationally; the user does not write tool arguments.
+
+When `parent.repository.status` is `unregistered`, follow its returned
+`project_repo_add` action before submitting work on that checkout. The parent
+MCP client and child executor are separate: connecting the client
+does not choose which model or runtime runs Horde work. A remote MCP client
+needs a transport that can reach Horde; a local client can launch `horde mcp`
+over stdio. Do not claim that installing Horde alone registers a connector in
+every third-party client. The caller can then use `submit_task` and
+monitor its children through the normal task tools.
+
+When the user asks to make Horde the default for repository work in Codex or
+Claude, use `horde init --agent codex --delegate always` or
 `horde init --agent claude --delegate always`, matching the caller. This installs
 repository skills, instructions, and MCP configuration. It does not select worker
 providers. Read the report, complete authorized `next_steps`, and reload the

@@ -4,6 +4,37 @@ Defaults are autonomous execution, four concurrent workers, Tuara over an API ke
 
 Installing runs `horde config init`, which writes a starter `config.toml` and a private `credentials.env` into the configuration directory. It creates neither if it is already there, so it is safe to run again. `horde config` prints the complete default TOML.
 
+## Set up through any MCP client
+
+An MCP client connected to Horde's unbound administrative `horde mcp`
+connection is the parent agent. The connection does not choose the model for
+child workers. Ask that agent to set up Horde in ordinary language; it starts
+with `agent_setup` action `inspect`, which reports the current parent connection,
+child executor roles, provider authentication, controller state, and Tuara
+wallet readiness. With an absolute repository path, it also reports whether
+that checkout is registered and offers `project_repo_add` when needed. You do
+not need to provide JSON.
+
+The agent can call `agent_setup` action `configure_workers` with a configured
+provider and role names such as `planner`, `worker`, and `reviewer`. It assigns
+those child roles without requiring or changing the provider credential. To add
+or authenticate a provider, the agent uses `configure_provider` or
+`provider_login`. For a new Tuara account it uses `provider_wallet` to install
+and connect Link, `provider_signup` to create the funded account, and
+`provider_topup` to enable recurring funding within the limits you authorize.
+Signup and recurring funding require separate choices and consent; the agent
+collects them in conversation and supplies the tool arguments itself.
+
+Remote fleet workers use `configure_controller`, `create_fleet_key`, and
+`join_worker`. The fleet credential stays in a private file or the target
+platform's secret store. Horde reports the remaining platform actions when
+the MCP connection cannot perform them. An MCP client must first be connected
+to Horde: local clients can launch `horde mcp` over stdio, while remote clients
+need a reachable, authenticated transport. The Horde installer does not
+register a connector in every third-party client. Codex and Claude users can
+also run `horde init` to install repository instructions and client-specific MCP
+configuration.
+
 ## Decision models and advisory routing
 
 Horde can record decision-model routing advice without changing which executor runs a step. The feature is disabled by default and can be enabled only in operator-owned configuration. A repository `.horde.toml` cannot enable or alter it. Fresh decision settings name Tuara as the provider but leave the endpoint and credential source empty. This example uses the Tuara Jev catalog ID validated by the [live smoke test](decision-routing-v1-report.md):

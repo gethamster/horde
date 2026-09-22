@@ -448,7 +448,7 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_str().unwrap())
             .collect();
-        assert_eq!(command.as_std().get_program(), link);
+        assert_eq!(command.as_std().get_program(), link.canonicalize().unwrap());
         assert_eq!(&args[..2], &["spend-request", "create"]);
         for pair in [
             ["--amount", "2048"],

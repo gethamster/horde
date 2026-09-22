@@ -92,7 +92,7 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     ),
     (
         "agent_setup",
-        "Inspect or arrange Horde setup using available access; report missing credentials or access without exposing secrets",
+        "Inspect a client-neutral parent, configure child worker roles and providers, and guide fleet and billing setup without exposing secrets",
     ),
     (
         "skill_inspect",

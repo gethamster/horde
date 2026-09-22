@@ -99,6 +99,114 @@ fn missing_tuara_key_offers_mcp_wallet_onboarding() {
                 && action["arguments"]["action"] == "inspect"),
         "{report}"
     );
+    assert_eq!(report["parent"]["connection"], "admin_mcp");
+    assert_eq!(report["parent"]["client"], "any_mcp_client");
+    assert_eq!(report["billing"]["provider"], "default");
+    assert!(report["billing"]["wallet"]["installed"].is_boolean());
+    assert!(
+        report["children"]["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|role| role["role"] == "worker" && role["provider"] == "default")
+    );
+}
+
+#[test]
+fn worker_roles_can_be_assigned_over_mcp_before_billing_without_replacing_credentials() {
+    let f = Fixture::new();
+    let config_dir = f.dir.path().join("config/horde");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), "# keep this note\n[providers.default]\nkind='tuara'\nauth_mode='api'\nbase_url='https://tuara.com/router/v1'\napi_key_env='TUARA_API_KEY'\nmodel='existing-model'\n[executors.worker]\n").unwrap();
+    let assigned = f.run(json!({"action":"configure_workers","provider":"default","roles":["planner","worker","reviewer"]}), &[]);
+    assert_eq!(assigned["status"], "configured", "{assigned}");
+    assert_eq!(assigned["credential"], "missing");
+    let saved = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
+    assert!(saved.contains("# keep this note"));
+    assert!(saved.contains("model='existing-model'"));
+    assert!(saved.contains("[executors.planner]"));
+    assert!(saved.contains("[executors.reviewer]"));
+    assert!(!config_dir.join("credentials.env").exists());
+    use std::os::unix::fs::PermissionsExt;
+    let credential_file = config_dir.join("credentials.env");
+    std::fs::write(&credential_file, "TUARA_API_KEY='existing-secret'\n").unwrap();
+    std::fs::set_permissions(&credential_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let reassigned = f.run(
+        json!({"action":"configure_workers","provider":"default","roles":["worker"]}),
+        &[],
+    );
+    assert_eq!(reassigned["status"], "configured", "{reassigned}");
+    assert_eq!(
+        std::fs::read_to_string(&credential_file).unwrap(),
+        "TUARA_API_KEY='existing-secret'\n"
+    );
+    assert!(!reassigned.to_string().contains("existing-secret"));
+    let invalid = f.run(
+        json!({"action":"configure_workers","provider":"default","roles":["../escape"]}),
+        &[],
+    );
+    assert!(invalid.get("error").is_some());
+    assert!(
+        !std::fs::read_to_string(config_dir.join("config.toml"))
+            .unwrap()
+            .contains("escape")
+    );
+}
+
+#[test]
+fn parent_repository_setup_is_guided_through_admin_mcp() {
+    let f = Fixture::new();
+    let repo = f.dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let git = f.dir.path().join("bin/git");
+    std::fs::write(&git, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let project_config = repo.join(".horde");
+    std::fs::create_dir(&project_config).unwrap();
+    std::fs::write(
+        project_config.join("horde.toml"),
+        "[executors.worker]\nprovider='claude'\n",
+    )
+    .unwrap();
+    let first = f.run(json!({"action":"inspect","repo":repo}), &[]);
+    assert_eq!(
+        first["parent"]["repository"]["status"], "unregistered",
+        "{first}"
+    );
+    assert!(
+        first["children"]["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|role| role["role"] == "worker" && role["provider"] == "claude")
+    );
+    assert!(
+        first["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["tool"] == "project_repo_add" && action["arguments"]["project"] == "default"
+            })
+    );
+    let db = Store::open(&f.root).unwrap();
+    horde::protocol::dispatch(
+        &db,
+        "project_repo_add",
+        json!({"project":"default","path":repo}),
+        None,
+    )
+    .unwrap();
+    let second = f.run(json!({"action":"inspect","repo":repo}), &[]);
+    assert_eq!(second["parent"]["repository"]["status"], "registered");
+    assert!(
+        !second["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["tool"] == "project_repo_add")
+    );
 }
 
 #[test]

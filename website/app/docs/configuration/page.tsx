@@ -10,6 +10,10 @@ export const metadata: Metadata = {
 export default function Configuration() {
   return <>
     <h1>Configure</h1>
+    <h2 id="mcp-setup">Set up from any MCP client</h2>
+    <p>Any MCP client connected to Horde’s unbound administrative <code>horde mcp</code> bridge can be the parent agent. Ask it to inspect setup with your repository path; Horde reports repository registration, child executor roles, provider authentication, controller state, and Link wallet readiness. The parent connection does not choose the child workers’ models.</p>
+    <p>The agent can assign a configured provider to roles such as <code>planner</code>, <code>worker</code>, and <code>reviewer</code> with <code>agent_setup</code> action <code>configure_workers</code>, even before billing is complete. It uses <code>provider_wallet</code>, <code>provider_signup</code>, and <code>provider_topup</code> for Tuara funding. Tell the agent your spending limits and terms decision in ordinary language; you do not need to write JSON.</p>
+    <p>A local MCP client can launch Horde over stdio. A remote client needs a reachable, authenticated transport, and installing Horde does not register a connector in that client automatically. Codex and Claude can also use <code>horde init</code> for repository instructions and their client-specific MCP configuration.</p>
     <h2>Settings files</h2>
     <p>Run <code>horde config</code> to print starter TOML. User settings live in <code>~/.config/horde/config.toml</code>, or <code>$XDG_CONFIG_HOME/horde/config.toml</code>. A repository can override workflow settings in <code>.horde/horde.toml</code>. The legacy <code>.horde.toml</code> also loads; the nested file wins when both set the same value.</p>
     <p>Horde reads these settings when you submit a task. Later edits apply to new tasks.</p>
