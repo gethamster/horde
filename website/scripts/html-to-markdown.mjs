@@ -1,5 +1,5 @@
 // Minimal HTML -> Markdown converter for the pages this site actually emits
-// (headings, paragraphs, lists, links, inline and fenced code).
+// (headings, paragraphs, lists, tables, links, inline and fenced code).
 //
 // The Markdown variants are derived from the built HTML rather than authored
 // separately, so the two representations cannot drift.
@@ -38,6 +38,36 @@ function inline(html) {
   return decode(text).replace(/\s+/g, " ").trim();
 }
 
+function tableCell(html) {
+  const escape = (text) => text.replace(/[\\|]/g, "\\$&");
+  return inline(html).split(/(`[^`]*`)/g).map((part) => {
+    if (!part.startsWith("`") || !part.endsWith("`")) return escape(part);
+    const code = part.slice(1, -1);
+    if (!code.includes("|")) return part; // Backslashes are literal inside code.
+    // GFM pipe escaping cannot preserve every backslash run inside code spans.
+    // Keep that text literal without code styling, including Markdown syntax.
+    if (code.includes("\\")) return code.replace(/[\\|`*_~[\]<>&]/g, "\\$&");
+    return escape(part);
+  }).join("");
+}
+
+/** Convert simple semantic tables to pipe tables without losing the first row. */
+function table(html) {
+  const rows = [...html.matchAll(/<tr\b[^>]*>(.*?)<\/tr>/gis)]
+    .map(([, row]) => ({
+      header: /<th\b/i.test(row),
+      cells: [...row.matchAll(/<(th|td)\b[^>]*>(.*?)<\/\1>/gis)]
+        .map(([, , cell]) => tableCell(cell)),
+    }))
+    .filter((row) => row.cells.length);
+  if (!rows.length) return "";
+  const width = Math.max(...rows.map((row) => row.cells.length));
+  const render = (cells) => "| " + Array.from({ length: width }, (_, index) => cells[index] ?? "").join(" | ") + " |";
+  const header = rows[0].header ? rows[0].cells : [];
+  const data = rows[0].header ? rows.slice(1) : rows;
+  return [render(header), render(Array(width).fill("---")), ...data.map((row) => render(row.cells))].join("\n");
+}
+
 /** Convert one page's `<main>` contents to Markdown. */
 export function toMarkdown(html, origin) {
   const main = html.match(/<main\b[^>]*>(.*?)<\/main>/is);
@@ -49,9 +79,9 @@ export function toMarkdown(html, origin) {
     : stripped;
   const blocks = [];
   const pattern =
-    /<(h[1-6])\b[^>]*>(.*?)<\/\1>|<pre\b[^>]*>(.*?)<\/pre>|<(ul|ol)\b[^>]*>(.*?)<\/\4>|<p\b[^>]*>(.*?)<\/p>/gis;
+    /<(h[1-6])\b[^>]*>(.*?)<\/\1>|<pre\b[^>]*>(.*?)<\/pre>|<(ul|ol)\b[^>]*>(.*?)<\/\4>|<p\b[^>]*>(.*?)<\/p>|<table\b[^>]*>(.*?)<\/table>/gis;
   for (const match of body.matchAll(pattern)) {
-    const [, heading, headingText, preText, listTag, listText, paragraph] = match;
+    const [, heading, headingText, preText, listTag, listText, paragraph, tableText] = match;
     if (heading) {
       const text = inline(headingText);
       if (text) blocks.push("#".repeat(Number(heading[1])) + " " + text);
@@ -68,6 +98,9 @@ export function toMarkdown(html, origin) {
       if (items.length) blocks.push(items.join("\n"));
     } else if (paragraph !== undefined) {
       const text = inline(paragraph);
+      if (text) blocks.push(text);
+    } else if (tableText !== undefined) {
+      const text = table(tableText);
       if (text) blocks.push(text);
     }
   }

@@ -144,6 +144,10 @@ pub fn response_json() -> &'static str {
     r#"{"model":"jev-1.13.0","answers":{"route":{"type":"choice","choice":"local/codex","confidence":0.7,"probabilities":{"local/codex":0.7,"local/claude":0.2,"abstain":0.1}},"difficulty":{"type":"score","score":1.3,"confidence":0.6,"legend":["routine","moderate","complex"],"probabilities":{"0":0.1,"1":0.5,"2":0.4}},"security":{"type":"noul","noul":0.25}},"usage":{"input_tokens":21,"output_tokens":3}}"#
 }
 
+pub fn indexed_legend_response_json() -> &'static str {
+    r#"{"model":"jev-1.13.0","answers":{"route":{"type":"choice","choice":"local/codex","confidence":0.7,"probabilities":{"local/codex":0.7,"local/claude":0.2,"abstain":0.1}},"difficulty":{"type":"score","score":1.3,"confidence":0.6,"legend":{"0":"routine","1":"moderate","2":"complex"},"probabilities":{"0":0.1,"1":0.5,"2":0.4}},"security":{"type":"noul","noul":0.25}},"usage":{"input_tokens":21,"output_tokens":3}}"#
+}
+
 pub fn shadow_response() -> &'static str {
     r#"{"model":"jev-1.13.0","answers":{"route":{"type":"choice","choice":"local/simulated","confidence":0.8,"probabilities":{"local/simulated":0.8,"abstain":0.2}},"difficulty":{"type":"score","score":1.0,"confidence":0.7,"legend":["routine","moderate","complex"],"probabilities":{"0":0.2,"1":0.6,"2":0.2}},"security":{"type":"noul","noul":0.1},"insufficient_evidence":{"type":"noul","noul":0.1}},"usage":{"input_tokens":12,"output_tokens":4}}"#
 }

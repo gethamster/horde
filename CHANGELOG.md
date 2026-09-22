@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.6.6 - 2026-09-22
+
+- Accept Jev score legends returned as indexed objects as well as arrays,
+  preserving exact label and probability checks. Live Tuara validation now
+  covers routing and plan, patch, integration, and final reviews.
+- Add an opt-in decision smoke test that waits for the final review, retains
+  failure evidence, and requires actual provider responses before passing.
+- Explain Responses, Chat Completions, Messages, and Decisions on the website,
+  including which executor uses each API and how to configure Jev through Tuara.
+  Preserve comparison tables in the generated Markdown documentation.
+- Run project workers and Docker workloads on experimental AX runtimes, with
+  project-bound storage, private routing, and suspend/resume support.
+- Diagnose fleet enrollment failures and provide a one-command Taildrop invite.
+  Expand setup guides for project-scoped work and deploying a parent with one child.
+
 ## 0.6.5 - 2026-09-21
 
 - Run separate projects with their own repositories, operator configuration,

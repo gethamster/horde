@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in isolated executor smoke; live runs may consume API/subscription capacity."""
 import argparse
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -36,11 +37,29 @@ def arguments(argv=None):
     parser.add_argument("--model", help="exact endpoint model identifier; required for tuara/local")
     parser.add_argument("--base-url", help="native endpoint URL including /v1; required for local")
     parser.add_argument("--api-key-env", help="environment variable holding the key, never the key itself")
+    parser.add_argument("--decision-base-url", help="opt in to shadow Jev decisions at this explicit service root (Horde appends /v1/systemone)")
+    parser.add_argument("--decision-model", default="jev-1.13.0")
+    parser.add_argument("--decision-api-key-env", default="TUARA_API_KEY")
+    parser.add_argument("--decision-review", action="store_true", help="also validate advisory work-product reviews; requires --decision-base-url")
     parser.add_argument("--timeout", type=positive, default=180, help="worker timeout in seconds")
     parser.add_argument("--max-tool-rounds", type=positive, default=32)
     parser.add_argument("--binary", type=Path, default=BINARY)
     parser.add_argument("--prepare-only", action="store_true", help="validate configuration/template without starting a daemon or calling a model")
     args = parser.parse_args(argv)
+    if args.decision_review and not args.decision_base_url:
+        parser.error("--decision-review requires --decision-base-url")
+    if args.decision_base_url:
+        url = urlsplit(args.decision_base_url)
+        try:
+            loopback = ipaddress.ip_address(url.hostname or "").is_loopback
+        except ValueError:
+            loopback = False
+        if not url.hostname or url.username or url.password or url.query or url.fragment or not (
+            url.scheme == "https" or url.scheme == "http" and loopback
+        ):
+            parser.error("--decision-base-url requires HTTPS (or literal loopback HTTP) without credentials, query, or fragment")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.decision_api_key_env):
+            parser.error("--decision-api-key-env must name an environment variable")
     native = args.kind in {"tuara", "local"}
     if native and not args.model:
         parser.error("tuara/local requires --model with an exact catalog identifier")
@@ -71,7 +90,46 @@ def configuration(args):
         lines += [f"model={quote(args.model)}"]
     for role in ["planner", "worker", "reviewer"]:
         lines += [f"[executors.{role}]", 'provider="smoke"']
+    if args.decision_base_url:
+        lines += ["[decision]", 'mode="shadow"', 'backend="tuara"', 'protocol="systemone-v1"',
+                  f"base_url={quote(args.decision_base_url)}", f"model={quote(args.decision_model)}",
+                  f"api_key_env={quote(args.decision_api_key_env)}",
+                  f"review_enabled={str(args.decision_review).lower()}",
+                  "deadline_ms=30000", "max_attempts=1", "max_decisions_per_task=16",
+                  "[[decision.capability_guidance]]", 'runtime="local"', 'capability="worker"',
+                  'description="Create and commit the isolated hello.txt smoke fixture using the configured worker."']
     return "\n".join(lines) + "\n"
+
+
+def drain_decisions(call, task, reviews_enabled, timeout):
+    """Wait for durable final-review admission and completion of all admitted work."""
+    deadline = time.monotonic() + timeout
+    previous = None
+    stable_since = time.monotonic()
+    while time.monotonic() < deadline:
+        # The fixture creates fewer than 200 rows, including locally skipped rows.
+        decisions = call("decisions", task, "--limit", "200")
+        reviews = call("reviews", task, "--limit", "200")
+        snapshot = (decisions, reviews)
+        if snapshot != previous:
+            previous, stable_since = snapshot, time.monotonic()
+        pending = any(row["state"] in {"queued", "running"} for row in decisions)
+        final_seen = not reviews_enabled or any(row["kind"] == "final_evidence" for row in reviews)
+        if decisions and final_seen and not pending and time.monotonic() - stable_since >= 1:
+            return decisions, reviews
+        time.sleep(.25)
+    raise RuntimeError("Smoke decision drain timed out; inspect decisions.json and reviews.json")
+
+
+def validate_decisions(decisions, reviews, reviews_enabled):
+    failed = [row for row in decisions if row["state"] in {"failed", "interrupted", "cancelled"}]
+    if failed:
+        raise RuntimeError(f"Smoke decision validation failed: {len(failed)} failed/interrupted/cancelled decisions; inspect decisions.json")
+    succeeded = lambda row: row["state"] == "succeeded" and row.get("provider_attempts", 0) > 0
+    if not any(row["purpose"] == "routing" and succeeded(row) for row in decisions):
+        raise RuntimeError("Smoke decision validation failed: no successful provider routing decision (local abstentions do not count)")
+    if reviews_enabled and not any(row.get("kind") == "final_evidence" and succeeded(row) for row in reviews):
+        raise RuntimeError("Smoke decision validation failed: no successful provider final_evidence review (local abstentions do not count)")
 
 
 def run(args):
@@ -80,6 +138,8 @@ def run(args):
         raise RuntimeError(f"Build Horde first with cargo build --locked: {binary}")
     if args.api_key_env and not args.prepare_only and not os.environ.get(args.api_key_env):
         raise RuntimeError(f"Export {args.api_key_env} before running (use a dummy value only for an endpoint that needs no authentication)")
+    if args.decision_base_url and not args.prepare_only and not os.environ.get(args.decision_api_key_env):
+        raise RuntimeError(f"Export {args.decision_api_key_env} before running decisions")
     root = Path(tempfile.mkdtemp(prefix="horde-live-", dir="/tmp"))
     repo = root / "repo"
     repo.mkdir()
@@ -126,6 +186,9 @@ def run(args):
                 status = value["task"]["status"]
                 if status in {"succeeded", "failed", "blocked", "cancelled"}:
                     print(json.dumps({"status": status}), flush=True)
+                    if args.decision_base_url and status in {"succeeded", "failed"}:
+                        decisions, reviews = drain_decisions(call, task, args.decision_review, args.timeout + 30)
+                        validate_decisions(decisions, reviews, args.decision_review)
                     if status != "succeeded":
                         raise RuntimeError(f"Smoke ended {status}; evidence: {root}")
                     integrated = root / f"data/workspaces/{task}/integrated/hello.txt"
@@ -136,9 +199,13 @@ def run(args):
             raise RuntimeError(f"Smoke timed out; evidence: {root}")
         finally:
             if task and daemon.poll() is None:
-                for command, filename in [("inspect", "result.json"), ("events", "events.json"), ("metrics", "metrics.json")]:
+                commands = [("inspect", "result.json"), ("events", "events.json"), ("metrics", "metrics.json")]
+                if args.decision_base_url:
+                    commands += [("decisions", "decisions.json"), ("reviews", "reviews.json"), ("summary", "summary.json")]
+                for command, filename in commands:
                     try:
-                        (root / filename).write_text(json.dumps(call(command, task), indent=2))
+                        options = ["--limit", "200"] if command in {"decisions", "reviews"} else []
+                        (root / filename).write_text(json.dumps(call(command, task, *options), indent=2))
                     except (subprocess.SubprocessError, ValueError, OSError):
                         print(f"Could not capture {filename}; inspect daemon.log", flush=True)
             if daemon.poll() is None:

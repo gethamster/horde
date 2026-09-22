@@ -1,9 +1,30 @@
 # Native provider contract
 
-Horde's native executor speaks an OpenAI-compatible chat protocol. Its internal
+Horde's native executor speaks the OpenAI-compatible Chat Completions protocol,
+posting to `<base_url>/chat/completions`. Its internal
 kind is currently `tuara`; a configured base URL can point to a local server.
 The contract below applies within one native invocation. An invocation starts a
 new conversation when a step starts or retries.
+
+## Protocol boundaries
+
+Use the native executor for generative coding models that support Chat
+Completions and tool calls. Horde also supports Responses through an API-backed
+Codex CLI provider (`kind = "codex"`) and Messages through an API-backed Claude
+CLI provider (`kind = "claude"`). Those harnesses manage their own model
+conversations. The native executor has no Responses adapter or legacy text
+`/completions` adapter.
+
+Decision models use a separate `[decision]` configuration and the SystemOne v1
+contract. They return typed choices, scores, and assessments from 0 to 1
+(`noul`) without coding tools. Routing and work-product review run as shadow advice; decisions do not
+replace generative workers. Native context pruning and browser testing have
+separate opt-in modes for bounded actions. For Jev through Tuara, use decision
+base URL `https://tuara.com/router`, which Horde extends with `/v1/systemone`,
+and catalog model `XXXXTSJV130XXX`. A native Tuara coding provider instead uses
+base URL `https://tuara.com/router/v1` and a generative model. See
+[decision configuration](configuration.md#decision-models-and-advisory-routing)
+for credentials, capability guidance, and inspection commands.
 
 ## Request history and prefix reuse
 
@@ -31,7 +52,7 @@ The operator can enable Jev decisions for the native executor in the user-level
 `[decision]` configuration. The default is disabled. `native_context_mode = "shadow"`
 records proposals without changing a conversation; `"active"` can
 replace completed search exchanges before a native request. Both require
-`decision.mode = "shadow"`, a configured TypeSafe credential, and the same
+`decision.mode = "shadow"`, a configured decision-provider credential, and the same
 operator settings pinned to the task. Routing and work-product review remain
 advisory even when native pruning is active.
 
