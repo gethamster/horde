@@ -76,9 +76,14 @@ fn remote_accept_rejects_an_ungranted_project_before_creating_repository() {
         ..Default::default()
     };
     let packet = json!({"method":"accept","args":{"project":project["id"],"task":"owner-task"}});
-    let error =
-        horde::federation::handle_control(dir.path().into(), network, "controller", &packet)
-            .unwrap_err();
+    let error = horde::federation::handle_control(
+        dir.path().into(),
+        &dir.path().join("config"),
+        network,
+        "controller",
+        &packet,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("not granted"), "{error}");
     assert!(db.rows("SELECT id FROM tasks", &[]).unwrap().is_empty());
     assert!(!dir.path().join("projects").exists());
@@ -139,6 +144,7 @@ fn remote_task_ids_cannot_cross_project_authorization() {
     let network = horde::network::NetworkConfig::default();
     let error = horde::federation::handle_control(
         dir.path().into(),
+        &dir.path().join("config"),
         network,
         "controller",
         &json!({"method":"status","args":{"project":project["id"],"task":"victim"}}),

@@ -635,7 +635,12 @@ mod tests {
             crate::network::probe(&rogue, "parent").await.is_err(),
             "CA membership alone must not grant access"
         );
-        let control = tokio::spawn(crate::control::connect(remote, child));
+        // An unused configuration directory keeps the developer's own settings out.
+        let control = tokio::spawn(crate::control::connect(
+            remote,
+            temp.path().join("config"),
+            child,
+        ));
         let mut connected = false;
         for _ in 0..100 {
             if let Ok(Some(reply)) =
