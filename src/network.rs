@@ -443,6 +443,11 @@ async fn serve_inner(
             .first()
             .ok_or_else(|| tonic::Status::unauthenticated("client certificate required"))?;
         let fingerprint = hex::encode(Sha256::digest(cert.as_ref()));
+        if let Some(address) = connection.get_ref().remote_addr() {
+            request
+                .extensions_mut()
+                .insert(crate::federation::PeerAddress(address.to_string()));
+        }
         let identity = allowed.get(&fingerprint).cloned().or_else(|| {
             enrollment_root
                 .as_ref()

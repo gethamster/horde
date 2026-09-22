@@ -475,6 +475,20 @@ enum NetworkCommands {
         #[arg(long)]
         service: bool,
     },
+    /// Create a fleet credential and deliver it to a Tailscale peer via Taildrop, in one step.
+    Invite {
+        /// Discovered hostname, short name, or node ID to send the credential to.
+        peer: String,
+        /// Suggested name for `network join --name` on the far side; cosmetic only.
+        #[arg(long)]
+        name: Option<String>,
+        /// Seconds during which the invited worker may join (default: 1 hour).
+        #[arg(long, default_value_t = 3600)]
+        expires_in: i64,
+        /// Distinct workers this one-time credential may enroll.
+        #[arg(long, default_value_t = 1)]
+        max_workers: usize,
+    },
     #[command(hide = true)]
     Accept {
         #[arg(long)]
@@ -709,6 +723,29 @@ async fn main() -> Result<()> {
                     println!("{}", horde::pairing::add(&root, target, *service).await?);
                     return Ok(());
                 }
+                NetworkCommands::Invite {
+                    peer,
+                    name,
+                    expires_in,
+                    max_workers,
+                } => {
+                    anyhow::ensure!(
+                        config.is_none(),
+                        "invite uses the controller's own network configuration; omit --config"
+                    );
+                    println!(
+                        "{}",
+                        horde::fleet_enrollment::invite::invite(
+                            &root,
+                            peer,
+                            name.as_deref(),
+                            *expires_in,
+                            *max_workers
+                        )
+                        .await?
+                    );
+                    return Ok(());
+                }
                 NetworkCommands::Accept { service } => {
                     println!("{}", horde::pairing::accept(&root, *service).await?);
                     return Ok(());
@@ -735,6 +772,7 @@ async fn main() -> Result<()> {
                 | NetworkCommands::Revoke { .. }
                 | NetworkCommands::Setup { .. }
                 | NetworkCommands::Add { .. }
+                | NetworkCommands::Invite { .. }
                 | NetworkCommands::Accept { .. } => unreachable!(),
                 NetworkCommands::Peers => json!(horde::network::discover(&settings).await?),
                 NetworkCommands::Probe { peer } => horde::network::probe(&settings, &peer).await?,
@@ -767,11 +805,49 @@ async fn main() -> Result<()> {
             repo,
             template,
             on,
-        } => request(
-            &root,
-            "submit_task",
-            json!({"objective":objective,"repo":repo.canonicalize()?,"template":template,"on":on}),
-        )?,
+        } => {
+            let repo = repo.canonicalize()?;
+            let (_db, _project, settings) = project_settings(&root, &repo)?;
+            let plan = horde::template::compile(
+                template.as_deref().unwrap_or(&settings.default_template),
+                &horde::template::load_templates(&horde::branding::templates(&repo))?,
+                std::collections::BTreeMap::from([("task".into(), objective.clone())]),
+            )?;
+            let roles: std::collections::BTreeSet<_> = plan
+                .steps
+                .iter()
+                .filter(|s| s.kind == "agent")
+                .map(|s| s.role.clone())
+                .collect();
+            let blockers = horde::init::executor_role_blockers(&settings, &roles);
+            anyhow::ensure!(
+                blockers.is_empty(),
+                "submit blocked:\n{}",
+                blockers.join("\n")
+            );
+            if let Some(on) = &on {
+                anyhow::ensure!(
+                    horde::git::run(&repo, &["status", "--porcelain"])?.is_empty(),
+                    "remote work needs a clean repository; commit intended source changes before submitting with --on"
+                );
+                let runtimes = request(&root, "runtime_list", json!({}))?;
+                let ready = runtimes.as_array().is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        (row["id"] == json!(on) || row["name"] == json!(on))
+                            && row["state"] == json!("ready")
+                    })
+                });
+                anyhow::ensure!(
+                    ready,
+                    "runtime {on} is not currently connected; check `horde runtime list`"
+                );
+            }
+            request(
+                &root,
+                "submit_task",
+                json!({"objective":objective,"repo":repo,"template":template,"on":on}),
+            )?
+        }
         Commands::Inspect { task } => request(&root, "inspect", json!({"task":task}))?,
         Commands::Result { task } => request(&root, "remote_result", json!({"task":task}))?,
         Commands::Metrics { task } => request(&root, "metrics", json!({"task":task}))?,
@@ -1020,6 +1096,17 @@ async fn main() -> Result<()> {
                 json!({"settings":settings,"resolved_models":resolved_models,"data_dir":root,"daemon":root.join("daemon.sock").exists()})
             };
             result["skill_pack"] = skill_pack;
+            let service_status = horde::service::action(&root, "status")
+                .unwrap_or_else(|e| json!({"error": e.to_string()}));
+            let update_check = horde::update::run(&root, None, true, None)
+                .await
+                .unwrap_or_else(|e| json!({"error": e.to_string()}));
+            result["runtime"] = json!({
+                "data_dir": root,
+                "daemon_running": root.join("daemon.sock").exists(),
+                "service": service_status,
+                "update": update_check,
+            });
             result
         }
         Commands::Update {

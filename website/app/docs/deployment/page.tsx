@@ -10,20 +10,23 @@ export default function Deployment() {
   return <>
     <h1>Deploy remote workers</h1>
     <p>To run agents on another machine, pair a Horde controller with a worker over your Tailscale network. The controller schedules work; the worker runs the configured agents with its own credentials and resource limits.</p>
-    <h2>Prepare the worker</h2>
-    <p>The worker must be reachable through Tailscale SSH with a non-root account. On a Linux worker with Horde installed, run:</p>
-    <pre><code>{`horde network setup --worker`}</code></pre>
-    <p>Alternatively, install Tailscale on the worker, connect it to your tailnet, and enable Tailscale SSH. Tailnet policy must allow your selected SSH login and outbound worker connections to the controller on TCP port 7443.</p>
-    <h2>Pair from the controller</h2>
-    <p>Stop an existing unconfigured daemon before first-time networking setup:</p>
-    <pre><code>{`horde stop
-horde network setup
-horde network peers
+    <h2>The easy way: invite a Tailscale peer</h2>
+    <p>Set up the controller once:</p>
+    <pre><code>{`horde network setup`}</code></pre>
+    <p>This installs Tailscale if needed (Homebrew is required on macOS), handles sign-in, and creates the controller’s certificate authority. Stop an existing unconfigured daemon first if this isn’t a fresh install.</p>
+    <p>Then, for any of your own devices on the same tailnet — no SSH access required:</p>
+    <pre><code>{`horde network invite worker
+horde runtime list`}</code></pre>
+    <p>Replace <code>worker</code> with the device’s discovered hostname (see <code>horde network peers</code>). This resolves the peer, creates a short-lived credential scoped to that one device, and sends it over Tailscale’s built-in Taildrop — one command, no manual file handling. It prints the exact command to run on the worker once the file arrives:</p>
+    <pre><code>{`horde network join ~/Downloads/horde-invite-worker.json`}</code></pre>
+    <p>Accept the Taildrop transfer in the Tailscale menu bar if prompted. Configure the worker’s executor login separately; Horde never copies the controller’s provider credentials.</p>
+    <h2>With Tailscale SSH: pair in one step</h2>
+    <p>If the worker already has Tailscale SSH enabled with a non-root account, skip the Taildrop step entirely:</p>
+    <pre><code>{`horde network peers
 horde network add alice@worker
 horde runtime list`}</code></pre>
-    <p>Replace <code>alice@worker</code> with the SSH user and discovered host. Setup installs Tailscale if needed, handles sign-in, and creates the controller’s certificate authority. macOS needs Homebrew for automatic Tailscale installation.</p>
-    <p>Pairing installs Horde on the worker if absent, generates a unique certificate, and waits for an authenticated outbound handshake. Discovery lists candidates; selecting a host authorizes enrollment.</p>
-    <p>Use <code>network setup --service</code> for controller boot startup. Use <code>network add alice@worker --service</code> for the worker; this requires passwordless sudo on that host. Configure the worker’s executor login separately.</p>
+    <p>Replace <code>alice@worker</code> with the SSH user and discovered host. This installs Horde on the worker if absent, generates a unique certificate, and waits for an authenticated outbound handshake — the whole pairing in one command, but only works if Tailscale SSH is already on. On a Linux worker, prepare that access with <code>horde network setup --worker</code>; on macOS, enable Tailscale SSH from the Tailscale app.</p>
+    <p>Use <code>network setup --service</code> for controller boot startup. Use <code>network add alice@worker --service</code> for the worker; this requires passwordless sudo on that host.</p>
     <h2>Inspect and update</h2>
     <p>Use the runtime ID returned by <code>runtime list</code>:</p>
     <pre><code>{`horde runtime inspect RUNTIME_ID

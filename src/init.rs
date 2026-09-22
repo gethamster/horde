@@ -128,22 +128,41 @@ fn provider_checks(
         blockers.push("The configured workflow has command steps; enable allow_commands or choose a compatible workflow.".into());
     }
     let mut providers = Vec::new();
-    for role in roles {
+    for role in &roles {
         let config = settings
-            .executor(&role)
+            .executor(role)
             .with_context(|| format!("unconfigured executor role {role}"))?;
-        let provider = settings.executors[&role].provider();
-        blockers.extend(executor_blockers(&role, &config, settings.allow_commands));
-        if (config.auth_mode == "api" || config.kind == "tuara")
-            && crate::config::credential(&config.api_key_env).is_err()
-        {
-            blockers.push(format!("Role {role} needs credentials for provider {provider}. Run `horde config provider add {provider}`, or select an existing login provider with `horde config provider add {client} --use-for planner,worker,reviewer`."));
-        }
+        let provider = settings.executors[role].provider();
         providers.push(json!({"role":role,"provider":provider,"kind":config.kind,"auth_mode":config.auth_mode,"authentication":"not_probed"}));
     }
+    blockers.extend(executor_role_blockers(settings, &roles));
     blockers.sort();
     blockers.dedup();
     Ok((providers, blockers))
+}
+
+/// Blockers for a set of template roles against the given settings: missing
+/// executables and missing credentials. Shared by `horde init` and `horde
+/// submit`'s preflight, so a bad executor config is reported before either
+/// one does real work.
+pub fn executor_role_blockers(settings: &Settings, roles: &BTreeSet<String>) -> Vec<String> {
+    let mut blockers = Vec::new();
+    for role in roles {
+        let Some(config) = settings.executor(role) else {
+            blockers.push(format!("unconfigured executor role {role}"));
+            continue;
+        };
+        let provider = settings.executors[role].provider();
+        blockers.extend(executor_blockers(role, &config, settings.allow_commands));
+        if (config.auth_mode == "api" || config.kind == "tuara")
+            && crate::config::credential(&config.api_key_env).is_err()
+        {
+            blockers.push(format!("Role {role} needs credentials for provider {provider}. Run `horde config provider add {provider}`."));
+        }
+    }
+    blockers.sort();
+    blockers.dedup();
+    blockers
 }
 
 fn executor_blockers(

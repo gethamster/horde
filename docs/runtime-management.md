@@ -241,7 +241,7 @@ versions, runner image, profile configuration, and current limitations.
 ## Provisioning
 
 Workers launched by your own deployment or autoscaler can register themselves
-using [automatic fleet enrollment](networking.md#automatic-fleet-enrollment).
+using [fleet credentials](networking.md#fleet-credentials-when-you-cant-ssh-in).
 One credential works across all providers; each worker generates a separate
 identity at startup. The provisioning profiles below remain available when
 Horde should create and manage individual resources itself.
