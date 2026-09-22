@@ -42,6 +42,12 @@ fn select_root(root: &Path, explicit: bool, controller: &str) -> Result<(PathBuf
         selected.canonicalize()?.starts_with(root.canonicalize()?),
         "worker directory must remain inside its selected data directory"
     );
+    eprintln!(
+        "existing Horde runtime detected at {}; using isolated worker directory {} (run `horde --data-dir {} runtime status` to inspect this worker)",
+        root.display(),
+        selected.display(),
+        selected.display()
+    );
     Ok((selected, true))
 }
 
@@ -101,6 +107,14 @@ pub async fn join(
         worker::join(&root, invitation_path).await?
     };
     let db = Store::open(&root)?;
+    management::set(
+        &db,
+        "worker_isolated",
+        if isolated { "true" } else { "false" },
+    )?;
+    if isolated {
+        management::set(&db, "worker_data_dir", &root.to_string_lossy())?;
+    }
     if let Some(name) = name {
         crate::runtime_directory::set_local_name(&db, name)?;
     }
@@ -113,10 +127,24 @@ pub async fn join(
     daemon_client::start(&root).await?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        if connected(&root, &invitation.controller_id, &name)? {
-            return Ok(
-                json!({"runtime":certificate.runtime_id,"name":name,"enrolled":true,"running":true,"connected":true,"data_dir":root}),
-            );
+        match connected(&root, &invitation.controller_id, &name) {
+            Ok(true) => {
+                return Ok(
+                    json!({"runtime":certificate.runtime_id,"name":name,"enrolled":true,"running":true,"connected":true,"data_dir":root}),
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                // A rejected name must not leave a daemon connected under it.
+                // Wait for the shutdown to actually finish so a retried join
+                // does not race a still-exiting process for this data dir.
+                let _ = daemon_client::request(&root, "shutdown", json!({}));
+                let stop_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                while daemon_client::running(&root) && tokio::time::Instant::now() < stop_deadline {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                return Err(error);
+            }
         }
         if tokio::time::Instant::now() >= deadline || !daemon_client::running(&root) {
             break;

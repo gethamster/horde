@@ -83,7 +83,9 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version > i64::from(SCHEMA_VERSION) {
-            bail!("database schema {version} is newer than this runtime supports");
+            bail!(
+                "database schema {version} is newer than this runtime ({SCHEMA_VERSION}) supports; reinstall with the official installer's --repair flag to update using a compatible binary (see docs/installing.md#recovering-an-older-database)"
+            );
         }
         if version == i64::from(SCHEMA_VERSION) {
             // WAL mode persists in the database. Reopening a current store must
@@ -109,7 +111,9 @@ impl Store {
                 .context("stop the running Horde daemon before migrating its schema 5 database")?;
             version = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
             if version > i64::from(SCHEMA_VERSION) {
-                bail!("database schema {version} is newer than this runtime supports");
+                bail!(
+                    "database schema {version} is newer than this runtime ({SCHEMA_VERSION}) supports; reinstall with the official installer's --repair flag to update using a compatible binary (see docs/installing.md#recovering-an-older-database)"
+                );
             }
             Some(lock)
         } else {

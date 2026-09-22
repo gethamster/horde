@@ -18,6 +18,8 @@ pub struct PeerIdentity(pub String);
 #[derive(Clone)]
 pub struct PeerCertificate(pub String);
 #[derive(Clone)]
+pub struct PeerAddress(pub String);
+#[derive(Clone)]
 pub struct Service {
     root: PathBuf,
     config: NetworkConfig,

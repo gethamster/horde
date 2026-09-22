@@ -38,8 +38,9 @@ export default function Home() {
         <p>
           It is local-first by design. The daemon runs on your machine, uses the coding agent CLIs
           you already have installed and signed in to, and never pushes to your remote unless you
-          enable delivery. Remote workers are opt-in: pair additional hosts over a Tailscale
-          network and Horde schedules across them with per-host concurrency limits.
+          enable delivery. Remote workers are opt-in: <Link href="/docs/deployment">invite additional
+          hosts</Link> over a Tailscale network and Horde schedules across them with per-host
+          concurrency limits.
         </p>
 
         <h2>When to use Horde</h2>

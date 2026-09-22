@@ -10,18 +10,87 @@ caller. When networking is configured, `horde start` supervises the listener.
 Managed workers connect outbound to the controller and do not need inbound ports.
 Do not run `horde network listen` on an address already used by the daemon.
 
-## Automatic fleet enrollment
+## The easy way: `horde network add`
 
-If the worker is reachable over Tailscale SSH, skip this manual flow and run
-`horde network add user@host` instead — see [Remote installation over
-SSH](#remote-installation-over-ssh) below. It installs Horde, enrolls, and
-starts the worker in one command. Use the credential-file flow here for
-Docker, Kubernetes, E2B, Daytona, VMs, or any worker without SSH access.
+If you can reach the target machine over Tailscale SSH — your own laptop,
+desktop, or any box you'd normally SSH into — this is the fastest path from
+zero to a connected worker, one command per side:
 
-A fleet credential lets workers join from Docker, Kubernetes, E2B, Daytona,
-VMs, or individual machines. Each worker generates its own private key and
-connects outbound to the controller. SSH is optional and is used only by the
-separate remote installation command below.
+```sh
+horde network setup
+horde network peers
+horde network add alice@worker
+horde runtime list
+```
+
+`network setup` installs Tailscale if needed (Homebrew is required on macOS),
+prompts for Tailscale sign-in when needed, generates a private controller CA
+and identity, and starts Horde. Stop an existing unconfigured daemon before
+initial setup. Existing manually configured trust is preserved and requires
+explicit migration.
+
+`network add` requires the worker to already be reachable through Tailscale
+SSH using a non-root account. If Horde is installed on a Linux worker, prepare
+that access with:
+
+```sh
+horde network setup --worker
+```
+
+Otherwise, install and connect Tailscale there and enable its SSH server first.
+Tailnet policy must permit the selected SSH login and worker connections to
+controller TCP port 7443. Horde does not change tailnet policy.
+
+`network add` installs Horde from `https://horde.sh/install` when absent, sends
+a unique certificate and enrollment packet over SSH, starts the remote daemon,
+and waits for its authenticated outbound handshake. Automatic download requires
+a published release; source testing requires this build on both machines.
+Configure the worker's executors and authentication separately: SSH pairing does
+not copy controller provider credentials or subscription logins. Repeating the
+same add command reuses the saved identity after an interrupted pairing.
+
+Use `network setup --service` for controller boot startup, or
+`network add alice@worker --service` for worker boot startup. The latter requires
+remote passwordless sudo. Without these flags, pairing starts the daemon without
+installing a boot service. Worker preparation with `--worker` does not accept
+`--service`; select that option from the controller during pairing.
+
+Generated controller certificates last one year and worker certificates last
+30 days. Renewal remains an operator-managed re-enrollment task.
+
+## Fleet credentials: when you can't SSH in
+
+Docker, Kubernetes, E2B, Daytona, CI, and most sandboxes aren't reachable
+over Tailscale SSH — for those, use a fleet credential file instead. Each
+worker generates its own private key and connects outbound to the controller;
+no inbound access to the worker is needed.
+
+### The easy way, for a Tailscale peer you can Taildrop to
+
+If the target is one of your own devices on the same tailnet — a laptop or
+desktop without Tailscale SSH enabled, for example — skip straight to:
+
+```sh
+horde network invite apollo
+```
+
+This resolves `apollo` from Tailscale discovery, creates a short-lived,
+single-use credential, and sends it to that device with Tailscale's built-in
+Taildrop, all in one command. It prints the exact command to run on the far
+side once the file arrives (accept the transfer in the Tailscale menu bar if
+prompted):
+
+```sh
+horde network join ~/Downloads/horde-invite-apollo.json
+```
+
+The credential defaults to a 1-hour window and a single worker slot, since
+it's meant for this one device, not standing fleet infrastructure — override
+with `--expires-in`/`--max-workers` if needed. `--name` only changes the
+suggested `join --name` in the printed instructions; the fleet key's own name
+is generated automatically.
+
+### The manual way, for anything else
 
 Configure the controller's network identity once with `horde network setup` for
 Tailscale, or use the direct network configuration below. On the controller:
@@ -36,7 +105,8 @@ settings for later keys. Explicit `--listen`, `--controller-address`, and
 `--tls-name` options remain available for NAT or certificates with several names.
 An ambiguous configuration produces an actionable error rather than guessing.
 
-Provide the file to a worker, then run:
+Provide the file to a worker — by Taildrop, a Kubernetes Secret, or whatever
+that platform's table below shows — then run:
 
 ```sh
 horde network join workers.json --name apollo
@@ -164,51 +234,6 @@ control connection within the five-second authorization check. A connected
 worker appears as ready only after it reports to the controller. Enrollment
 does not give Horde ownership of the Docker container, sandbox, VM, or machine;
 the platform that launched it remains responsible for its lifecycle.
-
-## Remote installation over SSH
-
-On the controller, with Horde installed:
-
-```sh
-horde network setup
-horde network peers
-horde network add alice@worker
-horde runtime list
-```
-
-Setup installs Tailscale if needed (Homebrew is required on macOS), prompts for
-Tailscale sign-in when needed, generates a private controller CA and identity,
-and starts Horde. Stop an existing unconfigured daemon before initial setup.
-Existing manually configured trust is preserved and requires explicit migration.
-
-For `network add`, the worker must already be reachable through Tailscale SSH using a non-root account.
-If Horde is installed on a Linux worker, prepare that access with:
-
-```sh
-horde network setup --worker
-```
-
-Otherwise, install and connect Tailscale there and enable its SSH server first.
-Tailnet policy must permit the selected SSH login and worker connections to
-controller TCP port 7443. Horde does not change tailnet policy.
-
-`network add` installs Horde from `https://horde.sh/install` when absent, sends
-a unique certificate and enrollment packet over SSH, starts the remote daemon,
-and waits for its authenticated outbound handshake. Automatic download requires
-a published release; source testing requires this build on both machines.
-Configure the worker’s executors and authentication separately: SSH pairing does
-not copy controller provider credentials or subscription logins. Repeating the
-same add command reuses the saved identity after an interrupted pairing.
-
-Use `network setup --service` for controller boot startup, or
-`network add alice@worker --service` for worker boot startup. The latter requires
-remote passwordless sudo. Without these flags, pairing starts the daemon without
-installing a boot service. Worker preparation with `--worker` does not accept
-`--service`; select that option from the controller during pairing.
-
-Generated controller certificates last one year and worker certificates last
-30 days. Renewal remains an operator-managed re-enrollment task. The remaining
-sections describe manual configuration and direct connections.
 
 ## Tailscale provider
 

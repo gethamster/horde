@@ -1,6 +1,9 @@
 //! Provider-independent enrollment. Fleet credentials authorize admission only.
 pub mod authority;
 pub mod cli;
+#[path = "defaults.rs"]
+pub(crate) mod defaults;
+pub mod invite;
 pub mod service;
 pub mod worker;
 

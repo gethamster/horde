@@ -16,7 +16,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$release_public_key" in *@HORDE_*) echo 'Download install.sh from an official Horde release.' >&2; exit 1;; esac
-for dependency in curl python3 tar; do
+for dependency in curl python3; do
   command -v "$dependency" >/dev/null 2>&1 || { echo "Required command missing: $dependency" >&2; exit 1; }
 done
 case "$(uname -s)" in Darwin) platform=apple-darwin;; Linux) platform=unknown-linux-musl;; *) echo 'Supported systems: macOS, Linux' >&2; exit 1;; esac
@@ -152,7 +152,7 @@ binary, root, version = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sy
 with (root/'update.lock').open('a') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX|fcntl.LOCK_NB)
     if (root/'current').exists():
-        raise SystemExit('Horde is already installed; use horde update to drain and update safely.')
+        raise SystemExit('Horde is already installed; use horde update to drain and update safely, or install.sh --repair if update itself is broken.')
     release=root/(version+'-'+str(uuid.uuid4())); release.mkdir()
     shutil.copy2(binary,release/'horde')
     if (binary.parent/'skills').is_dir(): shutil.copytree(binary.parent/'skills', release/'skills')
