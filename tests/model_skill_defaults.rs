@@ -19,7 +19,9 @@ fn fixture() -> (tempfile::TempDir, Store, String) {
     ] {
         horde::git::run(&repo, &args).unwrap();
     }
-    let db = Store::open(&dir.path().join("data")).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db =
+        Store::open_with_config_dir(&dir.path().join("data"), &dir.path().join("config")).unwrap();
     let plan = template::compile(
         "simulated",
         &template::load_templates(Path::new("absent")).unwrap(),

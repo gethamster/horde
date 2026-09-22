@@ -237,7 +237,8 @@ fn controller_captures_skill_packet_once_and_recovers_interrupted_delivery() {
 #[tokio::test]
 async fn old_worker_skill_update_reports_binary_upgrade_without_retry_loop() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Store::open(dir.path()).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db = Store::open_with_config_dir(dir.path(), &dir.path().join("config")).unwrap();
     member(&db, "fleet-apollo");
     horde::skill_catalog::install(dir.path(), &packet("Instructions")).unwrap();
     fleet::dispatch(
@@ -258,7 +259,8 @@ async fn old_worker_skill_update_reports_binary_upgrade_without_retry_loop() {
 #[test]
 fn rejected_skill_packet_and_failed_install_leave_runtime_operable() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Store::open(dir.path()).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db = Store::open_with_config_dir(dir.path(), &dir.path().join("config")).unwrap();
     let mut malformed = packet("Instructions");
     malformed.get_mut("fixture").unwrap().hash = "invalid".into();
     assert!(
@@ -359,7 +361,8 @@ fn progress_receipts_omit_instruction_bytes_but_preserve_reviewable_catalog_iden
 #[tokio::test]
 async fn managed_alias_checks_resolved_peer_skill_capabilities() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Store::open(dir.path()).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db = Store::open_with_config_dir(dir.path(), &dir.path().join("config")).unwrap();
     member(&db, "fleet-actual-peer");
     let profile = horde::fleet::Profile {
         provider: "tailscale".into(),

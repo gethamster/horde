@@ -3,7 +3,9 @@ use serde_json::json;
 
 fn fixture() -> (tempfile::TempDir, Store, String) {
     let temp = tempfile::tempdir().unwrap();
-    let db = Store::open(&temp.path().join("state")).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db = Store::open_with_config_dir(&temp.path().join("state"), &temp.path().join("config"))
+        .unwrap();
     let result = projects::dispatch(
         &db,
         "project_create",
@@ -111,6 +113,30 @@ fn default_project_also_rejects_repository_credential_overrides() {
             .unwrap_err()
             .to_string()
             .contains("automatic delivery")
+    );
+}
+
+#[test]
+fn default_project_reads_user_settings_from_the_stores_configuration_directory() {
+    let (temp, db, _) = fixture();
+    let config = temp.path().join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("config.toml"), "concurrency=3\n").unwrap();
+    assert_eq!(db.user_config_dir(), config);
+    assert_eq!(
+        Settings::load_project_user(&db, "default")
+            .unwrap()
+            .concurrency,
+        3
+    );
+    let repo = temp.path().join("legacy");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join(".horde.toml"), "concurrency=2\n").unwrap();
+    assert_eq!(
+        Settings::load_project(&db, "default", &repo)
+            .unwrap()
+            .concurrency,
+        2
     );
 }
 

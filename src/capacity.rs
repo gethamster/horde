@@ -161,7 +161,7 @@ pub fn credentials_changed(db: &Store, changed: &ExecutorConfig) -> Result<()> {
             }
         }
     };
-    collect(Settings::load_user()?);
+    collect(Settings::load_dir(&db.user_config_dir())?);
     // Running and held tasks retain their submitted configuration and account names.
     for row in db.rows("SELECT DISTINCT t.settings FROM tasks t JOIN task_projects p ON p.task=t.id WHERE p.project='default'", &[])? {
         if let Some(settings) = row["settings"].as_str() {
@@ -256,7 +256,7 @@ pub fn select(db: &Store, settings: &Settings, role: &str) -> Result<Option<Stri
 }
 pub fn report(db: &Store) -> Result<Value> {
     let policy = crate::fleet::load()?.capacity_policy;
-    let settings = Settings::load_user()?;
+    let settings = Settings::load_dir(&db.user_config_dir())?;
     let mut accounts = serde_json::Map::new();
     for config in settings.resolved().values() {
         let id = account(config);

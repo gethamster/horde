@@ -70,6 +70,9 @@ pub fn contains(prefix: &str, path: &str) -> bool {
 pub struct Store {
     pub conn: Connection,
     pub root: PathBuf,
+    /// Replaces the user's configuration directory for settings read through
+    /// `user_config_dir`.
+    pub config_dir: Option<PathBuf>,
 }
 impl Store {
     pub fn open(root: &Path) -> Result<Self> {
@@ -95,6 +98,7 @@ impl Store {
             return Ok(Self {
                 conn,
                 root: root.to_owned(),
+                config_dir: None,
             });
         }
         // Hold the daemon lock through migration so an older scheduler cannot
@@ -124,6 +128,7 @@ impl Store {
             return Ok(Self {
                 conn,
                 root: root.to_owned(),
+                config_dir: None,
             });
         }
         if version == 5 {
@@ -186,7 +191,23 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         Ok(Self {
             conn,
             root: root.to_owned(),
+            config_dir: None,
         })
+    }
+    /// Open as `open` does, but read user settings from a stated configuration
+    /// directory instead of the user's own.
+    pub fn open_with_config_dir(root: &Path, directory: &Path) -> Result<Self> {
+        Ok(Self {
+            config_dir: Some(directory.to_owned()),
+            ..Self::open(root)?
+        })
+    }
+    /// The directory whose `config.toml` holds the user settings this store reads,
+    /// which are also the default project's settings.
+    pub fn user_config_dir(&self) -> PathBuf {
+        self.config_dir
+            .clone()
+            .unwrap_or_else(crate::branding::config_dir)
     }
     pub fn atomic<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
         if !self.conn.is_autocommit() {

@@ -4,7 +4,8 @@ use serde_json::json;
 #[test]
 fn coding_agent_can_discover_and_plan_without_task_or_project_configuration() {
     let dir = tempfile::tempdir().unwrap();
-    let db = Store::open(dir.path()).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db = Store::open_with_config_dir(dir.path(), &dir.path().join("config")).unwrap();
     let inventory = protocol::dispatch(&db, "runtime_capabilities", json!({}), None).unwrap();
     assert!(
         inventory["runtimes"]
@@ -58,7 +59,9 @@ fn lost_submission_reply_reuses_receipt_even_after_repository_disappears() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
-    let db = Store::open(&dir.path().join("data")).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db =
+        Store::open_with_config_dir(&dir.path().join("data"), &dir.path().join("config")).unwrap();
     let input = json!({"request_id":"delivery-1","repo":repo,"objective":"reviewable result","template":"simulated"});
     let first = protocol::dispatch(&db, "submit_task", input.clone(), None).unwrap();
     std::fs::remove_dir_all(&repo).unwrap();
@@ -104,7 +107,9 @@ fn caller_installs_file_skills_and_sees_the_exact_catalog_version() {
     let pack = dir.path().join("pack");
     std::fs::create_dir_all(pack.join("delivery")).unwrap();
     std::fs::write(pack.join("delivery/SKILL.md"), "Check the delivery result.").unwrap();
-    let db = Store::open(&dir.path().join("data")).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db =
+        Store::open_with_config_dir(&dir.path().join("data"), &dir.path().join("config")).unwrap();
     let installed =
         protocol::dispatch(&db, "skill_pack_install", json!({"path":pack}), None).unwrap();
     assert_eq!(installed["skills"], json!(["delivery"]));
