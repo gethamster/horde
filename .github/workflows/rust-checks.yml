@@ -52,6 +52,12 @@ jobs:
       - name: Select OpenSSL 3 for release verification
         if: runner.os == 'macOS' && matrix.check == 'test'
         run: echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
+      - name: Install ripgrep for native worker tests
+        if: runner.os == 'Linux' && matrix.check == 'test'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Install ripgrep for native worker tests
+        if: runner.os == 'macOS' && matrix.check == 'test'
+        run: brew install ripgrep
       - run: cargo clippy --locked --all-targets -- -D warnings
         if: matrix.check == 'lint'
       - run: cargo test --locked

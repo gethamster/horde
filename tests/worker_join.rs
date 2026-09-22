@@ -410,7 +410,9 @@ async fn duplicate_worker_name_and_controller_alias_conflict_are_reported_after_
         String::from_utf8_lossy(&collision.stderr)
     );
     assert!(second.join("fleet-worker.json").exists());
-    assert!(horde::daemon_client::running(&second));
+    // A rejected name must not leave a daemon connected under it: `join`
+    // shuts it back down before returning the conflict error.
+    assert!(!horde::daemon_client::running(&second));
     let recovered =
         success(invoke_join(&f, Some(&second), &invitation, &["--name", "zephyr"]).await);
     assert_eq!(recovered["connected"], true);

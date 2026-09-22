@@ -208,9 +208,9 @@ fn identifier(s: &str) -> Result<()> {
 }
 pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
     if name == "runtime_list" {
-        let rows = db.rows("SELECT r.id,r.profile,r.resource,r.state,r.version,r.created,r.error,p.observed AS last_seen,p.status AS runtime_status FROM managed_runtimes r LEFT JOIN runtime_presence p ON p.runtime=r.id WHERE r.state!='removed'
-UNION ALL SELECT m.runtime,'fleet:' || k.name,NULL,CASE WHEN m.state='revoked' THEN 'revoked' WHEN c.expires<=? THEN 'expired' WHEN p.observed>? THEN 'ready' ELSE 'offline' END,json_extract(p.status,'$.version'),m.created,NULL,p.observed,p.status
-FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint LEFT JOIN runtime_presence p ON p.runtime=m.runtime WHERE NOT EXISTS(SELECT 1 FROM runtime_settings s WHERE s.key='runtime_removed:' || m.runtime AND s.value='true') ORDER BY created",&[&now(),&(now()-30)])?;
+        let rows = db.rows("SELECT r.id,r.profile,r.resource,r.state,r.version,r.created,r.error,p.observed AS last_seen,p.status AS runtime_status,a.value AS address FROM managed_runtimes r LEFT JOIN runtime_presence p ON p.runtime=r.id LEFT JOIN runtime_settings a ON a.key='peer_address:' || r.id WHERE r.state!='removed'
+UNION ALL SELECT m.runtime,'fleet:' || k.name,NULL,CASE WHEN m.state='revoked' THEN 'revoked' WHEN c.expires<=? THEN 'expired' WHEN p.observed>? THEN 'ready' ELSE 'offline' END,json_extract(p.status,'$.version'),m.created,NULL,p.observed,p.status,a.value
+FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint LEFT JOIN runtime_presence p ON p.runtime=m.runtime LEFT JOIN runtime_settings a ON a.key='peer_address:' || m.runtime WHERE NOT EXISTS(SELECT 1 FROM runtime_settings s WHERE s.key='runtime_removed:' || m.runtime AND s.value='true') ORDER BY created",&[&now(),&(now()-30)])?;
         let project = args["project"]
             .as_str()
             .map(|p| crate::projects::resolve(db, p))
@@ -254,8 +254,9 @@ FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LE
                 "runtime is not granted to this project"
             );
         }
+        let address = management::value(db, &format!("peer_address:{id}"))?;
         return Ok(Some(
-            json!({"name":crate::runtime_directory::display_name(db,id)?,"runtime":db.rows("SELECT * FROM managed_runtimes WHERE id=?",&[&id])?,"fleet_membership":db.rows("SELECT m.runtime,m.key_id,k.name AS fleet,m.state,m.created,c.expires,c.renew_after FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint WHERE m.runtime=?",&[&id])?,"operations":db.rows("SELECT * FROM runtime_operations WHERE runtime=? ORDER BY created",&[&id])?.iter().map(management::operation_receipt).collect::<Result<Vec<_>>>()?}),
+            json!({"name":crate::runtime_directory::display_name(db,id)?,"address":address,"runtime":db.rows("SELECT * FROM managed_runtimes WHERE id=?",&[&id])?,"fleet_membership":db.rows("SELECT m.runtime,m.key_id,k.name AS fleet,m.state,m.created,c.expires,c.renew_after FROM fleet_enrollment_members m JOIN fleet_enrollment_keys k ON k.id=m.key_id LEFT JOIN fleet_enrollment_certificates c ON c.fingerprint=m.current_fingerprint WHERE m.runtime=?",&[&id])?,"operations":db.rows("SELECT * FROM runtime_operations WHERE runtime=? ORDER BY created",&[&id])?.iter().map(management::operation_receipt).collect::<Result<Vec<_>>>()?}),
         ));
     }
     if ![

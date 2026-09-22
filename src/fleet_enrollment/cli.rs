@@ -1,7 +1,4 @@
-#[path = "defaults.rs"]
-mod defaults;
-
-use super::{ServerConfig, admin, authority};
+use super::{ServerConfig, admin, authority, defaults};
 use crate::{network::NetworkConfig, store::Store};
 use anyhow::{Context, Result, ensure};
 use clap::Subcommand;

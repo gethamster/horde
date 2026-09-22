@@ -86,6 +86,10 @@ pub async fn accept(
         .ok_or_else(|| tonic::Status::unauthenticated("worker certificate required"))?
         .0
         .clone();
+    let address = request
+        .extensions()
+        .get::<crate::federation::PeerAddress>()
+        .map(|a| a.0.clone());
     let mut input = request.into_inner();
     let first = tokio::time::timeout(Duration::from_secs(10), input.message())
         .await
@@ -105,6 +109,11 @@ pub async fn accept(
 
     let heartbeat_ack_requested = hello["heartbeat_ack"].as_bool() == Some(true);
     let key = (config.runtime_id.clone(), peer);
+    if let Some(address) = &address {
+        let _ = crate::store::Store::open(root).and_then(|db| {
+            crate::management::set(&db, &format!("peer_address:{}", key.1), address)
+        });
+    }
     let generation = crate::store::id();
     let (commands, mut receive) = mpsc::channel::<Command>(32);
     let (send, output) = mpsc::channel(32);

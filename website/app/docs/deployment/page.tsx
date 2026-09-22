@@ -12,24 +12,23 @@ export default function Deployment() {
   return <>
     <h1>One parent, one child</h1>
     <p>Your machine is the parent: you submit work and review the results there. A second machine is the child: it runs the agents. Horde calls these the controller and worker.</p>
-    <p>This walkthrough uses a Mac or Linux parent and one Linux child connected to the same Tailscale network. Start with <Link href="/docs">Horde installed</Link> on both machines. On the child, install Git and <Link href="/docs/configuration">configure and sign in to the model providers</Link> you want it to use. Pairing does not copy your parent’s provider logins.</p>
-    <h2 id="prepare-the-worker">1. Prepare the child</h2>
-    <p>For first-time pairing, stop any unconfigured Horde daemon on the child, then prepare its network:</p>
-    <pre><code>{`horde stop
-horde network setup --worker`}</code></pre>
-    <p>Follow the Tailscale sign-in prompt and join the parent’s network. This prepares Tailscale SSH; use a non-root login such as <code>alice</code>. Your tailnet must permit that SSH login and connections from the child to the parent on TCP port 7443.</p>
-    <h2>2. Connect from the parent</h2>
+    <p>Start with <Link href="/docs">Horde installed</Link> on both machines and both signed into the same Tailscale account. The child needs Git and its own <Link href="/docs/configuration">model provider configuration and login</Link>. Use versions of Horde that include <code>network invite</code>.</p>
+    <h2>1. Invite the child from the parent</h2>
     <p>For first-time networking setup, run on the parent:</p>
     <pre><code>{`horde stop
 horde network setup
 horde network peers
-horde network add alice@worker
-horde runtime list`}</code></pre>
-    <p>Replace <code>alice@worker</code> with the child’s login and hostname shown by <code>network peers</code>. Setup handles the parent’s Tailscale connection and Horde identity; automatic Tailscale installation on macOS needs Homebrew. If the parent already has Horde networking configured, start with <code>network peers</code>.</p>
-    <p><code>network add</code> enrolls and starts the child, then waits for it to connect. Once <code>runtime list</code> shows it ready, copy its runtime ID for the next command. No runtime profile or container setup is needed.</p>
+horde network invite worker`}</code></pre>
+    <p>Replace <code>worker</code> with your child’s hostname from <code>network peers</code>. Setup handles the parent’s Tailscale connection and Horde identity; automatic Tailscale installation on macOS needs Homebrew. If Horde networking is already configured, start with <code>network peers</code>.</p>
+    <p>The invitation is sent through Tailscale’s Taildrop to your other device. It lasts one hour and admits one worker. This path needs Taildrop between your devices, not SSH. Your tailnet must allow the child to reach the parent’s runtime and enrollment addresses.</p>
+    <h2>2. Join on the child</h2>
+    <p>Receive the Taildrop file, then run the join command printed by the parent. For example:</p>
+    <pre><code>{`horde network join ~/Downloads/horde-invite-worker.json`}</code></pre>
+    <p>Use the file’s actual downloaded path and accept the transfer if Tailscale prompts. Join enrolls and starts the child, then waits for its authenticated connection. Invitation expiry does not disconnect an enrolled worker; see <Link href="/docs/deployment/fleet#certificates">certificate renewal and offline recovery</Link> for longer-term use. Provider logins are not copied from the parent.</p>
     <h2>3. Send it a task</h2>
-    <p>Still on the parent, use a clean repository with your changes committed:</p>
-    <pre><code>{`horde --project default submit --on RUNTIME_ID --repo /path/to/repo "Run the tests and fix failures"
+    <p>Back on the parent, check that the child is ready. Use its runtime ID and a clean repository with your changes committed:</p>
+    <pre><code>{`horde runtime list
+horde --project default submit --on RUNTIME_ID --repo /path/to/repo "Run the tests and fix failures"
 horde watch TASK_ID
 horde result TASK_ID`}</code></pre>
     <p>Replace <code>RUNTIME_ID</code> with the child’s runtime ID and <code>TASK_ID</code> with the ID returned by submission. Wait for the task to succeed before retrieving its result. For this first task, use a repository that has not been assigned to a named Horde project. The command selects the default project explicitly.</p>

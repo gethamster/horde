@@ -14,6 +14,12 @@ sh install.sh --version VERSION --no-service
 
 Replace `VERSION` with a published release version.
 
+The installer needs `curl` and `python3` (used for dependency-free signature
+verification and archive extraction; no other libraries required). If
+`python3` is missing, install it through your platform's package manager
+(`brew install python3`, `apt install python3`, `dnf install python3`, etc.)
+and re-run the installer.
+
 The installer downloaded from a release verifies the signed release before it
 installs anything. The canonical template is
 `website/scripts/install-template.sh`; the root `install.sh` runs it for source

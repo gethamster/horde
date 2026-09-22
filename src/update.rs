@@ -234,6 +234,19 @@ fn cancel_handoff(db: &Store) -> Result<bool> {
     Ok(true)
 }
 
+/// Read the on-disk schema version without opening the Store, so a schema
+/// ahead of this binary can still be reported instead of bailing.
+fn schema_probe(root: &Path) -> Option<i64> {
+    let path = root.join("state.sqlite3");
+    if !path.exists() {
+        return None;
+    }
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    conn.query_row("PRAGMA user_version", [], |r| r.get(0)).ok()
+}
+
 pub async fn run(
     root: &Path,
     version: Option<&str>,
@@ -274,8 +287,9 @@ pub async fn run(
         target > current || (target == current && env!("CARGO_PKG_VERSION").contains('-'))
     };
     if check {
+        let schema_current = schema_probe(root);
         return Ok(
-            json!({"installed":env!("CARGO_PKG_VERSION"),"available":manifest.version,"update_available":available}),
+            json!({"installed":env!("CARGO_PKG_VERSION"),"available":manifest.version,"update_available":available,"schema_current":schema_current,"schema_supported":crate::store::SCHEMA_VERSION,"repair_needed":schema_current.is_some_and(|v|v>i64::from(crate::store::SCHEMA_VERSION))}),
         );
     }
     if version.is_none() && !available {
@@ -333,7 +347,7 @@ pub async fn run(
             if std::time::Instant::now() >= deadline {
                 phase(&db, "blocked", &manifest.version)?;
                 bail!(
-                    "update drain timed out; runtime remains draining; use horde runtime resume to cancel"
+                    "update drain timed out; runtime remains draining; use horde runtime resume to cancel, or horde doctor to check overall health"
                 );
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -399,7 +413,7 @@ pub async fn run(
         if schema > i64::from(crate::store::SCHEMA_VERSION) {
             phase(&db, "failed", &manifest.version)?;
             bail!(
-                "updated runtime failed health and migrated the database; automatic rollback is unsafe; retain the new binary and inspect the pre-update backup"
+                "updated runtime failed health and migrated the database; automatic rollback is unsafe; retain the new binary, inspect the pre-update backup, and if you need to run an older binary again, reinstall with the official installer's --repair flag"
             );
         }
         // Roll back only while the stored schema remains readable by this binary.
@@ -407,7 +421,7 @@ pub async fn run(
         std::fs::rename(link, install.join("current"))?;
         phase(&db, "failed", &manifest.version)?;
         bail!(
-            "updated runtime failed health check; previous launcher restored; inspect daemon.log and restart service"
+            "updated runtime failed health check; previous launcher restored; inspect daemon.log and restart service, or run horde doctor to check overall health"
         );
     }
     phase(&db, "healthy", &manifest.version)?;

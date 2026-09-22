@@ -560,9 +560,9 @@ test("Deploy links to a complete existing-AX setup in HTML and Markdown", () => 
 test("Deploy starts with one parent and one child and links out to fleet options", () => {
   const markdown = read("docs/deployment.md");
   assert.match(markdown, /parent.*child/i);
-  assert.ok(markdown.includes("horde stop\nhorde network setup --worker"), "first pairing must stop the child’s unconfigured daemon");
+  assert.ok(read("docs/deployment/fleet.md").includes("horde stop\nhorde network setup --worker"), "SSH pairing must stop the child’s unconfigured daemon");
   assert.ok(markdown.includes("horde --project default submit --on"), "first task must not depend on repository project inference");
-  for (const command of ["network setup --worker", "network add", "runtime list", "submit --on", "result TASK_ID"]) {
+  for (const command of ["network setup", "network invite", "network join", "runtime list", "submit --on", "result TASK_ID"]) {
     assert.ok(markdown.includes(command), `missing first-worker step: ${command}`);
   }
   assert.ok(!markdown.includes("[profiles."), "provider configuration belongs on the detailed pages");

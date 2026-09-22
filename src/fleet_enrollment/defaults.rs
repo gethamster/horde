@@ -1,5 +1,5 @@
 //! Resolve missing CLI settings from the configured controller without changing its trust.
-use super::super::ServerConfig;
+use super::ServerConfig;
 use crate::network::{Discovery, NetworkConfig, Provider};
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -63,6 +63,7 @@ pub async fn resolve(
             )
         }
     };
+    let inherited_address = overrides.controller_address.is_none() && existing.is_some();
     let controller_address = match overrides
         .controller_address
         .or(existing.map(|server| server.controller_address))
@@ -73,6 +74,7 @@ pub async fn resolve(
             network.port,
         ),
     };
+    let inherited_tls_name = overrides.tls_name.is_none() && existing.is_some();
     let tls_name = match overrides
         .tls_name
         .or(existing.map(|server| server.tls_name.as_str()))
@@ -85,6 +87,28 @@ pub async fn resolve(
         .map(Path::to_owned)
         .or_else(|| existing.map(|server| server.issuer_key.clone()))
         .unwrap_or_else(|| network.ca_cert.with_file_name("ca.key"));
+    // Saved settings are reused without re-validation above; warn (don't block) when
+    // this machine's live Tailscale identity has since drifted from what was saved.
+    if network.provider == Provider::Tailscale
+        && let Some(server) = existing
+        && (inherited_address || inherited_tls_name)
+        && let Ok(fresh) = crate::network::discover(network).await
+    {
+        let address_stale = inherited_address
+            && !fresh
+                .local_addresses
+                .contains(&server.controller_address.ip());
+        let name_stale = inherited_tls_name && fresh.local_tls_name != server.tls_name;
+        if address_stale || name_stale {
+            eprintln!(
+                "warning: reusing saved enrollment settings (controller_address={}, tls_name={}), but this machine's current Tailscale identity looks different (addresses={:?}, tls_name={}); if the controller's Tailscale identity has changed, pass --controller-address and --tls-name explicitly",
+                server.controller_address,
+                server.tls_name,
+                fresh.local_addresses,
+                fresh.local_tls_name
+            );
+        }
+    }
     Ok(ServerConfig {
         listen,
         controller_address,
