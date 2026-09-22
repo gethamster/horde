@@ -215,7 +215,7 @@ the binary. You can discuss changes to those skills with your agent. It proposes
 a project override for review and saves it when you agree; running tasks keep
 their pinned instructions. See [agent-led delegation](docs/delegation.md#let-your-agent-arrange-the-work)
 and [runtime skills](docs/runtime-skills.md). Terminal setup remains documented in
-[fleet enrollment](docs/networking.md#automatic-fleet-enrollment).
+[fleet credentials](docs/networking.md#fleet-credentials-when-you-cant-ssh-in).
 
 ## Documentation
 

@@ -186,10 +186,24 @@ uncertain-work recovery requirements remain in force.
 To connect and use a named worker, configure the controller network once, then:
 
 ```sh
+# Controller: for a reachable Tailscale peer, one command creates and
+# Taildrops a scoped credential, and prints the exact join command to run there.
+horde network invite apollo
+```
+
+Without a discoverable Tailscale peer, use the manual two-step credential
+flow instead:
+
+```sh
 # Controller: creates workers.json with inferred addresses and trust.
 horde network key create workers
 # Worker: provide workers.json through a private file or secret mount.
 horde network join workers.json --name apollo
+```
+
+Either way, once the worker is connected:
+
+```sh
 # Controller: submit a whole task without creating a parent first.
 horde submit --on apollo --repo /path/to/repo "Implement and test the change"
 horde result TASK_ID
@@ -206,7 +220,7 @@ Use `horde network key list`, `horde network key revoke KEY_ID`, and
 startup, inject `HORDE_ENROLLMENT_FILE` or `HORDE_ENROLLMENT_JSON` and run
 `horde daemon`. Expired certificates can recover with the original valid fleet
 credential; revoked workers cannot recover. The launching platform owns the
-resource lifecycle. See [fleet enrollment](../../../docs/networking.md#automatic-fleet-enrollment)
+resource lifecycle. See [fleet credentials](../../../docs/networking.md#fleet-credentials-when-you-cant-ssh-in)
 for limits and secret delivery.
 
 ## Worker token scope
