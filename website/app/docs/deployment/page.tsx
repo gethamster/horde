@@ -2,15 +2,21 @@ import type { Metadata } from "next";
 import { url } from "../../site";
 export const metadata: Metadata = {
   title: "Deploy",
-  description: "Pair a Horde controller with remote workers over Tailscale, then inspect and update the fleet.",
+  description: "Choose remote machines, containers, or an existing AX deployment to run Horde workers, then connect and manage your fleet.",
   alternates: { canonical: url("/docs/deployment") },
 };
 
 export default function Deployment() {
   return <>
-    <h1>Deploy remote workers</h1>
+    <h1>Deploy workers</h1>
+    <p>Keep your Horde controller on your machine and choose where its workers run.</p>
+    <ul>
+      <li><a href="#prepare-the-worker">Another machine</a>: connect an existing worker over Tailscale.</li>
+      <li><a href="/docs/deployment/ax">An existing AX deployment</a>: create project workers in gVisor, with optional Docker and Compose support. Experimental.</li>
+      <li><a href="#containers-and-sandboxes">Containers and managed sandboxes</a>: use Docker, Kubernetes, E2B, or Daytona.</li>
+    </ul>
     <p>To run agents on another machine, pair a Horde controller with a worker over your Tailscale network. The controller schedules work; the worker runs the configured agents with its own credentials and resource limits.</p>
-    <h2>Prepare the worker</h2>
+    <h2 id="prepare-the-worker">Prepare the worker</h2>
     <p>The worker must be reachable through Tailscale SSH with a non-root account. On a Linux worker with Horde installed, run:</p>
     <pre><code>{`horde network setup --worker`}</code></pre>
     <p>Alternatively, install Tailscale on the worker, connect it to your tailnet, and enable Tailscale SSH. Tailnet policy must allow your selected SSH login and outbound worker connections to the controller on TCP port 7443.</p>
@@ -32,7 +38,7 @@ horde runtime restart RUNTIME_ID --request-id restart-worker-1
 horde call management_events '{"after":0}'`}</code></pre>
     <p>Reuse a request ID only to retry the same operation. Wait for an update to report <code>succeeded</code> before updating the next host. Failed or uncertain updates pause the fleet; inspect the result before resuming it.</p>
     <p>Binary updates verify signatures and checksums, drain active work, and restart. If the replacement cannot start and its helper was terminated by the service manager, operator recovery is required. Worker certificates expire after 30 days; renewal currently requires operator-managed re-enrollment.</p>
-    <h2>Containers and sandboxes</h2>
+    <h2 id="containers-and-sandboxes">Containers and sandboxes</h2>
     <p>Horde also supports Docker, Kubernetes, E2B, and Daytona profiles in <code>runtimes.toml</code>. Docker and Kubernetes require a digest-pinned image. Replace <code>IMAGE_FROM_SIGNED_RELEASE_MANIFEST</code> with the <code>image</code> value, including its immutable digest, from <a href="/releases/latest/manifest.json">the release manifest</a>.</p>
     <pre><code>{`# Top-level enrollment settings; use your controller's CA and address.
 issuer_key = "/absolute/path/to/controller/ca.key"
@@ -47,7 +53,7 @@ concurrency = 4
 cpus = 2
 memory_mb = 2048
 executor_roles = ["planner", "worker", "reviewer"]`}</code></pre>
-    <p>The issuer key must match the controller’s configured CA and have mode <code>0600</code>. Selected executor roles must use API authentication, Tuara, or the simulated executor. Provider credentials remain on the controller.</p>
+    <p>The issuer key must match the controller’s configured CA and have mode <code>0600</code>. Configure the selected roles and managed accounts on the controller. Horde provisions their authorized credentials to workers; ambient subscription logins are not copied.</p>
     <pre><code>{`horde runtime create worker-1 --profile containers --request-id create-worker-1
 horde runtime inspect worker-1
 horde runtime stop worker-1 --request-id stop-worker-1

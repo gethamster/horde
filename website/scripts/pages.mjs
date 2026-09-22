@@ -35,8 +35,14 @@ export const pages = [
   {
     path: "/docs/deployment", file: "docs/deployment.html", markdown: "docs/deployment.md",
     source: ["app/docs/deployment/page.tsx"], priority: "0.8", changefreq: "monthly",
-    title: "Deploy remote workers",
-    summary: "Pair a controller and workers over Tailscale, then inspect and update the fleet.",
+    title: "Deploy workers",
+    summary: "Choose remote machines, containers, or an existing AX deployment for Horde workers.",
+  },
+  {
+    path: "/docs/deployment/ax", file: "docs/deployment/ax.html", markdown: "docs/deployment/ax.md",
+    source: ["app/docs/deployment/ax/page.tsx"], priority: "0.8", changefreq: "monthly",
+    title: "Use an existing AX deployment",
+    summary: "Connect Horde to AX, create project workers, and run tasks with optional Docker and Compose.",
   },
   {
     path: "/about", file: "about.html", markdown: "about.md", source: ["app/(site)/about/page.tsx"],

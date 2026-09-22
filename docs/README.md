@@ -33,7 +33,7 @@ tested behavior and current limitations.
 | [Progress and notifications](progress.md) | Stream task events with `horde watch`, read the terminal summary, and push milestones to a webhook or command. |
 | [Runtime networking](networking.md) | Move worker execution to other machines through direct networking or Tailscale. |
 | [Runtime management](runtime-management.md) | Manage execution hosts, capacity, and updates. |
-| [Experimental AX runtimes](ax.md) | Run project workers on AX with gVisor and persistent workspaces. |
+| [Deploy Horde on AX](ax.md) | Connect an existing AX deployment, publish a runner image, and start project workers. |
 | [Architecture](architecture.md) | Understand the daemon and its persistence model. |
 | [Verification and limitations](verification.md) | Review test coverage and known boundaries. |
 

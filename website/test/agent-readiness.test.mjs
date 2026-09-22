@@ -542,3 +542,17 @@ test("contact email is consistent across visible pages and agent metadata", () =
     assert.ok(!read(path).includes("andrew@somervell.com"), path);
   }
 });
+
+test("Deploy links to a complete existing-AX setup in HTML and Markdown", () => {
+  const path = "/docs/deployment/ax";
+  assert.ok(pages.some((page) => page.path === path), "AX guide missing from the publishing manifest");
+  assert.match(read("docs/deployment.html"), /href="\/docs\/deployment\/ax"/);
+  const html = read("docs/deployment/ax.html");
+  assert.match(html, /href="\/docs\/deployment"/);
+  const markdown = read("docs/deployment/ax.md");
+  for (const command of ["provider = \"ax\"", "runtime create", "runtime inspect", "runtime_capabilities", "submit --on", "runtime stop", "runtime start"]) {
+    assert.ok(markdown.includes(command), `AX guide is missing ${command}`);
+  }
+  assert.match(markdown, /ENABLE_DOCKER=true/);
+  assert.match(markdown, /ax\.md#optional-nested-docker/);
+});
