@@ -556,3 +556,20 @@ test("Deploy links to a complete existing-AX setup in HTML and Markdown", () => 
   assert.match(markdown, /ENABLE_DOCKER=true/);
   assert.match(markdown, /ax\.md#optional-nested-docker/);
 });
+
+test("Deploy starts with one parent and one child and links out to fleet options", () => {
+  const markdown = read("docs/deployment.md");
+  assert.match(markdown, /parent.*child/i);
+  assert.ok(markdown.includes("horde stop\nhorde network setup --worker"), "first pairing must stop the child’s unconfigured daemon");
+  assert.ok(markdown.includes("horde --project default submit --on"), "first task must not depend on repository project inference");
+  for (const command of ["network setup --worker", "network add", "runtime list", "submit --on", "result TASK_ID"]) {
+    assert.ok(markdown.includes(command), `missing first-worker step: ${command}`);
+  }
+  assert.ok(!markdown.includes("[profiles."), "provider configuration belongs on the detailed pages");
+  assert.ok(!markdown.includes("#!/bin/sh"), "sandbox supervisor belongs on the detailed page");
+  assert.ok(!markdown.includes("runtime update"), "fleet upgrades should not interrupt first deployment");
+  for (const destination of ["ax", "containers", "fleet"]) {
+    assert.match(read("docs/deployment.html"), new RegExp(`href="/docs/deployment/${destination}"`));
+    assert.ok(pages.some((page) => page.path === `/docs/deployment/${destination}`));
+  }
+});

@@ -48,6 +48,20 @@
       "continue": true
     },
     {
+      "src": "^/docs/deployment/containers$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs/deployment/fleet$",
+      "headers": {
+        "Vary": "Accept, Accept-Encoding"
+      },
+      "continue": true
+    },
+    {
       "src": "^/about$",
       "headers": {
         "Vary": "Accept, Accept-Encoding"
@@ -120,6 +134,26 @@
     },
     {
       "src": "^/docs/deployment/ax\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs/deployment/containers\\.md$",
+      "headers": {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Vary": "Accept, Accept-Encoding",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff"
+      },
+      "continue": true
+    },
+    {
+      "src": "^/docs/deployment/fleet\\.md$",
       "headers": {
         "Content-Type": "text/markdown; charset=utf-8",
         "Vary": "Accept, Accept-Encoding",
@@ -350,6 +384,34 @@
       ]
     },
     {
+      "src": "^/docs/deployment/containers$",
+      "headers": {
+        "Location": "/docs/deployment/containers.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
+      "src": "^/docs/deployment/fleet$",
+      "headers": {
+        "Location": "/docs/deployment/fleet.md"
+      },
+      "status": 307,
+      "has": [
+        {
+          "type": "header",
+          "key": "accept",
+          "value": "(.*text/markdown.*)"
+        }
+      ]
+    },
+    {
       "src": "^/about$",
       "headers": {
         "Location": "/about.md"
@@ -463,6 +525,14 @@
     {
       "src": "^/docs/deployment/ax$",
       "dest": "/docs/deployment/ax.html"
+    },
+    {
+      "src": "^/docs/deployment/containers$",
+      "dest": "/docs/deployment/containers.html"
+    },
+    {
+      "src": "^/docs/deployment/fleet$",
+      "dest": "/docs/deployment/fleet.html"
     },
     {
       "src": "^/about$",
