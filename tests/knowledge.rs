@@ -444,6 +444,7 @@ fn schema_four_upgrade_preserves_execution_receipts_and_skill_revisions() {
     let old = Store {
         conn: connection,
         root: dir.path().to_owned(),
+        config_dir: None,
     };
     let binding = json!({"runtime":"local","capability":"fixture","provider":"fixture","kind":"simulated","model":null,"configuration_hash":"a".repeat(64)});
     let policy = json!({"version":1,"allowed":[{"runtime":"local","capabilities":["fixture"]}],"bindings":[binding.clone()],"selected":binding});

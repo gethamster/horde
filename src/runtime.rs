@@ -1018,7 +1018,14 @@ pub async fn daemon(root: &Path) -> Result<()> {
                     Ok(config.clone())
                 };
                 let result = match current {
-                    Ok(current) => crate::control::connect(root.clone(), current).await,
+                    Ok(current) => {
+                        crate::control::connect(
+                            root.clone(),
+                            crate::branding::config_dir(),
+                            current,
+                        )
+                        .await
+                    }
                     Err(error) => Err(error),
                 };
                 if let Err(e) = result {
@@ -1121,7 +1128,8 @@ mod coordination_regressions {
     use super::*;
     fn fixture() -> (tempfile::TempDir, Store, String, String) {
         let dir = tempfile::tempdir().unwrap();
-        let db = Store::open(dir.path()).unwrap();
+        // An unused configuration directory keeps the developer's own settings out.
+        let db = Store::open_with_config_dir(dir.path(), &dir.path().join("config")).unwrap();
         let plan = template::compile(
             "simulated",
             &template::load_templates(dir.path()).unwrap(),
@@ -1294,7 +1302,9 @@ mod scheduling_limits {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let temp = tempfile::tempdir().unwrap();
-                let db = Store::open(temp.path()).unwrap();
+                // An unused configuration directory keeps the developer's own settings out.
+                let db =
+                    Store::open_with_config_dir(temp.path(), &temp.path().join("config")).unwrap();
                 let mut settings = Settings {
                     concurrency: 64,
                     ..Default::default()

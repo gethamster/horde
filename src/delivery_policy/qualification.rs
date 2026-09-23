@@ -9,7 +9,8 @@ pub(super) fn current_policy(i: &Invocation<'_>) -> Result<Option<AutomaticDeliv
         crate::projects::task_project(i.db, i.task)? == crate::projects::DEFAULT_PROJECT,
         "automatic delivery is limited to the default project"
     );
-    let operator = Settings::load_user().context("current operator delivery policy unavailable")?;
+    let operator = Settings::load_dir(&i.db.user_config_dir())
+        .context("current operator delivery policy unavailable")?;
     ensure!(
         operator.automatic_delivery == *policy && operator.automatic_delivery.enabled,
         "operator automatic-delivery policy changed"

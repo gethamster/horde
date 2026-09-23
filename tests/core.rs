@@ -909,6 +909,12 @@ fn output_references_are_checked_and_inserted_as_data() {
         "plan: code uses ${literal}"
     );
 }
+/// `Settings::load` over an empty user configuration directory, so these tests see
+/// only the repository files they write, never the developer's own config.
+fn load_settings(project: &Path) -> Result<Settings> {
+    let user = tempfile::tempdir()?;
+    Settings::load_with_user_dir(project, user.path())
+}
 #[test]
 fn project_settings_merge_and_unknown_settings_fail() {
     let dir = tempfile::tempdir().unwrap();
@@ -917,12 +923,28 @@ fn project_settings_merge_and_unknown_settings_fail() {
         "concurrency=2\n[executors.worker]\nprovider=\"claude\"\n",
     )
     .unwrap();
-    let s = Settings::load(dir.path()).unwrap();
+    let s = load_settings(dir.path()).unwrap();
     assert_eq!(s.concurrency, 2);
     assert_eq!(s.executor("worker").unwrap().kind, "claude");
     assert!(s.executors.contains_key("planner"));
     std::fs::write(dir.path().join(".horde.toml"), "concurency=2\n").unwrap();
-    assert!(Settings::load(dir.path()).is_err());
+    assert!(load_settings(dir.path()).is_err());
+}
+#[test]
+fn user_settings_apply_beneath_repository_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let (user, project) = (dir.path().join("user"), dir.path().join("repo"));
+    std::fs::create_dir(&user).unwrap();
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(
+        user.join("config.toml"),
+        "concurrency=5\ntimeout_seconds=77\n",
+    )
+    .unwrap();
+    std::fs::write(project.join(".horde.toml"), "concurrency=2\n").unwrap();
+    let s = Settings::load_with_user_dir(&project, &user).unwrap();
+    assert_eq!(s.concurrency, 2);
+    assert_eq!(s.timeout_seconds, 77);
 }
 #[test]
 fn one_named_provider_serves_every_role_that_does_not_override_it() {
@@ -945,7 +967,7 @@ max_tokens = 2048
 "#,
     )
     .unwrap();
-    let s = Settings::load(dir.path()).unwrap();
+    let s = load_settings(dir.path()).unwrap();
     let worker = s.executor("worker").unwrap();
     let reviewer = s.executor("reviewer").unwrap();
     // The key and endpoint are stated once and inherited by both roles.
@@ -974,7 +996,7 @@ fn an_executor_naming_an_unconfigured_provider_is_rejected() {
         "[executors.worker]\nprovider=\"absent\"\n",
     )
     .unwrap();
-    let error = Settings::load(dir.path()).unwrap_err().to_string();
+    let error = load_settings(dir.path()).unwrap_err().to_string();
     assert!(error.contains("absent"), "{error}");
 }
 #[test]
@@ -985,7 +1007,7 @@ fn a_role_cannot_restate_the_connection_and_is_told_where_it_moved() {
         "[executors.worker]\nkind=\"codex\"\n",
     )
     .unwrap();
-    let error = Settings::load(dir.path()).unwrap_err().to_string();
+    let error = load_settings(dir.path()).unwrap_err().to_string();
     assert!(error.contains("belongs to a provider"), "{error}");
     assert!(error.contains("providers."), "{error}");
 }
@@ -997,7 +1019,7 @@ fn a_new_provider_never_inherits_another_providers_endpoint_or_key() {
         "[providers.openai]\nkind=\"codex\"\nauth_mode=\"api\"\n",
     )
     .unwrap();
-    let error = Settings::load(dir.path()).unwrap_err().to_string();
+    let error = load_settings(dir.path()).unwrap_err().to_string();
     assert!(error.contains("base_url"), "{error}");
 }
 #[test]
@@ -1026,7 +1048,7 @@ fn install_writes_a_private_starter_config_and_never_overwrites_it() {
 fn the_starter_configuration_states_exactly_the_built_in_defaults() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(".horde.toml"), horde::config::STARTER).unwrap();
-    let starter = Settings::load(dir.path()).unwrap();
+    let starter = load_settings(dir.path()).unwrap();
     assert_eq!(
         toml::Value::try_from(&starter).unwrap(),
         toml::Value::try_from(Settings::default()).unwrap()
@@ -1355,7 +1377,7 @@ fn native_extra_body_cannot_replace_workflow_fields() {
             format!("[providers.default.extra_body]\n{key}=\"override\"\n"),
         )
         .unwrap();
-        let error = Settings::load(dir.path()).unwrap_err().to_string();
+        let error = load_settings(dir.path()).unwrap_err().to_string();
         assert!(
             error.contains(&format!("extra_body.{key} is reserved")),
             "{error}"
@@ -1483,9 +1505,9 @@ fn nested_project_settings_override_legacy_and_support_moving_the_file() {
         "concurrency=2\n[executors.worker]\nstep_budget_seconds=91\n",
     )
     .unwrap();
-    let before = Settings::load(dir.path()).unwrap();
+    let before = load_settings(dir.path()).unwrap();
     std::fs::rename(&legacy, &nested).unwrap();
-    let after = Settings::load(dir.path()).unwrap();
+    let after = load_settings(dir.path()).unwrap();
     assert_eq!(
         toml::to_string(&before).unwrap(),
         toml::to_string(&after).unwrap()
@@ -1495,15 +1517,15 @@ fn nested_project_settings_override_legacy_and_support_moving_the_file() {
         "concurrency=3\ntimeout_seconds=123\n[executors.worker]\nstep_budget_seconds=82\n",
     )
     .unwrap();
-    let both = Settings::load(dir.path()).unwrap();
+    let both = load_settings(dir.path()).unwrap();
     assert_eq!(both.concurrency, 2);
     assert_eq!(both.timeout_seconds, 123);
     assert_eq!(both.executors["worker"].step_budget_seconds, Some(91));
     std::fs::write(&nested, "concurrency = [").unwrap();
-    let error = Settings::load(dir.path()).unwrap_err().to_string();
+    let error = load_settings(dir.path()).unwrap_err().to_string();
     assert!(error.contains(".horde/horde.toml"), "{error}");
     std::fs::write(&nested, "concurency = 2").unwrap();
-    assert!(Settings::load(dir.path()).is_err());
+    assert!(load_settings(dir.path()).is_err());
 }
 
 #[test]

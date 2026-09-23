@@ -263,7 +263,8 @@ fn executable(program: &str) -> Evidence {
         Evidence::Missing
     }
 }
-fn credential_evidence(name: &str) -> Evidence {
+/// Credentials come from the environment or `credentials.env` in `directory`.
+fn credential_evidence(directory: &Path, name: &str) -> Evidence {
     if let Some(value) = std::env::var_os(name) {
         return if value.is_empty() {
             Evidence::Missing
@@ -271,10 +272,10 @@ fn credential_evidence(name: &str) -> Evidence {
             Evidence::CredentialPresent
         };
     }
-    if !Settings::credentials_path().exists() {
+    if !directory.join("credentials.env").exists() {
         return Evidence::Missing;
     }
-    match crate::config::credential(name) {
+    match crate::config::credential_in(directory, name) {
         Ok(value) if !value.trim().is_empty() => Evidence::CredentialPresent,
         Ok(_) => Evidence::Missing,
         Err(_) => Evidence::Unknown,
@@ -398,10 +399,11 @@ pub fn local(db: &Store) -> Result<Value> {
     if let Some(project) = management::value(db, "bootstrap_project")? {
         return local_project(db, &project);
     }
+    let directory = db.user_config_dir();
     Ok(serde_json::to_value(local_from(
         db,
-        &Settings::load_user()?,
-        credential_evidence,
+        &Settings::load_dir(&directory)?,
+        |name| credential_evidence(&directory, name),
     )?)?)
 }
 
@@ -593,9 +595,12 @@ pub fn inventory(db: &Store) -> Result<Value> {
             local_project_record(db, &project, &Settings::load_project_user(db, &project)?)?;
         return inventory_from(db, local);
     }
+    let directory = db.user_config_dir();
     inventory_from(
         db,
-        local_from(db, &Settings::load_user()?, credential_evidence)?,
+        local_from(db, &Settings::load_dir(&directory)?, |name| {
+            credential_evidence(&directory, name)
+        })?,
     )
 }
 
@@ -607,7 +612,7 @@ fn local_project_record(
 ) -> Result<RuntimeInventory> {
     let mut report = local_from(db, settings, |name| {
         if project == crate::projects::DEFAULT_PROJECT {
-            credential_evidence(name)
+            credential_evidence(&db.user_config_dir(), name)
         } else {
             Evidence::Missing
         }
@@ -940,6 +945,45 @@ mod tests {
         assert_eq!(local.capabilities[0].available, Some(false));
         let present = local_from(&db, &configured, |_| Evidence::CredentialPresent).unwrap();
         assert_eq!(present.capabilities[0].available, None);
+    }
+    #[test]
+    fn default_project_credential_evidence_reads_the_stores_configuration_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        // No environment sets this name, so only the stated directory can supply it.
+        std::fs::write(
+            config.join("config.toml"),
+            "[providers.stated]\nkind='tuara'\nauth_mode='api'\nbase_url='https://tuara.com/router/v1'\napi_key_env='STATED_DIRECTORY_KEY'\n[executors.coder]\nprovider='stated'\n",
+        )
+        .unwrap();
+        crate::secrets::write_private(
+            &config.join("credentials.env"),
+            b"STATED_DIRECTORY_KEY='test-only-key'\n",
+        )
+        .unwrap();
+        let db =
+            crate::store::Store::open_with_config_dir(&root.path().join("state"), &config).unwrap();
+        let authentication = |report: &Value| {
+            report["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|capability| capability["id"] == "coder")
+                .unwrap()["availability"]["authentication"]
+                .clone()
+        };
+        assert_eq!(authentication(&local(&db).unwrap()), "credential_present");
+        assert_eq!(
+            authentication(&local_project(&db, crate::projects::DEFAULT_PROJECT).unwrap()),
+            "credential_present"
+        );
+        let inventory = inventory(&db).unwrap();
+        assert_eq!(
+            authentication(&inventory["runtimes"][0]),
+            "credential_present"
+        );
+        assert!(!inventory.to_string().contains("test-only-key"));
     }
     #[test]
     fn remote_inventory_is_bound_to_authenticated_identity_and_receipt_time() {

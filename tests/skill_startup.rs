@@ -13,7 +13,19 @@ impl Fixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let binary = dir.path().join("horde");
-        std::fs::copy(env!("CARGO_BIN_EXE_horde"), &binary).unwrap();
+        // Linux refuses to run a file that any process has open for writing, and a
+        // child that another test forks keeps a copy of every descriptor this process
+        // has open until that child execs. A copy written here could therefore fail to
+        // run with "Text file busy", so link the binary, or let `cp` write the copy
+        // when the temporary directory is on another filesystem.
+        if std::fs::hard_link(env!("CARGO_BIN_EXE_horde"), &binary).is_err() {
+            let status = Command::new("cp")
+                .arg(env!("CARGO_BIN_EXE_horde"))
+                .arg(&binary)
+                .status()
+                .unwrap();
+            assert!(status.success(), "cannot copy the horde binary");
+        }
         let root = dir.path().join("data");
         std::fs::create_dir(&root).unwrap();
         let config = dir.path().join("config");

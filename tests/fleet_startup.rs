@@ -27,6 +27,7 @@ fn legacy_bootstrap_cannot_replace_a_pending_fleet_worker() {
     std::fs::write(temp.path().join("fleet-worker-pending.json"), "pending").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_horde"))
         .args(["--data-dir", temp.path().to_str().unwrap(), "daemon"])
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
         .env("HORDE_BOOTSTRAP_JSON", "{}")
         .output()
         .unwrap();

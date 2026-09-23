@@ -574,6 +574,21 @@ fn schema_five_upgrade_refuses_active_daemon_before_backup_or_schema_changes() {
     );
     drop(conn);
     drop(lock);
+    // Other tests in this binary spawn processes too. A child forked while `lock` was
+    // open holds a copy of it, and with it the flock, until that child execs. Wait for
+    // the lock to come free, then unlock the probe explicitly so that a copy forked
+    // from the probe cannot hold it in turn.
+    let probe = std::fs::File::open(dir.path().join("daemon.lock")).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while let Err(error) = probe.try_lock_exclusive() {
+        assert!(
+            error.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline,
+            "dropping the daemon lock must release it: {error}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    probe.unlock().unwrap();
+    drop(probe);
     Store::open(dir.path()).unwrap();
 }
 

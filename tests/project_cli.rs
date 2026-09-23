@@ -10,6 +10,7 @@ fn installed_binary_can_print_its_exact_bundled_lima_guard() {
             "runtime",
             "guard-script",
         ])
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
         .output()
         .unwrap();
     assert!(result.status.success());
@@ -22,6 +23,7 @@ fn installed_binary_can_print_its_exact_bundled_lima_guard() {
 
 #[test]
 fn project_and_account_commands_publish_selection_and_administration() {
+    let config = tempfile::tempdir().unwrap();
     for args in [
         vec!["--help"],
         vec!["project", "--help"],
@@ -32,6 +34,7 @@ fn project_and_account_commands_publish_selection_and_administration() {
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_horde"))
             .args(&args)
+            .env("XDG_CONFIG_HOME", config.path())
             .output()
             .unwrap();
         assert!(
@@ -46,8 +49,10 @@ fn project_and_account_commands_publish_selection_and_administration() {
 
 #[test]
 fn all_projects_conflicts_with_selected_project_before_connecting() {
+    let config = tempfile::tempdir().unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_horde"))
         .args(["--project", "hamster", "list", "--all-projects"])
+        .env("XDG_CONFIG_HOME", config.path())
         .output()
         .unwrap();
     assert!(!result.status.success());
@@ -85,6 +90,7 @@ fn mcp_bridge_keeps_project_binding_outside_caller_arguments() {
             "hamster",
             "mcp",
         ])
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env_remove("HORDE_WORKER_TOKEN")
         .env_remove("CODEHORDE_WORKER_TOKEN")
         .stdin(Stdio::piped())
@@ -106,6 +112,7 @@ fn mcp_bridge_keeps_project_binding_outside_caller_arguments() {
 
 #[test]
 fn selected_project_cannot_silently_modify_host_configuration() {
+    let config = tempfile::tempdir().unwrap();
     for command in ["config", "network", "skills"] {
         let mut args = vec!["--project", "hamster", command];
         args.push(match command {
@@ -115,6 +122,7 @@ fn selected_project_cannot_silently_modify_host_configuration() {
         });
         let result = Command::new(env!("CARGO_BIN_EXE_horde"))
             .args(args)
+            .env("XDG_CONFIG_HOME", config.path())
             .output()
             .unwrap();
         assert!(!result.status.success());
@@ -148,6 +156,7 @@ fn project_update_sends_only_explicit_changes() {
             "--concurrency",
             "2",
         ])
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .output()
         .unwrap();
     assert!(

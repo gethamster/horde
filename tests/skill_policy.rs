@@ -5,7 +5,9 @@ use std::{collections::BTreeMap, path::Path};
 fn fixture() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("repo")).unwrap();
-    let db = Store::open(&dir.path().join("data")).unwrap();
+    // An unused configuration directory keeps the developer's own settings out.
+    let db =
+        Store::open_with_config_dir(&dir.path().join("data"), &dir.path().join("config")).unwrap();
     (dir, db)
 }
 fn inspect(db: &Store, repo: &Path) -> Value {
@@ -143,7 +145,7 @@ fn rollback_is_reviewed_and_project_overrides_do_not_cross_project_boundaries() 
         inspect(&db, &repo)["content"],
         content("Project-specific review order.")
     );
-    let reopened = Store::open(&db.root).unwrap();
+    let reopened = Store::open_with_config_dir(&db.root, &db.user_config_dir()).unwrap();
     assert_eq!(inspect(&reopened, &repo), inspect(&db, &repo));
     assert_eq!(std::fs::read_dir(repo).unwrap().count(), 0);
 }
@@ -231,7 +233,8 @@ fn configured_resources_are_reviewed_and_pinned_with_an_accepted_override() {
     let accepted = policy::propose(&db, &args).unwrap();
     apply(&db, &repo, &accepted);
     std::fs::write(source.join("reference.txt"), "third reference").unwrap();
-    let settings = Settings::load(&repo).unwrap();
+    let user = tempfile::tempdir().unwrap();
+    let settings = Settings::load_with_user_dir(&repo, user.path()).unwrap();
     let pinned = skills::capture_effective(&db, &repo, &settings.skills).unwrap();
     assert_eq!(
         hex::decode(&pinned["custom"].files["reference.txt"].hex).unwrap(),

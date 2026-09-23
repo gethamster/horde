@@ -267,7 +267,9 @@ impl Drop for ControllerPresence {
     }
 }
 
-pub async fn connect(root: PathBuf, config: NetworkConfig) -> Result<()> {
+/// Hold the outbound control stream to the controller. Heartbeats and controller
+/// requests read user settings from `config_dir`.
+pub async fn connect(root: PathBuf, config_dir: PathBuf, config: NetworkConfig) -> Result<()> {
     let peer = config
         .controller_peer
         .clone()
@@ -299,7 +301,7 @@ pub async fn connect(root: PathBuf, config: NetworkConfig) -> Result<()> {
                     let current = NetworkConfig::load(Some(&root.join("managed-network.toml")))?;
                     ensure!(current.identity_cert == config.identity_cert, "worker certificate renewed; reconnecting");
                 }
-                send.send(wire::CallRequest{method:"heartbeat".into(),json:heartbeat_packet(&root, &peer).unwrap_or_else(|_|"{}".into())}).await?;
+                send.send(wire::CallRequest{method:"heartbeat".into(),json:heartbeat_packet(&root, &config_dir, &peer).unwrap_or_else(|_|"{}".into())}).await?;
             },
             frame=stream.message()=>{
                 let frame=frame?.context("controller disconnected")?;let packet:Value=serde_json::from_str(&frame.json)?;
@@ -307,10 +309,10 @@ pub async fn connect(root: PathBuf, config: NetworkConfig) -> Result<()> {
                     presence.acknowledge(ack,&config.runtime_id)?;
                     continue;
                 }
-                let root=root.clone();let config=config.clone();let peer=peer.clone();let send=send.clone();
+                let root=root.clone();let config_dir=config_dir.clone();let config=config.clone();let peer=peer.clone();let send=send.clone();
                 tokio::spawn(async move {
                     let id=packet["id"].clone();
-                    let result=tokio::task::spawn_blocking(move||crate::federation::handle_control(root,config,&peer,&packet)).await;
+                    let result=tokio::task::spawn_blocking(move||crate::federation::handle_control(root,&config_dir,config,&peer,&packet)).await;
                     let value=match result{Ok(Ok(v))=>v,Ok(Err(e))=>json!({"error":e.to_string()}),Err(_)=>json!({"error":"remote control handler failed"})};
                     let _=send.send(wire::CallRequest{method:"reply".into(),json:json!({"id":id,"result":value}).to_string()}).await;
                 });
@@ -319,9 +321,13 @@ pub async fn connect(root: PathBuf, config: NetworkConfig) -> Result<()> {
     }
 }
 
-fn heartbeat_packet(root: &std::path::Path, peer: &str) -> Result<String> {
-    let db = crate::store::Store::open(root)?;
-    let configured = crate::config::Settings::load_user()?;
+fn heartbeat_packet(
+    root: &std::path::Path,
+    config_dir: &std::path::Path,
+    peer: &str,
+) -> Result<String> {
+    let db = crate::store::Store::open_with_config_dir(root, config_dir)?;
+    let configured = crate::config::Settings::load_dir(&db.user_config_dir())?;
     let explicit: std::collections::BTreeSet<_> = configured
         .executors
         .values()

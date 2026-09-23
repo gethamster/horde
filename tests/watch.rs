@@ -53,10 +53,7 @@ impl Daemon {
         ] {
             horde::git::run(&repo, &args).unwrap();
         }
-        let child = Command::new(BIN)
-            .arg("--data-dir")
-            .arg(&root)
-            .arg("daemon")
+        let child = command(&root, &["daemon"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -114,9 +111,7 @@ impl Daemon {
             .into()
     }
     fn cli(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(BIN);
-        cmd.arg("--data-dir").arg(&self.root).args(args);
-        cmd
+        command(&self.root, args)
     }
     fn wait_for_attempt(&self, oid: &str) {
         let start = Instant::now();
@@ -173,13 +168,19 @@ impl Stream {
 }
 
 fn watch(root: &Path, args: &[&str]) -> Stream {
-    let output = Command::new(BIN)
+    Stream::from(command(root, args).output().unwrap())
+}
+
+/// Builds a `horde` command for `root` with user configuration inside the test
+/// directory, so no test process reads the developer's own configuration.
+fn command(root: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(BIN);
+    command
+        .env("XDG_CONFIG_HOME", root.join("user-config"))
         .arg("--data-dir")
         .arg(root)
-        .args(args)
-        .output()
-        .unwrap();
-    Stream::from(output)
+        .args(args);
+    command
 }
 
 fn assert_event_lines_are_well_formed(stream: &Stream) {

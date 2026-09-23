@@ -54,7 +54,7 @@ pub fn limit(db: &Store) -> Result<usize> {
                 ensure!((1..=64).contains(&n), "invalid HORDE_CONCURRENCY");
                 Ok(n)
             } else {
-                Ok(Settings::load_user()?.concurrency)
+                Ok(Settings::load_dir(&db.user_config_dir())?.concurrency)
             }
         }
     }

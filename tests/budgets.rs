@@ -236,14 +236,22 @@ async fn duplicate_artifacts_do_not_renew_and_real_proposals_do() {
                 .unwrap();
             let result = f
                 .run(async {
-                    tokio::time::sleep(Duration::from_millis(600)).await;
+                    // The supervisor starts its clock before it first polls this work,
+                    // so the attempt's first window has closed by `begun` + 1s.
+                    let begun = tokio::time::Instant::now();
+                    // The renewal counts from when `propose_steps` records it, after
+                    // its own work, so propose early enough for that work to finish
+                    // inside the first window.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
                     protocol::dispatch(
                         &f.db,
                         "propose_steps",
                         json!({"steps":[{"id":"implementation","scope":["src"]}]}),
                         Some(&f.token),
                     )?;
-                    tokio::time::sleep(Duration::from_millis(600)).await;
+                    // Outlive the first window. Only the proposal's renewal lets the
+                    // attempt get this far.
+                    tokio::time::sleep_until(begun + Duration::from_secs(1)).await;
                     Ok(json!({"accepted":true,"result":"planned"}))
                 })
                 .await;
@@ -258,8 +266,10 @@ async fn duplicate_artifacts_do_not_renew_and_real_proposals_do() {
 async fn command_writes_are_observed() {
     tokio::task::LocalSet::new().run_until(async {
         let f=Fixture::new();
+        // End on the last write. The scope check that follows the command has to finish
+        // inside the budget the last observed write left, so idle time only shrinks it.
         let result=f.run(async {
-            native::call(&f.db,&f.worker,"command",&json!({"argv":["sh","-c","sleep 0.4; echo one > a; sleep 0.4; echo two > a; sleep 0.4; echo three > a; sleep 0.4"]}),&Settings::default(),&["command".into()]).await?;
+            native::call(&f.db,&f.worker,"command",&json!({"argv":["sh","-c","sleep 0.4; echo one > a; sleep 0.4; echo two > a; sleep 0.4; echo three > a"]}),&Settings::default(),&["command".into()]).await?;
             Ok(json!({"accepted":true,"result":"done"}))
         }).await;
         assert!(result.is_ok(),"{result:?}");assert!(!f.events("step.progress").is_empty());

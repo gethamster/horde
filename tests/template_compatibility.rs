@@ -12,6 +12,7 @@ fn validate_reports_ignored_names_from_nested_templates_without_retaining_values
     let output = Command::new(env!("CARGO_BIN_EXE_horde"))
         .args(["validate", "outer", "--repo"])
         .arg(dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .output()
         .unwrap();
     assert!(

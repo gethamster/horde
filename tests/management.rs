@@ -272,6 +272,8 @@ async fn outbound_mtls_control_enrolls_once_and_manages_without_inbound_remote_p
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("root");
     let remote = temp.path().join("remote");
+    // An unused configuration directory keeps the developer's own settings out.
+    let config_dir = temp.path().join("config");
     let db = Store::open(&root).unwrap();
     Store::open(&remote).unwrap();
     let mut parameters = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -349,7 +351,11 @@ async fn outbound_mtls_control_enrolls_once_and_manages_without_inbound_remote_p
         )
         .await
     });
-    let control = tokio::spawn(horde::control::connect(remote.clone(), child.clone()));
+    let control = tokio::spawn(horde::control::connect(
+        remote.clone(),
+        config_dir.clone(),
+        child.clone(),
+    ));
     let mut reply = None;
     for _ in 0..100 {
         if let Ok(Some(value)) =
@@ -398,7 +404,7 @@ async fn outbound_mtls_control_enrolls_once_and_manages_without_inbound_remote_p
         )
         .unwrap();
     child.enrollment_token = None;
-    let reconnected = tokio::spawn(horde::control::connect(remote.clone(), child));
+    let reconnected = tokio::spawn(horde::control::connect(remote.clone(), config_dir, child));
     let mut completed = false;
     for _ in 0..100 {
         let args = json!({"request_id":"update-1","action":"runtime_update","version":"0.2.1"});
