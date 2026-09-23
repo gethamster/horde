@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
@@ -96,7 +96,11 @@ pub fn command() -> Result<tokio::process::Command> {
     let program = resolve_program().context(
         "Link CLI unavailable; run provider_wallet install to install Horde's private pinned copy",
     )?;
-    let mut command = tokio::process::Command::from(crate::executor::clean_command(&program));
+    command_for(&program)
+}
+
+pub(crate) fn command_for(program: &str) -> Result<tokio::process::Command> {
+    let mut command = tokio::process::Command::from(crate::executor::clean_command(program));
     command
         .env("NO_COLOR", "1")
         .env("PATH", safe_runtime_path()?)
@@ -120,12 +124,14 @@ fn resolve_program() -> Option<String> {
 }
 
 fn find_tool(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|directory| directory.join(name))
-            .find(|candidate| trusted_external(candidate))
-            .and_then(|candidate| std::fs::canonicalize(candidate).ok())
-    })
+    find_tool_in(name, &std::env::var_os("PATH")?)
+}
+
+fn find_tool_in(name: &str, search: &OsStr) -> Option<PathBuf> {
+    std::env::split_paths(search)
+        .map(|directory| directory.join(name))
+        .find(|candidate| trusted_external(candidate))
+        .and_then(|candidate| std::fs::canonicalize(candidate).ok())
 }
 
 /// Keep shebangs such as `/usr/bin/env node` on the same trusted runtime that
@@ -848,18 +854,16 @@ mod tests {
     }
     #[test]
     fn resolver_rejects_group_writable_path_executables() {
+        // Search this directory directly. Setting the process-wide PATH would hide
+        // tools such as ps from tests that spawn processes concurrently.
         let root = tempfile::tempdir().unwrap();
         let link = root.path().join("link-cli");
         std::fs::write(&link, "#!/bin/sh").unwrap();
         std::fs::set_permissions(&link, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let trusted = find_tool_in("link-cli", root.path().as_os_str()).unwrap();
+        assert!(trusted.is_absolute());
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
-        let old = std::env::var_os("PATH");
-        unsafe { std::env::set_var("PATH", root.path()) };
-        assert!(resolve_program().is_none());
-        match old {
-            Some(value) => unsafe { std::env::set_var("PATH", value) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
+        assert!(find_tool_in("link-cli", root.path().as_os_str()).is_none());
     }
 
     #[test]

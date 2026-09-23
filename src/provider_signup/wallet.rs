@@ -74,22 +74,35 @@ async fn create_for(
         "Link wallet charge must be between 1 and 50000 cents"
     );
     let _lock = crate::provider_login::process::lock("link")?;
-    let mut command = create_command(operation_id, network_id, charge_cents, test_mode)?;
-    if topup {
-        command = topup_command(operation_id, network_id, charge_cents, test_mode)?;
-    }
+    let command = if topup {
+        topup_command(
+            command()?,
+            operation_id,
+            network_id,
+            charge_cents,
+            test_mode,
+        )
+    } else {
+        create_command(
+            command()?,
+            operation_id,
+            network_id,
+            charge_cents,
+            test_mode,
+        )
+    };
     let request = run(root, operation_id, command, TIMEOUT).await?;
     validate_binding(&request, network_id, charge_cents)?;
     Ok(request)
 }
 
 fn topup_command(
+    mut command: tokio::process::Command,
     operation_id: &str,
     network_id: &str,
     charge_cents: u64,
     test_mode: bool,
-) -> Result<tokio::process::Command> {
-    let mut command = command()?;
+) -> tokio::process::Command {
     command.args([
         "spend-request", "create", "--credential-type", "shared_payment_token",
         "--network-id", network_id, "--amount", &charge_cents.to_string(),
@@ -100,16 +113,16 @@ fn topup_command(
     if test_mode {
         command.arg("--test");
     }
-    Ok(command)
+    command
 }
 
 fn create_command(
+    mut command: tokio::process::Command,
     operation_id: &str,
     network_id: &str,
     charge_cents: u64,
     test_mode: bool,
-) -> Result<tokio::process::Command> {
-    let mut command = command()?;
+) -> tokio::process::Command {
     command.args([
         "spend-request", "create", "--credential-type", "shared_payment_token",
         "--network-id", network_id, "--amount", &charge_cents.to_string(),
@@ -120,7 +133,7 @@ fn create_command(
     if test_mode {
         command.arg("--test");
     }
-    Ok(command)
+    command
 }
 
 pub(super) async fn retrieve(
@@ -470,27 +483,18 @@ mod tests {
 
     #[test]
     fn creation_pins_amount_currency_and_idempotency_without_payment_execution() {
-        let root = tempfile::tempdir().unwrap();
-        let link = root.path().join("link-cli");
-        std::fs::write(&link, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&link, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let previous = std::env::var_os("PATH");
-        unsafe { std::env::set_var("PATH", root.path()) };
-        let command = create_command("signup-stable-id", "profile_recipient", 2048, false).unwrap();
-        let test_command =
-            create_command("signup-test-id", "profile_recipient", 512, true).unwrap();
+        // Build from an explicit program. Setting the process-wide PATH to resolve a
+        // fake CLI would hide tools such as ps from tests that spawn processes concurrently.
+        let base = || crate::provider_wallet::command_for("/nonexistent/link-cli").unwrap();
+        let command = create_command(base(), "signup-stable-id", "profile_recipient", 2048, false);
+        let test_command = create_command(base(), "signup-test-id", "profile_recipient", 512, true);
         let test_topup_command =
-            topup_command("topup-test-id", "profile_recipient", 512, true).unwrap();
-        match previous {
-            Some(path) => unsafe { std::env::set_var("PATH", path) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
+            topup_command(base(), "topup-test-id", "profile_recipient", 512, true);
         let args: Vec<_> = command
             .as_std()
             .get_args()
             .map(|arg| arg.to_str().unwrap())
             .collect();
-        assert!(std::path::Path::new(command.as_std().get_program()).is_absolute());
         assert_eq!(&args[..2], &["spend-request", "create"]);
         for pair in [
             ["--amount", "2048"],
