@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 mod account_control;
+pub mod archive;
 mod placement;
 pub use placement::route_queued;
 pub mod wire {
@@ -136,7 +137,17 @@ pub fn forward(db: &Store, oid: &str, name: &str, args: &Value) -> Result<Option
             crate::git::run(&workspace, &["status", "--porcelain"])?.is_empty(),
             "commit parent work before delegating"
         );
-        Some(snapshot(&workspace)?)
+        // Compress only for an owner that advertises support. An unreachable
+        // owner fails the operation below; the legacy form is the safe default.
+        let owner = call_sync(
+            config(db)?,
+            origin["owner_peer"].as_str().context("owner peer")?.into(),
+            "capabilities".into(),
+            json!({"project":project}),
+        )
+        .map(|features| archive::Encoding::for_features(&features))
+        .unwrap_or(archive::Encoding::Tar);
+        Some(archive::create(&workspace, owner)?)
     } else {
         None
     };
@@ -180,19 +191,6 @@ pub fn forward(db: &Store, oid: &str, name: &str, args: &Value) -> Result<Option
     }
     Ok(Some(value))
 }
-fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = crate::executor::clean_command("git")
-        .args(args)
-        .current_dir(repo)
-        .output()?;
-    ensure!(out.status.success(), "repository transfer command failed");
-    ensure!(
-        out.stdout.len() <= 24 * 1024 * 1024,
-        "repository transfer exceeds 24 MiB limit"
-    );
-    Ok(out.stdout)
-}
-
 // Imported source must never install Git metadata or run local hooks/filters.
 pub(crate) fn import_git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let output = crate::executor::clean_command("git")
@@ -215,68 +213,28 @@ pub(crate) fn import_git(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn git_metadata_component(component: &std::ffi::OsStr) -> bool {
-    // HFS+ ignores these format characters when comparing filenames. APFS and
-    // case-sensitive hosts must reject the same archive before it is portable.
-    let normalized: String = component.to_string_lossy().chars().filter(|c| {
-        !matches!(c, '\u{200c}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{206a}'..='\u{206f}' | '\u{feff}')
-    }).collect();
-    normalized.eq_ignore_ascii_case(".git")
-}
+/// Snapshot HEAD in the compressed encoding. Senders convert it with
+/// [`archive::for_peer`] before it reaches a runtime that has not advertised
+/// compressed snapshot support.
 pub fn snapshot(repo: &Path) -> Result<Value> {
-    let commit = String::from_utf8(git(repo, &["rev-parse", "HEAD"])?)?
-        .trim()
-        .to_owned();
-    let paths = String::from_utf8(git(repo, &["ls-tree", "-r", "--name-only", &commit])?)?;
-    ensure!(
-        !paths.lines().any(|p| Path::new(p)
-            .file_name()
-            .is_some_and(|n| n == ".env" || n.to_string_lossy().ends_with(".key"))),
-        "repository snapshot contains a tracked secret file"
-    );
-    let bytes = git(repo, &["archive", "--format=tar", &commit])?;
-    Ok(json!({"commit":commit,"hash":crate::store::hash(&bytes),"archive":hex::encode(bytes)}))
+    archive::create(repo, archive::Encoding::TarGzip)
 }
+/// Verify a legacy or compressed snapshot and import it as a fresh repository.
 pub fn unpack(snapshot: &Value, path: &Path) -> Result<()> {
-    let bytes = hex::decode(snapshot["archive"].as_str().context("repository archive")?)?;
-    ensure!(
-        bytes.len() <= 24 * 1024 * 1024 && snapshot["hash"] == crate::store::hash(&bytes),
-        "snapshot integrity or size failure"
-    );
-    std::fs::create_dir_all(path)?;
-    let mut archive = tar::Archive::new(bytes.as_slice());
-    let mut size = 0u64;
-    for entry in archive.entries()? {
-        let mut e = entry?;
-        if e.header().entry_type().is_pax_global_extensions() {
-            continue;
-        }
-        size += e.size();
-        ensure!(
-            size <= 64 * 1024 * 1024,
-            "expanded snapshot exceeds size limit"
-        );
-        ensure!(
-            e.header().entry_type().is_file() || e.header().entry_type().is_dir(),
-            "snapshot links and special files are unsupported"
-        );
-        let p = e.path()?.into_owned();
-        let s = p.to_str().context("UTF-8 repository paths required")?;
-        ensure!(
-            !p.components()
-                .any(|p| git_metadata_component(p.as_os_str())),
-            "snapshot cannot contain Git metadata"
-        );
-        crate::store::scope(s)?;
-        ensure!(e.unpack_in(path)?, "snapshot path escapes repository");
-    }
+    archive::extract(snapshot, path, archive::LIMITS)?;
     import_git(path, &["init", "--template=", "-b", "main"])?;
     import_git(path, &["config", "user.name", "Horde"])?;
     import_git(path, &["config", "user.email", "task@localhost"])?;
     import_git(path, &["add", "."])?;
     import_git(
         path,
-        &["commit", "--allow-empty", "-m", "Delegated source snapshot"],
+        &[
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "Delegated source snapshot",
+        ],
     )?;
     Ok(())
 }
@@ -396,7 +354,7 @@ impl Service {
             }
 
             "capabilities" => Ok(
-                json!({"runtime":self.config.runtime_id,"execution_available":self.config.execution_clients.iter().any(|p|p==peer),"protocol":1,"features":["projects","lima_host_operations"],"platform":crate::capabilities::local(db)?["platform"]}),
+                json!({"runtime":self.config.runtime_id,"execution_available":self.config.execution_clients.iter().any(|p|p==peer),"protocol":1,"features":["projects","lima_host_operations",archive::GZIP_FEATURE],"platform":crate::capabilities::local(db)?["platform"]}),
             ),
             "accept" => {
                 ensure!(
@@ -582,7 +540,10 @@ impl Service {
                     &[&oid],
                 )?;
                 let snapshot = if o["status"] == "succeeded" {
-                    Some(snapshot(&crate::git::task_workspace(db, oid)?)?)
+                    Some(archive::create(
+                        &crate::git::task_workspace(db, oid)?,
+                        archive::Encoding::for_request(args),
+                    )?)
                 } else {
                     None
                 };
@@ -624,6 +585,8 @@ impl Service {
                         return Ok(json!({"verified":true}));
                     }
                     let (snapshot, base) = child_snapshot(db, child)?;
+                    let snapshot =
+                        archive::for_peer(&snapshot, archive::Encoding::for_request(args))?;
                     return Ok(
                         json!({"snapshot":snapshot,"base":base,"version":crate::delegation::tree(db,oid)?["version"]}),
                     );
@@ -834,6 +797,7 @@ pub async fn tick(db: &Store) -> Result<()> {
     let features=call(&config,peer,"capabilities",json!({"project":project})).await?;
     ensure!(features["features"].as_array().is_some_and(|items|items.iter().any(|item|item=="projects")), "runtime must advertise projects support before receiving new work");
     let mut packet=prepared_packet(db,oid)?;
+    packet["snapshot"]=archive::for_peer(&packet["snapshot"],archive::Encoding::for_features(&features))?;
     db.conn.execute("UPDATE remote_links SET state='sending',base=? WHERE task=?",params![packet["snapshot"]["commit"].as_str(),oid])?;
     packet["bundles"]=bundle_packet(db,oid,peer,&config)?;
     let reply=call(&config,peer,"accept",packet).await?;
@@ -847,7 +811,7 @@ pub async fn tick(db: &Store) -> Result<()> {
     db.event(oid,"task.runtime_grant_revoked",json!({"project":project,"runtime":peer}))?;
    }
    if link["status"]=="cancelled"{call(&config,peer,"cancel",json!({"project":crate::projects::task_project(db,oid)?,"task":remote})).await?;}
-   let reply=call(&config,peer,"status",json!({"project":crate::projects::task_project(db,oid)?,"task":remote})).await?;
+   let reply=call(&config,peer,"status",json!({"project":crate::projects::task_project(db,oid)?,"task":remote,archive::ACCEPT_FIELD:archive::accepted()})).await?;
    let status=reply["task"]["status"].as_str().context("remote status")?;
    let cancelled=db.task(oid)?["status"]=="cancelled";
    // A cancellation committed while status was in flight must reach the worker
@@ -1219,7 +1183,7 @@ fn import_foreign_child(db: &Store, parent: &str, args: &Value, origin: &Value) 
         config(db)?,
         peer.into(),
         "child_result".into(),
-        json!({"project":crate::projects::task_project(db,parent)?,"task":origin["owner_task"],"child":remote_child}),
+        json!({"project":crate::projects::task_project(db,parent)?,"task":origin["owner_task"],"child":remote_child,archive::ACCEPT_FIELD:archive::accepted()}),
     )?;
     let rows = db.rows(
         "SELECT local_child FROM foreign_children WHERE parent=? AND remote_child=?",

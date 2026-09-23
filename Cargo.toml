@@ -39,6 +39,7 @@ tokio-stream = { version = "0.1.19", features = ["net"] }
 prost = "0.14"
 tonic-prost = "0.14"
 tar = "0.4"
+flate2 = "1"
 toml_edit = "0.25.13"
 tempfile = "3"
 

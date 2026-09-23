@@ -369,6 +369,7 @@ fn local_from(
                 "projects".into(),
                 "lima_host_operations".into(),
                 "runtime_skills_update".into(),
+                crate::federation::archive::GZIP_FEATURE.into(),
             ],
         },
         capacity: Capacity {

@@ -411,11 +411,22 @@ Original questions cross unchanged and can be escalated through multiple callers
 The root bounds deeper delegation instead of giving every host a fresh budget.
 
 Repository transfer includes committed files, not history or untracked files.
-Archives are content-hashed, limited to 24 MiB archive payload and 64 MiB expanded entries, and reject traversal, symlinks, special
-files, Git metadata, tracked `.env`, and `*.key`. These filename checks do not
-prove an arbitrary repository is secret-free. App bundles use the separate
-approved transfer path. Results require explicit parent integration and combined
-validation; a remote success status alone is insufficient.
+Archives are gzip-compressed tars, content-hashed over the transmitted bytes,
+limited to 24 MiB compressed, 256 MiB expanded, and 64 MiB per file, and reject
+traversal, symlinks, special files, Git metadata, tracked `.env`, and `*.key`.
+Unpacking streams the expanded tar and stops at the expanded limit, so a
+compression bomb is rejected without being decompressed in full. The filename
+checks do not prove an arbitrary repository is secret-free.
+
+Compressed transfer is an explicit peer capability (`snapshot_gzip`). A runtime
+sends a compressed snapshot only to a peer that advertises it or lists
+`tar+gzip` in a status or child-result request. An older peer still receives the
+uncompressed hex-encoded tar, limited to 24 MiB, and every runtime still accepts
+that legacy form.
+
+App bundles use the separate approved transfer path. Results require explicit
+parent integration and combined validation; a remote success status alone is
+insufficient.
 
 This is a cooperative single-user network of enrolled runtimes. It does not
 provide a distributed scheduler, shared SQLite, transparent filesystem access,
