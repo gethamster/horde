@@ -150,13 +150,26 @@ pub(super) fn payment_authorization(challenge: &Challenge, spt: &str) -> Result<
         spt.starts_with("spt_") && spt.len() <= 4096 && spt.bytes().all(|b| b.is_ascii_graphic()),
         "invalid shared payment token"
     );
+    // mppx binds a Stripe credential to its route by comparing the payload's
+    // externalId with the challenge request's; without it Tuara declines the payment.
+    let request = challenge_request(&challenge.wire)?;
     let encoded = URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(&json!({
-            "challenge": challenge.wire, "payload": {"spt": spt}
+            "challenge": challenge.wire,
+            "payload": {"spt": spt, "externalId": text(&request, "externalId")?}
         }))
         .map_err(|_| invalid())?,
     );
     Ok(format!("Payment {encoded}"))
+}
+
+fn challenge_request(wire: &BTreeMap<String, String>) -> Result<Value> {
+    serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(attribute(wire, "request")?)
+            .map_err(|_| invalid())?,
+    )
+    .map_err(|_| invalid())
 }
 
 fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
@@ -274,12 +287,7 @@ fn parse_challenge_kind(
             "unsupported Tuara payment credential header"
         );
     }
-    let request: Value = serde_json::from_slice(
-        &URL_SAFE_NO_PAD
-            .decode(attribute(&wire, "request")?)
-            .map_err(|_| invalid())?,
-    )
-    .map_err(|_| invalid())?;
+    let request = challenge_request(&wire)?;
     ensure!(
         text(&request, "currency")? == "usd"
             && request
@@ -475,7 +483,10 @@ mod tests {
                                 credential["challenge"],
                                 serde_json::to_value(expected_wire).unwrap()
                             );
-                            assert_eq!(credential["payload"], json!({"spt":"spt_private"}));
+                            assert_eq!(
+                                credential["payload"],
+                                json!({"spt":"spt_private","externalId":"challenge_test"})
+                            );
                             // Even malformed JSON must reach the caller's durable recovery storage.
                             axum::http::Response::builder()
                                 .status(201)
