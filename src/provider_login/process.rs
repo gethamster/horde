@@ -229,6 +229,40 @@ mod tests {
         recover(root.path()).unwrap();
     }
 
+    #[tokio::test]
+    async fn records_a_cli_that_exited_before_it_was_reaped() {
+        let root = tempfile::tempdir().unwrap();
+        let mut child = tokio::process::Command::new("/usr/bin/true")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let zombie = || {
+            std::process::Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "stat="])
+                .output()
+                .is_ok_and(|out| {
+                    String::from_utf8_lossy(&out.stdout)
+                        .trim_start()
+                        .starts_with('Z')
+                })
+        };
+        for _ in 0..500 {
+            if zombie() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(zombie(), "the CLI should have exited without being reaped");
+        // A fast CLI can finish before Horde records it. Until Horde waits on it,
+        // its identity stays readable, so recording must still succeed.
+        let guard = Guard::record(root.path(), "fast-cli", pid).unwrap();
+        assert!(root.path().join("provider-logins/fast-cli.json").exists());
+        drop(guard);
+        assert!(!root.path().join("provider-logins/fast-cli.json").exists());
+        child.wait().await.unwrap();
+    }
+
     #[test]
     fn recovery_leaves_reused_process_identity_untouched() {
         let root = tempfile::tempdir().unwrap();
