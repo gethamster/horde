@@ -395,6 +395,8 @@ model = "a-stronger-model-id"
 
 For Codex API authentication use `kind = "codex"`, `base_url = "https://api.openai.com/v1"`, and `api_key_env = "OPENAI_API_KEY"` on a provider. The shipped `codex` and `claude` providers use subscription login. The broker passes through SSE and provider errors and rejects requests outside the invocation's model endpoints.
 
+The `claude` harness passes `--json-schema` so Claude Code validates the step's completion object (`result`, `accepted`, `artifacts`, and any declared named outputs) and returns it as structured output. If a reply still lacks that object, Horde resumes the same Claude session once and asks for only the JSON object. A second malformed reply fails the attempt, and both turns' usage is recorded. This needs a Claude Code CLI with `--json-schema`; 2.1.280 has it.
+
 The shipped `grok` provider runs the Grok CLI (`grok -p PROMPT --output-format json --always-approve`, `kind = "grok"`) under its installed subscription login; `auth_mode = "api"` is refused for it. The harness writes the coordination MCP server into the workspace's `.grok/config.toml` (the shape `grok mcp add --scope project` writes), passes the prompt as a command-line argument (limit 200 KiB), and reads the single JSON reply. Use it as a fallback hop, for example `[fallbacks] codex = "grok"`.
 
 Set `autonomy = false` to hold new tasks until the initial question is answered:

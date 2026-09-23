@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Make Claude executor steps return their completion object reliably. The
+  harness passes a JSON schema to Claude Code and reads the validated
+  `structured_output`, so a final message written as prose no longer fails the
+  step. A reply without the object gets one repair turn in the same session
+  before the attempt fails.
+
 - Compress repository snapshots sent to remote runtimes. Snapshots are now
   gzip-compressed tars carried as base64, limited to 24 MiB compressed and
   256 MiB expanded, so repositories whose uncompressed archive exceeds 24 MiB
