@@ -640,6 +640,7 @@ version = "0.6.6"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "clap",
  "fs2",
  "futures-util",

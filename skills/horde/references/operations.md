@@ -150,11 +150,64 @@ changing credentials.
 
 | Operation | Arguments | Result |
 | --- | --- | --- |
+| `agent_setup` | `action: "inspect"` or `"verify"`; optional `provider`, absolute `repo` | Reports the administrative parent, repository registration, child roles and concurrency, provider state, and Tuara wallet and billing readiness. An unregistered repository returns a `project_repo_add` next action. No provider or wallet request is made. |
+| `agent_setup` | `action: "configure_workers"`, `provider`*, `roles[]`* | Assigns one to 32 child executor roles to an existing provider without requiring, replacing, or exposing its credential. Authentication remains a separate step. |
 | `agent_setup` | `action: "configure_provider"`, `provider`*, optional `credential`, `credential_env`, or `credential_file`; optional provider settings and `roles[]` | Saves the provider and key. Choose at most one credential source. The response omits the key and reports activation separately from verification. |
 | `provider_login` | `action: "start"`, `provider`*, `request_id`*, `timeout_seconds` | Starts a Tuara key-page handoff, `codex login --device-auth`, or `claude auth login`; returns a `session_id`. The timeout defaults to 600 seconds and accepts 1 through 1800. |
 | `provider_login` | `action: "status"`, `session_id`* | Returns status, bounded `output`, expiry, and authentication evidence. Relay the login instructions to the user. `method` is `api_key` for Tuara or `cli_login` for Codex/Claude. |
 | `provider_login` | `action: "submit"`, `session_id`*, `input`* | Accepts one nonempty line of at most 4096 bytes: a Tuara inference API key or a CLI-requested authorization code. |
 | `provider_login` | `action: "cancel"`, `session_id`* | Cancels the session and stops any process group or pending verification request. |
+| `provider_wallet` | `action: "inspect"` | Reads the local Link wallet readiness and returns the next setup action when one is needed. |
+| `provider_wallet` | `action: "install"`, `request_id`*; optional `timeout_seconds` | Starts a bounded, supervised private Link installation. Reuse the request ID after a lost reply. |
+| `provider_wallet` | `action: "login_start"`, `request_id`*; optional `timeout_seconds` | Starts a bounded Link device-login session and returns its verification URL, device phrase, and session ID. |
+| `provider_wallet` | `action: "status"` or `"login_status"`, `session_id`* | Reads the current installation or login session without starting another one. |
+| `provider_wallet` | `action: "cancel"` or `"login_cancel"`, `session_id`* | Stops an unfinished Link installation or login session. |
+| `provider_wallet` | `action: "details"` | Returns safe wallet readiness and the fixed [Link Wallet](https://app.link.com/wallet) URL for payment details or verification. It never returns PANs, CVCs, or full payment details. |
+| `provider_signup` | `action: "start"`, `request_id`*, `provider`*, `organization_name`*, `agent_name`*, `amount_cents`*, `max_charge_cents`*, `terms_version`*, `accept_terms: true`; optional `replace_existing`, `test_mode` | Validates a Tuara signup quote without paying. Amounts are US cents; the maximum total including fees is 50,000. Existing credentials require explicit replacement authorization. Test mode asks Link for a test credential. |
+| `provider_signup` | `action: "status"`, `request_id`* | Reads durable local signup progress without contacting Tuara or the wallet. Returns the quote, approval URL when available, and next actions; never returns the key or payment token. |
+| `provider_signup` | `action: "resume"`, `request_id`* | Advances a bounded step: creates or checks a Link wallet approval, submits one approved paid signup, or verifies and imports a privately saved key. |
+| `provider_signup` | `action: "cancel"`, `request_id`* | Cancels Horde's signup and its unpaid Link authorization before payment submission. Does not reverse a submitted payment. |
+| `provider_topup` | `action: "configure"`, `provider`*, `threshold_cents`*, `amount_cents`*, `max_charge_cents`*, `monthly_limit_cents`*, `terms_version`*, `accept_terms: true`; optional `test_mode` | Creates or replaces a recurring Tuara policy after explicit authorization. Per-charge and monthly limits include fees; the monthly limit applies to the UTC calendar month. Test mode is saved with the policy. |
+| `provider_topup` | `action: "status"` or `"check"`, `provider`* | Reads the durable policy, or advances one bounded funding phase without waiting for the next daemon tick. |
+| `provider_topup` | `action: "disable"`, `provider`* | Cancels unpaid pending work and future checks. It does not reverse submitted payments or erase the spending ledger. |
+
+`provider_wallet` is available on the same administrative connection as provider
+setup. An agent starts with `inspect`, then follows the returned bounded install
+and device-login actions. Relay the Link verification URL and phrase, and direct
+the user to the fixed Link wallet URL returned by `details`. Link hosts wallet and
+identity changes; MCP payment fields never include PANs, CVCs, or full card
+details. A previously used Link account, including one used with Grok Bot, can
+be reused. Horde does not register or configure a Link MCP server in Grok Bot.
+
+`provider_signup` requires an unbound default-project administrative connection
+and a ready Link wallet. Worker and project-scoped connections cannot call it.
+Use it only after the operator authorizes signup,
+the maximum charge including fees, and a specific terms version. Human operators
+use `horde config provider signup tuara`; agents construct the internal operation
+arguments and do not ask users to write JSON.
+
+Signup states include `preparing`, `awaiting_wallet`, `awaiting_approval`,
+`submitting`, `credential_received`, `succeeded`, `failed`, `cancelled`,
+`expired`, and `uncertain`. Relay the approval URL for the individual payment and reuse the same
+request ID for bounded resumes. If `wallet_action_required` is true, resolve the
+action in Link before another resume instead of repeatedly polling.
+`credential_received` needs another resume to
+verify and install the saved key; `succeeded` reports verified authentication
+and activation on the next invocation. Capacity remains unknown. Receipts are
+private and survive daemon restarts. An uncertain paid outcome requires Tuara
+and wallet reconciliation; Horde will not replay it. Repeating `start` with
+identical arguments returns the saved operation, while changed arguments fail.
+
+`provider_topup` has the same administrative, default-project, and ready-wallet
+requirements. Its daemon check runs every 60 seconds and waits five minutes
+after a successful charge. The policy keeps fee-inclusive charges in a UTC
+monthly ledger and shares that ledger with aliases for the same Tuara origin and
+verified organization within one configuration directory. It does not limit
+spending outside that Horde policy. A Link action may be required before an
+approved charge can submit. Pending and uncertain charges hold later payments;
+an uncertain outcome needs Tuara and Link reconciliation and is never replayed.
+Human operators use `horde config provider topup tuara`, plus `--status`,
+`--check`, or `--disable`. See [the signup and top-up guide](../../../docs/configuration.md#create-a-funded-tuara-account).
 
 `credential_activation: "next_invocation"` and `restart_required: false` mean
 the saved API key applies to the next invocation. Explicitly supplied credentials

@@ -59,6 +59,18 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Administer default-project legacy provider sign-in; managed accounts use account_credential_set",
     ),
     (
+        "provider_signup",
+        "Create a funded Tuara account using an authorized Stripe Link wallet, with durable payment recovery and private inference-key installation",
+    ),
+    (
+        "provider_topup",
+        "Configure, inspect, disable, or check automatic Tuara top-ups within explicitly authorized per-charge and monthly limits",
+    ),
+    (
+        "provider_wallet",
+        "Set up the Link wallet through MCP: inspect readiness, install Link, authenticate through a verification link, and guide payment-detail entry on Link before Tuara signup or funding",
+    ),
+    (
         "skill_pack_list",
         "Inspect this runtime's file-based default skill pack and content hash",
     ),
@@ -80,7 +92,7 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     ),
     (
         "agent_setup",
-        "Inspect or arrange Horde setup using available access; report missing credentials or access without exposing secrets",
+        "Inspect a client-neutral parent, configure child worker roles and providers, and guide fleet and billing setup without exposing secrets",
     ),
     (
         "skill_inspect",

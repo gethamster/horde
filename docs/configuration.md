@@ -4,6 +4,37 @@ Defaults are autonomous execution, four concurrent workers, Tuara over an API ke
 
 Installing runs `horde config init`, which writes a starter `config.toml` and a private `credentials.env` into the configuration directory. It creates neither if it is already there, so it is safe to run again. `horde config` prints the complete default TOML.
 
+## Set up through any MCP client
+
+An MCP client connected to Horde's unbound administrative `horde mcp`
+connection is the parent agent. The connection does not choose the model for
+child workers. Ask that agent to set up Horde in ordinary language; it starts
+with `agent_setup` action `inspect`, which reports the current parent connection,
+child executor roles, provider authentication, controller state, and Tuara
+wallet readiness. With an absolute repository path, it also reports whether
+that checkout is registered and offers `project_repo_add` when needed. You do
+not need to provide JSON.
+
+The agent can call `agent_setup` action `configure_workers` with a configured
+provider and role names such as `planner`, `worker`, and `reviewer`. It assigns
+those child roles without requiring or changing the provider credential. To add
+or authenticate a provider, the agent uses `configure_provider` or
+`provider_login`. For a new Tuara account it uses `provider_wallet` to install
+and connect Link, `provider_signup` to create the funded account, and
+`provider_topup` to enable recurring funding within the limits you authorize.
+Signup and recurring funding require separate choices and consent; the agent
+collects them in conversation and supplies the tool arguments itself.
+
+Remote fleet workers use `configure_controller`, `create_fleet_key`, and
+`join_worker`. The fleet credential stays in a private file or the target
+platform's secret store. Horde reports the remaining platform actions when
+the MCP connection cannot perform them. An MCP client must first be connected
+to Horde: local clients can launch `horde mcp` over stdio, while remote clients
+need a reachable, authenticated transport. The Horde installer does not
+register a connector in every third-party client. Codex and Claude users can
+also run `horde init` to install repository instructions and client-specific MCP
+configuration.
+
 ## Decision models and advisory routing
 
 Horde can record decision-model routing advice without changing which executor runs a step. The feature is disabled by default and can be enabled only in operator-owned configuration. A repository `.horde.toml` cannot enable or alter it. Fresh decision settings name Tuara as the provider but leave the endpoint and credential source empty. This example uses the Tuara Jev catalog ID validated by the [live smoke test](decision-routing-v1-report.md):
@@ -95,13 +126,8 @@ beside the credentials file; this record contains variable names only. Other
 variables keep their existing environment-first lookup. Saving a key does not
 verify access; `provider_api` remains `not_probed`.
 
-For Tuara, the agent can guide you through obtaining and verifying a key:
-
-```json
-{"action":"start","provider":"tuara","request_id":"connect-tuara-1"}
-```
-
-The session reports `method: "api_key"` and directs you to
+For Tuara, ask your connected agent to guide you through obtaining and verifying
+a key. The agent uses the account-setup operation internally and directs you to
 [Tuara's key page](https://tuara.com/app/buy/keys). Sign in, create or copy an
 inference API key, and give it to your agent. The agent submits it as `input` with
 the returned `session_id`. Horde checks Tuara's account introspection endpoint
@@ -111,11 +137,8 @@ cancellation, or expiry leaves the existing key intact. Success reports
 it does not prove available quota. This requires no Tuara CLI or inference request.
 Tuara's account OAuth grants do not include inference access.
 
-Tuara also documents [agent signup through the Machine Payments Protocol](https://tuara.com/docs/agents/signup/index.md).
-An external MPP client with an authorized payment credential can create a funded
-organization and receive an inference key. Horde does not currently create that
-account, authorize payment, or perform automatic top-ups. Import the resulting
-key through the same provider setup flow after completing signup.
+For a new funded Tuara account, use [automatic signup](#create-a-funded-tuara-account)
+below. The key-page flow remains available for an account you already have.
 
 You can also name an existing Tuara provider. The `tuara` preset reuses a matching
 configured provider, usually `default`, and preserves its model and role settings.
@@ -155,6 +178,148 @@ selection, and changing role settings affects new tasks. After an effective API
 key change or a verified login, Horde discards affected provider quota observations
 and treats capacity as unknown; local budget observations remain. Account changes
 do not reconcile or automatically resume uncertain work.
+
+## Create a funded Tuara account
+
+Ask your connected agent to create a Tuara account, or run the guided command:
+
+```sh
+horde config provider signup tuara
+```
+
+Horde asks for an organization name, an initial credit amount, and a maximum
+charge including fees. It shows the [Tuara terms](https://tuara.com/terms/) and
+asks you to accept a specific version before starting. The walkthrough proposes
+$20 credit and a $20.48 maximum charge; you can change both. It defaults to
+refusing payment until you consent. Your agent can gather the same choices in
+ordinary language and call Horde internally; you do not need to write JSON.
+
+Your connected agent prepares the private Link wallet connection before it starts
+signup. It first calls `provider_wallet` with `action: "inspect"`. If Link is
+missing or not ready, it calls `install` with a stable request ID and checks
+`status` until the supervised installation finishes. It then calls
+`login_start`, relays Link's verification URL and device phrase, and checks
+`status` with the returned session ID until Link confirms the connection. Use
+`cancel` with that session ID if you abandon sign-in. The agent uses `details`
+to confirm safe wallet readiness before it starts a paid flow.
+
+Link keeps payment methods in its hosted wallet at
+[app.link.com/wallet](https://app.link.com/wallet). If `details` reports a
+missing payment method or verification requirement, open the hosted wallet
+and complete the action there. Link's agent wallet currently supports US
+accounts. Horde's MCP tools never accept, display, or
+store a card number, security code, or other full card details. When the
+supervised installation completes, Horde uses its pinned Link CLI below its
+configuration directory. Installing Link requires Node.js and npm on the host;
+`provider_wallet inspect` reports when either is missing.
+A Link account you already use with Grok Bot can be reused. If Grok Bot already
+has a Link MCP connection, configure and use that connection separately; Horde
+does not add or configure it.
+
+After Link is ready, Horde creates the Tuara organization through MPP, captures
+its new inference key privately, verifies it, and saves it for the next
+invocation. You never need to copy the new key. Model capacity remains unknown.
+
+The command advances signup through bounded steps and prints a reference if
+wallet setup or approval is still needed. Continue the same signup with:
+
+```sh
+horde config provider signup tuara --request-id YOUR_SIGNUP_REFERENCE
+```
+
+For scripts, supply the choices explicitly. Dollar amounts accept at most two
+decimal places. Missing consent or required choices in a noninteractive session
+produce an actionable error instead of a prompt:
+
+```sh
+horde config provider signup tuara \
+  --organization "My Agent Co" --agent horde \
+  --amount 20 --max-charge 20.48 \
+  --terms-version 2026-09 --accept-terms
+```
+
+When Tuara is running in Stripe test mode, add `--test-mode` (or set
+`test_mode: true` in `provider_signup` over MCP). Horde then asks Link for a
+test credential; Link does not charge the underlying payment method. The
+test-mode choice is saved with the signup request so a later `resume` uses the
+same mode. Confirm the account is in test mode before using this option; a
+test credential will not fund a live account. You use your regular Link account
+for device approval; there is no separate Link test account, and Horde never
+asks for a test card number through MCP.
+
+The minimum credit is $5, and Link limits the total charge to $500 including
+fees. An existing provider key blocks signup unless you authorize
+`--replace-existing`. Horde preserves model settings and role assignments.
+After successful interactive signup, the walkthrough offers automatic top-up
+setup; accepting signup alone does not enable recurring charges.
+
+Signup requires an unbound default-project administrative connection. Worker
+and project-scoped connections cannot call it. Private receipts in
+`provider-signups/` beside `config.toml` survive daemon restarts. Reuse the printed
+reference after a lost reply. A saved signup response allows verification and
+key installation to resume without another payment. If the payment outcome is
+unknown, Horde stops and requires reconciliation with Tuara and Link; it never
+replays that payment or creates another account to recover.
+
+Agents use `provider_signup` with `start`, `status`, `resume`, and `cancel`.
+`start` validates a quote without paying. `status` reads local progress without
+provider calls. Bounded resumes request approval for the individual payment, submit one approved
+payment, and verify and save its key. At `credential_received`, another resume
+finishes installation. At `wallet_action_required`, resolve the action in Link
+before resuming. Cancellation is limited to before paid submission. See the
+[operation reference](../skills/horde/references/operations.md#provider-account-setup)
+for fields and states.
+
+## Automatic Tuara top-ups
+
+Ask your agent to keep a Tuara account funded within your chosen limits, or run:
+
+```sh
+horde config provider topup tuara
+```
+
+The walkthrough asks for the balance threshold, credit per top-up, maximum total
+per charge, and monthly spending limit including fees for a UTC calendar month.
+It then asks you to accept the terms and authorize recurring charges within those limits. It does
+not enable a policy until you agree. Scripts can supply the choices directly:
+
+```sh
+horde config provider topup tuara \
+  --threshold 5 --amount 20 --max-charge 20.48 --monthly-limit 100 \
+  --terms-version 2026-09 --accept-terms
+```
+
+For a test-mode Tuara account, add `--test-mode` to the top-up policy too (or
+set `test_mode: true` in `provider_topup` over MCP). It is saved with the
+policy and used for every payment under that policy.
+
+Horde checks the balance every 60 seconds and advances one funding step per
+check. After a successful top-up it waits at least five minutes before another.
+Link may require approval for each individual payment; an action that needs your attention
+pauses progress until you resolve it in the wallet. Inspect, advance, or disable
+the policy without editing configuration:
+
+```sh
+horde config provider topup tuara --status
+horde config provider topup tuara --check
+horde config provider topup tuara --disable
+```
+
+`--status` reads saved progress without a payment request. `--check` checks the
+balance and may advance an already authorized payment; the daemon performs those
+checks automatically while the policy is enabled. Disabling clears unpaid
+pending work and stops future top-ups. It cannot reverse a submitted payment.
+
+The monthly allowance counts total charges including fees by the UTC month of
+paid submission. Disabling or changing a policy preserves its payment history.
+Provider aliases for the same Tuara origin and organization share that budget
+within one Horde configuration directory. The limit does not aggregate separate
+Horde installations or spending outside this policy. An uncertain paid outcome
+blocks repayment and needs Tuara and wallet reconciliation.
+
+Signup and top-ups are tested with mock services and wallet processes; no paid
+live funding flow has been validated. See [Tuara's MPP contract](https://tuara.com/docs/agents/signup/index.md)
+for its signup and top-up behavior.
 
 ## Provider and executor settings
 

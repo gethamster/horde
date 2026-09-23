@@ -64,6 +64,9 @@ pub fn project_allowed(name: &str) -> bool {
         "shutdown"
             | "agent_setup"
             | "provider_login"
+            | "provider_signup"
+            | "provider_topup"
+            | "provider_wallet"
             | "skill_pack_list"
             | "skill_pack_install"
             | "project_create"
@@ -261,7 +264,10 @@ fn dispatch_authorized(
             crate::orchestration::plan(db, &args)
         };
     }
-    if matches!(name, "agent_setup" | "provider_login") {
+    if matches!(
+        name,
+        "agent_setup" | "provider_login" | "provider_signup" | "provider_topup" | "provider_wallet"
+    ) {
         if args["project"] != crate::projects::DEFAULT_PROJECT {
             bail!(
                 "host-wide provider setup and login require the default project; use managed account credentials for other projects"
@@ -271,10 +277,12 @@ fn dispatch_authorized(
         args.as_object_mut()
             .context("arguments object")?
             .remove("project");
-        return if name == "provider_login" {
-            crate::provider_login::dispatch(db, &args)
-        } else {
-            crate::agent_setup::dispatch(db, &args)
+        return match name {
+            "provider_login" => crate::provider_login::dispatch(db, &args),
+            "provider_signup" => crate::provider_signup::dispatch(db, &args),
+            "provider_topup" => crate::provider_signup::topup::dispatch(db, &args),
+            "provider_wallet" => crate::provider_wallet::dispatch(db, &args),
+            _ => crate::agent_setup::dispatch(db, &args),
         };
     }
     match name {

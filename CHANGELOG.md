@@ -5,6 +5,22 @@
 - Add `--human` to `horde answer` so an operator can answer a `human_only`
   question after a person gives the answer. Without the flag, the refusal now
   says to rerun with `--human`.
+- Add administrative `provider_wallet` onboarding for a Link wallet. Its
+  supervised installer uses the host's Node/npm to provision a pinned Link CLI, guides
+  device login through Link's verification URL and phrase, and directs
+  payment-detail work to Link Wallet without receiving card numbers or CVCs.
+- Create and fund a Tuara account through an authorized Stripe Link wallet,
+  then verify and install its inference key without copying it through the agent.
+  Signup records the accepted terms and charge cap, survives restarts, and keeps
+  uncertain payments on hold instead of charging again. The new administrative
+  `provider_signup` operation supports quote, wallet approval, status, and recovery.
+- Set up signup and automatic top-ups through guided CLI prompts, without writing
+  JSON. Balance monitoring funds an existing Tuara organization within approved
+  per-charge and monthly limits, including fees. Spending history survives policy
+  changes and restarts, and unresolved payments hold further charges.
+- Support Stripe Link test credentials for Tuara signup and top-ups. Parse Link's
+  device-login events and Tuara's live MPP challenge shape so test-mode quotes
+  and wallet connection work through the same MCP flow.
 
 ## 0.6.6 - 2026-09-22
 

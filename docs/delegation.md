@@ -20,7 +20,7 @@ models, and stale workers require resolution before a scoped assignment proceeds
 `agent_setup` exposes local setup actions and precise missing requirements. Your
 agent uses its available execution or platform tools to deliver enrollment
 credentials and start remote workers. Horde cannot create access to a machine or
-provider that the agent does not have. Fleet startup accepts the same secret
+provider without the required access or authorization. Fleet startup accepts the same secret
 reference across containers, Kubernetes, sandboxes, VMs, and individual machines.
 
 You can also ask your connected agent to change provider accounts without opening
@@ -35,6 +35,38 @@ the session result and reports authentication and quota separately. These tools
 work without a model request, even when model usage is exhausted. See
 [account setup](configuration.md#add-or-change-an-account-through-your-agent)
 for activation, session lifetime, and shared CLI account behavior.
+
+For a new Tuara account, an administrative agent first uses `provider_wallet` to
+inspect the private Link connection. If needed, it starts supervised installation
+of Horde's private pinned Link CLI using the host's Node.js and npm, then starts a device login
+after installation succeeds and relays Link's
+verification URL and phrase, checks the login session,
+and asks you to complete any Link-hosted wallet or identity action. It reads
+only safe readiness. Card numbers and security codes never
+pass through Horde's MCP interface. A Link account used with Grok Bot can be
+reused. Horde does not register or configure a Grok Bot MCP connection.
+
+After the wallet is ready, the agent can call `provider_signup` when you
+authorize the initial credit, total charge ceiling including fees, and a specific
+terms version. Link can require approval for that individual payment. Horde
+returns its approval URL when needed and captures the new
+inference key privately after payment. The agent follows bounded `resume`
+actions with the same request ID; the user never needs to copy the new API key.
+This requires an unbound default-project connection and is unavailable to
+workers. Signup state survives daemon restart, but an uncertain payment requires
+reconciliation rather than another paid attempt. See [Tuara signup](configuration.md#create-a-funded-tuara-account)
+for the request and recovery behavior. Signup does not enable automatic top-ups.
+
+An administrative agent can configure a separate `provider_topup` policy after
+the user authorizes its balance threshold, credit amount, per-charge ceiling
+including fees, UTC calendar-month limit including fees, and terms version. The
+agent asks for those choices in ordinary language and builds the operation call
+internally. The policy uses the ready Link wallet, and each charge can
+still need wallet approval. A pending or uncertain payment holds later charges;
+the agent must tell the user to reconcile an uncertain payment with Tuara and
+Link rather than retrying it. The policy is shared by aliases for one Tuara
+origin and organization within this Horde configuration directory. See
+[automatic Tuara top-ups](configuration.md#automatic-tuara-top-ups).
 
 After briefly explaining its work split, the parent submits or delegates with an
 `execution` policy. Each allowed entry binds a runtime to a set of capability IDs;

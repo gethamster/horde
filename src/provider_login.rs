@@ -18,8 +18,8 @@ use tokio::{
     sync::mpsc,
 };
 
-mod process;
-mod tuara;
+pub(crate) mod process;
+pub(crate) mod tuara;
 
 const OUTPUT_LIMIT: usize = 16 * 1024;
 type Sessions = BTreeMap<String, Arc<Session>>;
@@ -115,7 +115,7 @@ pub fn dispatch(db: &Store, args: &Value) -> Result<Value> {
     Ok(report(&session))
 }
 
-fn configuration(provider: &str) -> Result<ExecutorConfig> {
+pub(crate) fn configuration(provider: &str) -> Result<ExecutorConfig> {
     resolve_configuration(&Settings::load_user()?, provider)
 }
 

@@ -307,7 +307,7 @@ enum ConfigCommands {
         #[arg(long)]
         interactive: bool,
     },
-    /// Add or adjust a provider and store its API key.
+    /// Configure provider accounts, API keys, and Tuara funding.
     Provider {
         #[command(subcommand)]
         command: ProviderCommands,
@@ -328,6 +328,10 @@ enum ConfigCommands {
 enum ProviderCommands {
     /// Configured providers, the roles on each, and whether its key is readable.
     List,
+    /// Create and fund a Tuara account, or resume an existing signup.
+    Signup(horde::provider_signup::cli::SignupArgs),
+    /// Configure automatic Tuara top-ups, inspect them, or turn them off.
+    Topup(horde::provider_signup::cli::TopupArgs),
     /// Walk through adding a provider, or state it with flags for a script.
     ///
     /// The API key is never taken as an argument: it is prompted for without echo,
@@ -1311,6 +1315,18 @@ async fn main() -> Result<()> {
                 let directory = horde::branding::config_dir();
                 match command {
                     ProviderCommands::List => json!(horde::provisioning::list(&directory)?),
+                    ProviderCommands::Signup(options) => {
+                        horde::provider_signup::cli::signup(options, |method, args| {
+                            request(&root, method, args)
+                        })?;
+                        return Ok(());
+                    }
+                    ProviderCommands::Topup(options) => {
+                        horde::provider_signup::cli::topup(options, |method, args| {
+                            request(&root, method, args)
+                        })?;
+                        return Ok(());
+                    }
                     ProviderCommands::Add {
                         name: None,
                         preset: None,

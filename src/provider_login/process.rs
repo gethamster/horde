@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-pub(super) fn lock(kind: &str) -> Result<std::fs::File> {
+pub(crate) fn lock(kind: &str) -> Result<std::fs::File> {
     use fs2::FileExt;
     // The CLI commands use HOME, even when daemons have different XDG config roots.
     let directory =
@@ -52,14 +52,14 @@ struct Receipt {
     identity: String,
 }
 
-pub(super) struct Guard {
+pub(crate) struct Guard {
     pid: u32,
     path: PathBuf,
     stopped: AtomicBool,
 }
 
 impl Guard {
-    pub(super) fn record(root: &Path, id: &str, pid: u32) -> Result<Self> {
+    pub(crate) fn record(root: &Path, id: &str, pid: u32) -> Result<Self> {
         let directory = root.join("provider-logins");
         let guard = Self {
             pid,
@@ -83,7 +83,7 @@ impl Guard {
         }
         Ok(guard)
     }
-    pub(super) fn stop(&self) {
+    pub(crate) fn stop(&self) {
         if !self.stopped.swap(true, Ordering::AcqRel) {
             unsafe {
                 libc::kill(-(self.pid as i32), libc::SIGKILL);
@@ -227,6 +227,40 @@ mod tests {
         let mut temporary = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         temporary.write_all(b"{\"pid\":").unwrap();
         recover(root.path()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn records_a_cli_that_exited_before_it_was_reaped() {
+        let root = tempfile::tempdir().unwrap();
+        let mut child = tokio::process::Command::new("/usr/bin/true")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let zombie = || {
+            std::process::Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", "stat="])
+                .output()
+                .is_ok_and(|out| {
+                    String::from_utf8_lossy(&out.stdout)
+                        .trim_start()
+                        .starts_with('Z')
+                })
+        };
+        for _ in 0..500 {
+            if zombie() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(zombie(), "the CLI should have exited without being reaped");
+        // A fast CLI can finish before Horde records it. Until Horde waits on it,
+        // its identity stays readable, so recording must still succeed.
+        let guard = Guard::record(root.path(), "fast-cli", pid).unwrap();
+        assert!(root.path().join("provider-logins/fast-cli.json").exists());
+        drop(guard);
+        assert!(!root.path().join("provider-logins/fast-cli.json").exists());
+        child.wait().await.unwrap();
     }
 
     #[test]

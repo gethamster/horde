@@ -1,0 +1,8 @@
+{
+  "name": "horde-provider-wallet",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@stripe/link-cli": "0.22.0"
+  }
+}

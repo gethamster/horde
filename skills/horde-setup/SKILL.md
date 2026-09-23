@@ -8,8 +8,30 @@ and internal IDs inside tool calls; ask the user only for a missing preference,
 credential access, or interactive login that the agent cannot supply. Existing
 authorization remains sufficient for actions within that scope.
 
-When the user asks to make Horde the default for repository work, use
-`horde init --agent codex --delegate always` or
+Any MCP client connected to Horde's unbound administrative `horde mcp`
+connection can be the parent agent. Start with `agent_setup` action `inspect`
+and include an absolute `repo` path when one is known.
+Its `parent` field confirms the administrative surface, `children.roles` shows
+the configured executor roles, and `billing` shows Tuara credential and Link
+wallet readiness. Use `configure_workers` with a configured `provider` and a
+list of role names to assign child roles before or after authentication. This
+action never requires a provider key and does not replace one. Use
+`configure_provider` to add a provider or set its model and credential, and
+`provider_login`, `provider_wallet`, `provider_signup`, and `provider_topup` for
+their respective authentication and billing phases. Collect spending caps and
+terms acceptance conversationally; the user does not write tool arguments.
+
+When `parent.repository.status` is `unregistered`, follow its returned
+`project_repo_add` action before submitting work on that checkout. The parent
+MCP client and child executor are separate: connecting the client
+does not choose which model or runtime runs Horde work. A remote MCP client
+needs a transport that can reach Horde; a local client can launch `horde mcp`
+over stdio. Do not claim that installing Horde alone registers a connector in
+every third-party client. The caller can then use `submit_task` and
+monitor its children through the normal task tools.
+
+When the user asks to make Horde the default for repository work in Codex or
+Claude, use `horde init --agent codex --delegate always` or
 `horde init --agent claude --delegate always`, matching the caller. This installs
 repository skills, instructions, and MCP configuration. It does not select worker
 providers. Read the report, complete authorized `next_steps`, and reload the
@@ -38,7 +60,7 @@ invocation, including when the daemon inherited an older value. Horde records
 file priority for that variable, so no restart is needed. Running invocations
 retain their credentials.
 
-For Tuara, use `provider_login` action `start` with provider `tuara` or the existing
+For an existing Tuara account, use `provider_login` action `start` with provider `tuara` or the existing
 Tuara provider name and a stable `request_id`. Poll `status`, relay the key-page
 URL, and ask the user to sign in and create or copy an inference API key. Submit
 the key as `input` with the session ID, then poll until completion. Horde verifies
@@ -47,6 +69,82 @@ verification, cancellation, or expiry preserves the existing key. This flow need
 no Tuara CLI and makes no inference request; Tuara account OAuth tokens do not
 grant inference access. A successful session verifies the key but leaves quota
 unknown. Preserve the existing model and role assignments.
+
+For a new funded Tuara account, use `provider_signup` only within the user's
+authorization to create the account, pay a stated maximum including fees, and
+accept a specific terms version. Reuse authorization already given. This operation
+requires an unbound default-project administrative connection. It cannot run
+through a worker token or a project-scoped connection. Before starting signup,
+call `provider_wallet` action `inspect`. Follow its `next_actions`: when Link
+is missing and host Node.js/npm are available, call `install` with a stable
+request ID and inspect or call `status`
+until the supervised private installation completes. Then call `login_start`
+with a stable request ID, relay its verification URL and device phrase, and poll
+`status` with the returned session ID. Call `cancel` with the session ID if the
+user abandons login. `login_status` and `login_cancel` are aliases for those
+session actions.
+If `inspect` reports missing Node.js or npm, give the user its prerequisite
+action and inspect again after they install it.
+
+After authentication, call `details`. It returns safe wallet readiness and the
+fixed Link wallet URL. Direct the user there to add a payment method or complete
+verification. Link's agent wallet currently supports US accounts.
+Never request, accept, print, or place a PAN, CVC, or full card details in an
+MCP call. After its private Link installation succeeds, Horde uses that wallet
+flow only for its own MCP connection. A user's existing Link account, including
+one connected to Grok Bot, can be reused.
+Do not claim that Horde registers or configures Link MCP support in Grok Bot.
+
+Start with `action: "start"`, a stable `request_id`, `provider`,
+`organization_name`, `agent_name`, `amount_cents`, `max_charge_cents`,
+`terms_version`, and `accept_terms: true`. For example, 2000 cents of credit with
+a 2048-cent total ceiling allows the documented $20 signup and fee. The Link
+limit is 50,000 cents including fees. Do not infer terms acceptance or a spending
+limit from a general request to configure a provider. Existing credentials are
+preserved unless the user authorizes `replace_existing: true`.
+When Tuara is in test mode, set `test_mode: true` on signup and any later
+top-up policy. Horde then asks Link for test credentials without charging the
+underlying payment method. A regular Link account is sufficient; do not ask
+for test card details through MCP.
+
+`start` validates a quote without paying. Follow `next_actions` with bounded
+`resume` calls using that same request ID. The first resume creates an approval
+request for the individual payment; relay its `approval_url` when present. While approval is
+pending, allow the user time to act and check the same request without creating
+another. If `wallet_action_required` is true, pause polling and have the user
+resolve the action in Link, then resume the same operation. A later resume submits one paid signup only after wallet approval and
+returns `credential_received`. Resume again to verify and install the saved key.
+Never ask the user to paste the newly created Tuara key: Horde captures it
+privately. `status` inspects local progress without provider or wallet calls.
+
+Private signup receipts survive daemon restarts. Keep the request ID after a
+lost reply or restart; saved-response verification and installation can resume
+without repayment. If the status is `uncertain`, stop payment attempts and report
+that Tuara and wallet reconciliation is required. Do not create another signup
+to bypass that state. `cancel` stops a signup before paid submission; it cannot
+reverse a submitted payment. Report success only at `succeeded`, where the key
+is verified and active for the next invocation while model capacity remains
+unknown. Signup does not authorize recurring charges.
+
+For automatic funding, use `provider_topup` only after the user explicitly
+authorizes a threshold, credit amount, maximum total charge including fees, UTC
+calendar-month limit including fees, and a specific terms version. Ask for those
+choices in ordinary language. Do not ask the user to write JSON; construct the
+tool arguments yourself. `configure` requires `provider`, `threshold_cents`,
+`amount_cents`, `max_charge_cents`, `monthly_limit_cents`, `terms_version`, and
+`accept_terms: true`. `status` reads the policy, `check` advances one bounded
+funding phase immediately, and `disable` cancels unpaid pending work. Use the
+same ready Link wallet; Link may still
+require approval for an individual charge.
+
+The policy checks available balance every 60 seconds and waits five minutes
+after a successful payment. Its monthly ledger includes fees by the UTC time of
+paid submission. Provider aliases for the same Tuara origin and verified
+organization share a policy within one Horde configuration directory. This is
+not an account-wide limit across other Horde installations or spending outside
+the policy. A pending or uncertain charge holds later charges. On an uncertain
+result, stop and direct the user to reconcile with Tuara and Link; do not retry
+or create a replacement payment. See [signup and top-up configuration](../../docs/configuration.md#create-a-funded-tuara-account).
 
 For Codex or Claude subscription accounts, use `provider_login` action `start`
 with `provider` and a stable `request_id`. The optional `timeout_seconds` defaults

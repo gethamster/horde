@@ -67,6 +67,36 @@ pub fn admin_schema(name: &str) -> Value {
         "runtime_skills_update" => &[("id", "string"), ("request_id", "string")],
         "runtime_capabilities" => &[("task", "string")],
         "plan_execution" => &[("task", "string"), ("roles", "object")],
+        "provider_wallet" => &[
+            ("action", "string"),
+            ("request_id", "string"),
+            ("session_id", "string"),
+            ("timeout_seconds", "integer"),
+        ],
+        "provider_topup" => &[
+            ("action", "string"),
+            ("provider", "string"),
+            ("threshold_cents", "integer"),
+            ("amount_cents", "integer"),
+            ("max_charge_cents", "integer"),
+            ("monthly_limit_cents", "integer"),
+            ("terms_version", "string"),
+            ("accept_terms", "boolean"),
+            ("test_mode", "boolean"),
+        ],
+        "provider_signup" => &[
+            ("action", "string"),
+            ("request_id", "string"),
+            ("provider", "string"),
+            ("organization_name", "string"),
+            ("agent_name", "string"),
+            ("amount_cents", "integer"),
+            ("max_charge_cents", "integer"),
+            ("terms_version", "string"),
+            ("accept_terms", "boolean"),
+            ("test_mode", "boolean"),
+            ("replace_existing", "boolean"),
+        ],
         "provider_login" => &[
             ("action", "string"),
             ("provider", "string"),
@@ -77,6 +107,7 @@ pub fn admin_schema(name: &str) -> Value {
         ],
         "agent_setup" => &[
             ("action", "string"),
+            ("repo", "string"),
             ("provider", "string"),
             ("roles", "array"),
             ("model", "string"),
@@ -371,10 +402,45 @@ pub fn admin_schema(name: &str) -> Value {
                 s = json!({"type":"object","minProperties":1,"maxProperties":32,"additionalProperties":{"type":"object","additionalProperties":false,"required":["runtime","models"],"properties":{"runtime":{"type":"string"},"models":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string"}}}},"description":"Named work roles, each with a machine and an allowed model/executor pool; the parent chooses which member to use."});
             }
             if name == "agent_setup" && *k == "action" {
-                s["enum"] = json!(["inspect","verify","configure_provider","configure_controller","create_fleet_key","join_worker","restart_local"]);
+                s["enum"] = json!(["inspect","verify","configure_provider","configure_workers","configure_controller","create_fleet_key","join_worker","restart_local"]);
             }
             if name == "provider_login" && *k == "action" {
                 s["enum"] = json!(["start", "status", "submit", "cancel"]);
+            }
+            if name == "provider_wallet" {
+                if *k == "action" { s["enum"] = json!(["inspect", "install", "login_start", "status", "cancel", "login_status", "login_cancel", "details"]); }
+                if *k == "request_id" { s["description"] = json!("Stable caller ID for install or login_start; reuse after a lost reply."); }
+                if *k == "session_id" { s["description"] = json!("Session returned by install or login_start, used for status or cancel."); }
+                if *k == "timeout_seconds" { s["minimum"] = json!(1); s["maximum"] = json!(1800); }
+            }
+            if name == "provider_topup" {
+                if *k == "test_mode" { s["description"] = json!("Use Stripe Link test-mode credentials for this bounded automatic top-up policy."); }
+                if *k == "action" { s["enum"] = json!(["configure", "status", "disable", "check"]); }
+                if matches!(*k, "threshold_cents" | "amount_cents" | "max_charge_cents") {
+                    s["minimum"] = json!(if *k == "threshold_cents" { 1 } else { 500 });
+                    s["maximum"] = json!(50000);
+                }
+                if *k == "monthly_limit_cents" {
+                    s["minimum"] = json!(500); s["maximum"] = json!(100000000);
+                    s["description"] = json!("Explicitly authorized UTC calendar-month total for this Horde policy, including funding fees. Disabling or reconfiguring preserves spending history.");
+                }
+                if *k == "accept_terms" { s["description"] = json!("Explicit operator acceptance of this terms version and recurring charge limits; required for configure."); }
+            }
+            if name == "provider_signup" {
+                if *k == "test_mode" { s["description"] = json!("Create a Stripe Link test-mode payment credential for a Tuara test-mode signup; the underlying Link payment method is not charged."); }
+                if *k == "action" {
+                    s["enum"] = json!(["start", "status", "resume", "cancel"]);
+                }
+                if matches!(*k, "amount_cents" | "max_charge_cents") {
+                    s["minimum"] = json!(500);
+                    s["maximum"] = json!(50000);
+                }
+                if *k == "accept_terms" {
+                    s["description"] = json!("Explicit operator acceptance of the supplied Tuara terms_version; required for start.");
+                }
+                if *k == "max_charge_cents" {
+                    s["description"] = json!("Maximum authorized USD card charge including fees. Link wallets support at most 50000 cents.");
+                }
             }
             if name == "provider_login" && *k == "timeout_seconds" {
                 s["minimum"] = json!(1);
@@ -383,6 +449,13 @@ pub fn admin_schema(name: &str) -> Value {
             }
             if name == "agent_setup" && *k == "credential" {
                 s["description"] = json!("Provider API key supplied by the user through their trusted agent. Use exactly one of credential, credential_env, credential_file. Never repeat the value in responses.");
+            }
+            if name == "agent_setup" && *k == "roles" {
+                s["maxItems"] = json!(32);
+                s["description"] = json!("Child executor role names. configure_workers requires at least one role and changes only role assignments for an existing provider.");
+            }
+            if name == "agent_setup" && *k == "repo" {
+                s["description"] = json!("Absolute repository path to inspect for parent registration. Follow a project_repo_add next action when unregistered.");
             }
             if name == "skill_apply" && *k == "accepted" {
                 s["const"] = json!(true);
@@ -429,7 +502,9 @@ pub fn admin_schema(name: &str) -> Value {
         "account_grant" | "account_revoke" => &["project", "account"],
         "account_credential_set" => &["account", "credential_file"],
         "plan_execution" => &["roles"],
-        "agent_setup" | "provider_login" => &["action"],
+        "provider_signup" => &["action", "request_id"],
+        "provider_topup" => &["action", "provider"],
+        "agent_setup" | "provider_login" | "provider_wallet" => &["action"],
         "skill_inspect" => &["repo"],
         "skill_propose" => &["repo", "name", "content"],
         "skill_apply" => &["repo", "proposal_id", "accepted"],
