@@ -162,3 +162,69 @@ fn project_skill_inspection_uses_its_own_configuration() {
     .unwrap();
     assert!(result["content"].as_str().unwrap().contains("Only hamster"));
 }
+
+#[test]
+fn repository_cannot_enable_executor_network_access() {
+    for project in [None, Some(())] {
+        let (temp, db, created) = fixture();
+        let project = project.map_or(projects::DEFAULT_PROJECT.to_owned(), |_| created);
+        let config_dir = if project == projects::DEFAULT_PROJECT {
+            db.user_config_dir()
+        } else {
+            projects::storage_root(&db, &project).unwrap()
+        };
+        std::fs::create_dir_all(&config_dir).unwrap();
+        // The operator opens the network for the reviewer, through a provider
+        // that no other role uses.
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[providers.online]\nkind='codex'\nnetwork=true\n[executors.reviewer]\nprovider='online'\n",
+        )
+        .unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join(".horde")).unwrap();
+        let approved = Settings::load_project(&db, &project, &repo).unwrap();
+        assert!(approved.executor("reviewer").unwrap().network);
+        assert!(!approved.executor("codex").unwrap().network);
+
+        for (file, patch) in [
+            (".horde.toml", "[executors.codex]\nnetwork=true\n"),
+            (".horde/horde.toml", "[executors.codex]\nnetwork=true\n"),
+            // Moving a role onto the operator's networked provider is also an expansion.
+            (
+                ".horde/horde.toml",
+                "[executors.worker]\nprovider='online'\n",
+            ),
+        ] {
+            let _ = std::fs::remove_file(repo.join(".horde.toml"));
+            let _ = std::fs::remove_file(repo.join(".horde/horde.toml"));
+            std::fs::write(repo.join(file), patch).unwrap();
+            let error = Settings::load_project(&db, &project, &repo)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("cannot enable network access"), "{error}");
+        }
+
+        // Narrowing an operator grant, or restating it, is allowed.
+        let _ = std::fs::remove_file(repo.join(".horde.toml"));
+        std::fs::write(
+            repo.join(".horde/horde.toml"),
+            "[executors.reviewer]\nnetwork=false\n",
+        )
+        .unwrap();
+        let narrowed = Settings::load_project(&db, &project, &repo).unwrap();
+        assert!(!narrowed.executor("reviewer").unwrap().network);
+        std::fs::write(
+            repo.join(".horde/horde.toml"),
+            "[executors.reviewer]\nnetwork=true\n",
+        )
+        .unwrap();
+        assert!(
+            Settings::load_project(&db, &project, &repo)
+                .unwrap()
+                .executor("reviewer")
+                .unwrap()
+                .network
+        );
+    }
+}

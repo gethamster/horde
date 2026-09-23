@@ -7,6 +7,9 @@
   (and sets the same option for managed Codex accounts). A Codex step can then
   fetch dependencies, for example crates for `cargo check`. Network access stays
   off by default, and settings without the key serialize exactly as before.
+  Only user, project, and administrator configuration can grant it. A
+  repository configuration file that would give a role network access is
+  rejected.
 
 ## 0.6.8 - 2026-09-23
 

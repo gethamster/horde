@@ -9,7 +9,8 @@ const OVERRIDE: &str = "sandbox_workspace_write.network_access=true";
 fn load(config: &str) -> Settings {
     let dir = tempfile::tempdir().unwrap();
     let user = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join(".horde.toml"), config).unwrap();
+    // Operator (user) configuration: repository files cannot enable network.
+    std::fs::write(user.path().join("config.toml"), config).unwrap();
     Settings::load_with_user_dir(dir.path(), user.path()).unwrap()
 }
 

@@ -407,7 +407,7 @@ horde answer TASK_ID QUESTION_ID yes
 
 ### Network access for Codex executors
 
-The Codex harness runs `codex exec --sandbox workspace-write`, and that sandbox blocks network access by default. A Codex step then cannot fetch dependencies; for example, `cargo check` in a fresh workspace fails because `index.crates.io` does not resolve. Set `network = true` on a provider, or on a single role, to allow network access inside the sandbox:
+The Codex harness runs `codex exec --sandbox workspace-write`, and that sandbox blocks network access by default. A Codex step then cannot fetch dependencies; for example, `cargo check` in a fresh workspace fails because `index.crates.io` does not resolve. Set `network = true` on a provider, or on a single role, to allow network access inside the sandbox. `network` is operator-only: set it in user configuration (`horde config`), a project's administrator-owned `config.toml`, or a file passed to `horde project configure`. Repository files can't enable it:
 
 ```toml
 [executors.reviewer]
@@ -416,6 +416,8 @@ network = true          # passes -c sandbox_workspace_write.network_access=true
 ```
 
 A role's `network` overrides its provider's, so `network = false` on a role keeps that role offline even when its provider allows network access. The default is off. Managed Codex accounts get the same setting on the app-server thread. File writes stay limited to the workspace; only the network rule changes. The setting affects only `kind = "codex"`: Claude Code's Bash tool and native command steps already have network access, and Grok does not use this sandbox.
+
+A repository `.horde.toml` or `.horde/horde.toml` that would give any role network access its operator configuration doesn't grant is rejected when the task's settings load. This includes setting `network = true` and pointing a role at a provider the operator opened for another role. A repository may set `network = false` to narrow a grant.
 
 Enabling `network` changes the role's configuration fingerprint, so execution pins that name the old configuration have to be renewed. A runtime older than this release rejects settings that contain `network`, instead of running the step without it.
 
@@ -458,7 +460,7 @@ files. New projects do not inherit the default project's user configuration.
 Continue using `horde config` for the `default` project.
 
 Repository files cannot define provider connections, replace executor programs,
-raise concurrency, or expand secret-bundle access. They also cannot enable
+raise concurrency, grant executor network access, or expand secret-bundle access. They also cannot enable
 prohibited commands or delivery, or redirect delivery and notification destinations.
 Repository skill paths must remain inside their checkout. Account and runtime
 grants remain separate administrator operations.
