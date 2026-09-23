@@ -30,6 +30,16 @@ impl Settings {
         }
         let settings: Self = value.try_into()?;
         settings.validate()?;
+        // Sandbox network access widens what an executor can reach, so only
+        // user, project, or administrator configuration may grant it. Checking
+        // the merged result also stops a repository from moving a role onto
+        // a provider the operator opened for a different role.
+        for (role, config) in settings.resolved() {
+            ensure!(
+                !config.network || approved.executor(&role).is_some_and(|c| c.network),
+                "repository cannot enable network access for executor {role}; set network in the project or user configuration"
+            );
+        }
         Ok(settings)
     }
 }

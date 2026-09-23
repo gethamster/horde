@@ -126,6 +126,11 @@ pub struct Provider {
     pub max_api_cost_usd: Option<f64>,
     pub extra_body: BTreeMap<String, serde_json::Value>,
     pub stream: bool,
+    /// Let a Codex harness reach the network from its workspace-write sandbox.
+    /// Omitted when false so existing configuration hashes and older peers are
+    /// unaffected.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub network: bool,
 }
 /// Deliberately neutral: a provider declared in a config file inherits nothing
 /// endpoint- or credential-shaped, so an omitted `base_url` or `api_key_env` is
@@ -145,6 +150,7 @@ impl Default for Provider {
             max_api_cost_usd: None,
             extra_body: BTreeMap::new(),
             stream: false,
+            network: false,
         }
     }
 }
@@ -170,6 +176,7 @@ impl Provider {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             stream: self.stream,
+            network: e.network.unwrap_or(self.network),
         }
     }
 }
@@ -188,6 +195,9 @@ pub struct Executor {
     pub max_tokens: Option<u64>,
     pub max_api_cost_usd: Option<f64>,
     pub extra_body: BTreeMap<String, serde_json::Value>,
+    /// Overrides the provider's `network`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<bool>,
 }
 impl Executor {
     pub fn provider(&self) -> &str {
@@ -218,6 +228,9 @@ pub struct ExecutorConfig {
     pub max_api_cost_usd: Option<f64>,
     pub extra_body: BTreeMap<String, serde_json::Value>,
     pub stream: bool,
+    /// Codex only: allow network access inside the workspace-write sandbox.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub network: bool,
 }
 impl Default for ExecutorConfig {
     fn default() -> Self {
