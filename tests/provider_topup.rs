@@ -130,6 +130,15 @@ impl MockTuara {
                         json!({"buyer_id":account.organization,"balance_units":null,"pending_units":0,"available_units":null})
                     };
                     ("200 OK", String::new(), payload)
+                } else if request.first.starts_with("POST /v1/account/topup ")
+                    && paid
+                    && !bound_to_challenge(&request.headers, "mppch_topup")
+                {
+                    (
+                        "402 Payment Required",
+                        String::new(),
+                        json!({"code":"payment_declined"}),
+                    )
                 } else if request.first.starts_with("POST /v1/account/topup ") && paid {
                     current.lock().unwrap().available_cents = Some(2100);
                     (
@@ -201,6 +210,22 @@ impl Drop for MockTuara {
         self.stop.store(true, Ordering::SeqCst);
         self.worker.take().unwrap().join().unwrap();
     }
+}
+
+/// Tuara's mppx verifier declines a Stripe credential whose payload does not
+/// echo the challenge request's externalId.
+fn bound_to_challenge(headers: &str, external_id: &str) -> bool {
+    headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if !name.eq_ignore_ascii_case("authorization") {
+                return None;
+            }
+            let encoded = value.trim().strip_prefix("Payment ")?.split(',').next()?;
+            serde_json::from_slice::<Value>(&URL_SAFE_NO_PAD.decode(encoded).ok()?).ok()
+        })
+        .is_some_and(|credential| credential["payload"]["externalId"] == external_id)
 }
 
 fn public(value: &Value) {

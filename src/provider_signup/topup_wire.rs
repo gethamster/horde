@@ -372,7 +372,10 @@ mod tests {
                             let credential: Value =
                                 serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payment).unwrap())
                                     .unwrap();
-                            assert_eq!(credential["payload"], json!({"spt":"spt_private"}));
+                            assert_eq!(
+                                credential["payload"],
+                                json!({"spt":"spt_private","externalId":"challenge_test"})
+                            );
                             axum::http::Response::builder()
                                 .status(200)
                                 .body(axum::body::Body::from(receipt().to_string()))
