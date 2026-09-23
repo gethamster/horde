@@ -311,7 +311,7 @@ case " $* " in
     fi ;;
   *' spend-request cancel '*)
     [ -f "$HOME/cancel_fail" ] && exit 2
-    printf '%s' '[{{"id":"lsrq_topup","amount":2048,"currency":"usd","network_id":"profile_test","credential_type":"shared_payment_token","status":"canceled"}}]' ;;
+    printf '%s' '{{"id":"lsrq_topup","amount":2048,"currency":"usd","network_id":"profile_test","credential_type":"shared_payment_token","status":"canceled"}}' ;;
   *) exit 2 ;;
 esac
 "##)).unwrap();

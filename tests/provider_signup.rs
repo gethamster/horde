@@ -266,7 +266,7 @@ case " $* " in
     else
       printf '%s' '[{{"id":"lsrq_test","amount":2048,"currency":"usd","network_id":"profile_test","credential_type":"shared_payment_token","status":"approved","shared_payment_token":{{"id":"{TOKEN}"}}}}]'
     fi ;;
-  *' spend-request cancel '*) printf '%s' '[{{"id":"lsrq_test","amount":2048,"currency":"usd","network_id":"profile_test","credential_type":"shared_payment_token","status":"canceled"}}]' ;;
+  *' spend-request cancel '*) printf '%s' '{{"id":"lsrq_test","amount":2048,"currency":"usd","network_id":"profile_test","credential_type":"shared_payment_token","status":"canceled"}}' ;;
   *) exit 2 ;;
 esac
 "##)).unwrap();

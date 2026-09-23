@@ -221,11 +221,14 @@ fn parse(bytes: &[u8]) -> Result<SpendRequest> {
         "Link wallet response exceeded its private output limit"
     );
     let value: Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
-    let rows = value
-        .as_array()
-        .filter(|rows| rows.len() == 1)
-        .ok_or_else(invalid)?;
-    let row = rows[0].as_object().ok_or_else(invalid)?;
+    // Link CLI prints streaming commands (create, retrieve) as a one-row array and
+    // single-result commands (cancel) as the object itself.
+    let row = match &value {
+        Value::Array(rows) if rows.len() == 1 => rows[0].as_object(),
+        Value::Object(row) => Some(row),
+        _ => None,
+    }
+    .ok_or_else(invalid)?;
     let id = row
         .get("id")
         .and_then(Value::as_str)
@@ -413,6 +416,14 @@ mod tests {
             Some("https://app.link.com/approve/lsrq_example_1")
         );
         assert!(parsed.token.is_none());
+    }
+
+    #[test]
+    fn parses_single_result_commands_that_print_one_object() {
+        let value = json!({"id": "lsrq_example_1", "status": "canceled", "amount": 2048});
+        let parsed = parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(parsed.id, "lsrq_example_1");
+        assert_eq!(parsed.status, "canceled");
     }
 
     #[test]
