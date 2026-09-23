@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.7 - 2026-09-22
+
 - Add `--human` to `horde answer` so an operator can answer a `human_only`
   question after a person gives the answer. Without the flag, the refusal now
   says to rerun with `--human`.
