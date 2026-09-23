@@ -258,8 +258,10 @@ async fn duplicate_artifacts_do_not_renew_and_real_proposals_do() {
 async fn command_writes_are_observed() {
     tokio::task::LocalSet::new().run_until(async {
         let f=Fixture::new();
+        // End on the last write. The scope check that follows the command has to finish
+        // inside the budget the last observed write left, so idle time only shrinks it.
         let result=f.run(async {
-            native::call(&f.db,&f.worker,"command",&json!({"argv":["sh","-c","sleep 0.4; echo one > a; sleep 0.4; echo two > a; sleep 0.4; echo three > a; sleep 0.4"]}),&Settings::default(),&["command".into()]).await?;
+            native::call(&f.db,&f.worker,"command",&json!({"argv":["sh","-c","sleep 0.4; echo one > a; sleep 0.4; echo two > a; sleep 0.4; echo three > a"]}),&Settings::default(),&["command".into()]).await?;
             Ok(json!({"accepted":true,"result":"done"}))
         }).await;
         assert!(result.is_ok(),"{result:?}");assert!(!f.events("step.progress").is_empty());
