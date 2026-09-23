@@ -461,10 +461,12 @@ async fn refresh_child_retains_lock_when_controller_descriptor_closes() {
     command.args([
         "-u",
         "-c",
-        "import json,time; print(json.dumps({'ready':True}),flush=True); time.sleep(30)",
+        "import json,os,time; print(json.dumps({'ready':True,'pid':os.getpid()}),flush=True); time.sleep(30)",
     ]);
     let mut session = Session::spawn_locked(command, None, Some(&lock)).unwrap();
-    assert_eq!(session.receive().await.unwrap()["ready"], true);
+    let ready = session.receive().await.unwrap();
+    assert_eq!(ready["ready"], true);
+    let pid = ready["pid"].as_i64().unwrap() as i32;
     drop(lock);
     let next = std::fs::OpenOptions::new()
         .read(true)
@@ -476,7 +478,21 @@ async fn refresh_child_retains_lock_when_controller_descriptor_closes() {
         "orphan refresh must retain exclusive ownership"
     );
     session.stop().await;
-    next.try_lock_exclusive().unwrap();
+    assert!(
+        !horde::executor::process_alive(pid),
+        "stop must return after the refresh child has exited"
+    );
+    // Other tests in this binary spawn processes too. A child forked while `lock` was
+    // open holds a copy of it, and with it the flock, until that child execs, so wait
+    // for the lock instead of expecting it to be free at once.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while let Err(error) = next.try_lock_exclusive() {
+        assert!(
+            error.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline,
+            "stopping the refresh child must release its lock: {error}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 #[test]

@@ -236,14 +236,22 @@ async fn duplicate_artifacts_do_not_renew_and_real_proposals_do() {
                 .unwrap();
             let result = f
                 .run(async {
-                    tokio::time::sleep(Duration::from_millis(600)).await;
+                    // The supervisor starts its clock before it first polls this work,
+                    // so the attempt's first window has closed by `begun` + 1s.
+                    let begun = tokio::time::Instant::now();
+                    // The renewal counts from when `propose_steps` records it, after
+                    // its own work, so propose early enough for that work to finish
+                    // inside the first window.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
                     protocol::dispatch(
                         &f.db,
                         "propose_steps",
                         json!({"steps":[{"id":"implementation","scope":["src"]}]}),
                         Some(&f.token),
                     )?;
-                    tokio::time::sleep(Duration::from_millis(600)).await;
+                    // Outlive the first window. Only the proposal's renewal lets the
+                    // attempt get this far.
+                    tokio::time::sleep_until(begun + Duration::from_secs(1)).await;
                     Ok(json!({"accepted":true,"result":"planned"}))
                 })
                 .await;
