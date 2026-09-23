@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.8 - 2026-09-23
+
 - Make Claude executor steps return their completion object reliably. The
   harness passes a JSON schema to Claude Code and reads the validated
   `structured_output`, so a final message written as prose no longer fails the
