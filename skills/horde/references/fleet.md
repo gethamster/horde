@@ -103,7 +103,9 @@ Provider-owned provisioning below uses a separate bootstrap path; its settings
 and certificate lifetime do not describe shared fleet enrollment.
 
 Repository transfer carries committed files, without history or untracked files.
-Archives are content-hashed, capped at 24 MiB compressed and 64 MiB expanded, and
+Archives are gzip-compressed and content-hashed, capped at 24 MiB compressed,
+256 MiB expanded, and 64 MiB per file. Peers without the `snapshot_gzip`
+capability receive the older uncompressed form, capped at 24 MiB. Archives
 reject traversal, symlinks, special files, Git metadata, tracked `.env`, and `*.key`.
 Those filename checks do not prove an arbitrary repository is secret-free.
 

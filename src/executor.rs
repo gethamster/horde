@@ -477,101 +477,113 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         return grok_harness(i, config, &executable, &args).await;
     }
     let mcp = json!({"mcpServers":{"coordination":{"command":executable,"args":args,"env":{"HORDE_WORKER_TOKEN":i.token}}}});
-    let mut cmd = if managed {
-        crate::account_auth::command(
-            i.db,
-            &project,
-            config.account.as_deref().context("account")?,
-            config,
-        )?
-    } else {
-        clean_command(config.program.as_deref().unwrap_or(&config.kind))
-    };
-    cmd.current_dir(i.workspace);
-    if managed && config.kind == "claude" && config.auth_mode == "login" {
-        cmd.env(
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            &invocation_secrets["account_secret"],
-        );
-    }
-    if config.kind == "codex" {
-        cmd.args([
-            "exec",
-            "--json",
-            "--sandbox",
-            "workspace-write",
-            "--ignore-user-config",
-            "-c",
-            "approval_policy=\"never\"",
-        ]);
-        cmd.arg("-c")
-            .arg("mcp_servers.coordination.default_tools_approval_mode=\"approve\"");
-        cmd.arg("-c").arg(format!(
-            "mcp_servers.coordination.command={}",
-            toml::Value::String(executable.to_string_lossy().into_owned())
-        ));
-        cmd.arg("-c").arg(format!(
-            "mcp_servers.coordination.args={}",
-            toml::Value::Array(
-                args.iter()
-                    .map(|x| toml::Value::String(x.clone()))
-                    .collect()
-            )
-        ));
-        cmd.arg("-c").arg(format!(
-            "mcp_servers.coordination.env.HORDE_WORKER_TOKEN={}",
-            toml::Value::String(i.token.into())
-        ));
-        cmd.arg("-");
-    } else {
-        cmd.args([
-            "--print",
-            "--output-format",
-            "json",
-            "--permission-mode",
-            "acceptEdits",
-            "--strict-mcp-config",
-            "--mcp-config",
-        ])
-        .arg(mcp.to_string());
-        if i.settings.allow_commands {
-            cmd.args([
-                "--allowedTools",
-                "Bash,Read,Edit,Write,Glob,Grep,mcp__coordination__*",
-            ]);
-        }
-        if let Some(limit) = config.max_api_cost_usd {
-            cmd.arg("--max-budget-usd").arg(limit.to_string());
-        }
-    }
-    if let Some(broker) = &broker {
-        if config.kind == "codex" {
-            for override_value in [
-                "model_provider=\"horde_api\"".to_string(),
-                "model_providers.horde_api.name=\"Horde API broker\"".into(),
-                "model_providers.horde_api.wire_api=\"responses\"".into(),
-                format!(
-                    "model_providers.horde_api.base_url={}",
-                    toml::Value::String(broker.base_url.clone())
-                ),
-                "model_providers.horde_api.env_key=\"HORDE_PROVIDER_TOKEN\"".into(),
-            ] {
-                cmd.arg("-c").arg(override_value);
-            }
-            cmd.env("HORDE_PROVIDER_TOKEN", i.token);
+    let schema = claude_result_schema(i.spec);
+    // Every harness launch, including a Claude repair turn that resumes the
+    // first session, gets the same credentials, tools, and limits.
+    let command = |resume: Option<&str>| -> Result<Command> {
+        let mut cmd = if managed {
+            crate::account_auth::command(
+                i.db,
+                &project,
+                config.account.as_deref().context("account")?,
+                config,
+            )?
         } else {
+            clean_command(config.program.as_deref().unwrap_or(&config.kind))
+        };
+        cmd.current_dir(i.workspace);
+        if managed && config.kind == "claude" && config.auth_mode == "login" {
             cmd.env(
-                "ANTHROPIC_BASE_URL",
-                broker.base_url.trim_end_matches("/v1"),
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                &invocation_secrets["account_secret"],
             );
-            cmd.env("ANTHROPIC_AUTH_TOKEN", i.token);
         }
-    }
-    if let Some(model) = &config.model {
-        cmd.arg("--model").arg(model);
-    }
+        if config.kind == "codex" {
+            cmd.args([
+                "exec",
+                "--json",
+                "--sandbox",
+                "workspace-write",
+                "--ignore-user-config",
+                "-c",
+                "approval_policy=\"never\"",
+            ]);
+            cmd.arg("-c")
+                .arg("mcp_servers.coordination.default_tools_approval_mode=\"approve\"");
+            cmd.arg("-c").arg(format!(
+                "mcp_servers.coordination.command={}",
+                toml::Value::String(executable.to_string_lossy().into_owned())
+            ));
+            cmd.arg("-c").arg(format!(
+                "mcp_servers.coordination.args={}",
+                toml::Value::Array(
+                    args.iter()
+                        .map(|x| toml::Value::String(x.clone()))
+                        .collect()
+                )
+            ));
+            cmd.arg("-c").arg(format!(
+                "mcp_servers.coordination.env.HORDE_WORKER_TOKEN={}",
+                toml::Value::String(i.token.into())
+            ));
+            cmd.arg("-");
+        } else {
+            cmd.args([
+                "--print",
+                "--output-format",
+                "json",
+                "--permission-mode",
+                "acceptEdits",
+                "--strict-mcp-config",
+                "--mcp-config",
+            ])
+            .arg(mcp.to_string());
+            if i.settings.allow_commands {
+                cmd.args([
+                    "--allowedTools",
+                    "Bash,Read,Edit,Write,Glob,Grep,mcp__coordination__*",
+                ]);
+            }
+            if let Some(limit) = config.max_api_cost_usd {
+                cmd.arg("--max-budget-usd").arg(limit.to_string());
+            }
+            // Claude Code validates the final answer against this schema and
+            // returns it as `structured_output` in the result event.
+            cmd.arg("--json-schema").arg(schema.to_string());
+            if let Some(session) = resume {
+                cmd.arg("--resume").arg(session);
+            }
+        }
+        if let Some(broker) = &broker {
+            if config.kind == "codex" {
+                for override_value in [
+                    "model_provider=\"horde_api\"".to_string(),
+                    "model_providers.horde_api.name=\"Horde API broker\"".into(),
+                    "model_providers.horde_api.wire_api=\"responses\"".into(),
+                    format!(
+                        "model_providers.horde_api.base_url={}",
+                        toml::Value::String(broker.base_url.clone())
+                    ),
+                    "model_providers.horde_api.env_key=\"HORDE_PROVIDER_TOKEN\"".into(),
+                ] {
+                    cmd.arg("-c").arg(override_value);
+                }
+                cmd.env("HORDE_PROVIDER_TOKEN", i.token);
+            } else {
+                cmd.env(
+                    "ANTHROPIC_BASE_URL",
+                    broker.base_url.trim_end_matches("/v1"),
+                );
+                cmd.env("ANTHROPIC_AUTH_TOKEN", i.token);
+            }
+        }
+        if let Some(model) = &config.model {
+            cmd.arg("--model").arg(model);
+        }
+        Ok(cmd)
+    };
     let raw = run_process(
-        cmd,
+        command(None)?,
         Some(i.prompt()?),
         i.settings.timeout_seconds,
         Some((i.db, i.attempt)),
@@ -587,7 +599,15 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         &json!({"attempt":i.attempt}),
         false,
     )?;
-    if raw["success"] != true {
+    // Claude exits non-zero when it cannot produce a schema-valid answer. That
+    // is a formatting failure the repair turn below may still recover.
+    let claude_event = (config.kind == "claude")
+        .then(|| serde_json::from_str::<Value>(stdout.trim()).ok())
+        .flatten();
+    let structured_failed = claude_event
+        .as_ref()
+        .is_some_and(|event| event["subtype"] == STRUCTURED_OUTPUT_EXHAUSTED);
+    if raw["success"] != true && !structured_failed {
         // The Claude CLI puts a usage-limit / auth message in the stdout result event and
         // leaves stderr empty: the reason must come from wherever it is (issue #46).
         let stderr = raw["stderr"].as_str().unwrap_or("").trim().to_owned();
@@ -601,24 +621,76 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         }
         bail!("{message}");
     }
-    let mut result = None;
-    let mut usage = Value::Null;
-    if config.kind == "claude" {
-        let event: Value = serde_json::from_str(stdout).context("malformed Claude output")?;
+    let (answer, mut usage) = if config.kind == "claude" {
+        let event = claude_event.context("malformed Claude output")?;
         crate::capacity::ingest_current(i.db, config, generation.as_deref(), &event)?;
-        if event["is_error"] == true {
-            let reason = event["result"].as_str().unwrap_or("").trim().to_owned();
-            if is_capacity_message(&reason) {
-                return Err(CapacityFailure(json!({
-                    "error": format!("Claude reported failure: {reason}; events artifact {artifact}"),
-                    "capacity": true
-                })).into());
+        let mut usage = json!({"provider":event["usage"],"api_cost_usd":event["total_cost_usd"],"subscription_capacity":null});
+        let first = if structured_failed {
+            Err(anyhow::anyhow!(
+                "Claude did not produce a schema-valid result: {}",
+                event["errors"]
+            ))
+        } else {
+            claude_failure(&event, &artifact)?;
+            claude_answer(&event)
+        };
+        let answer = match (first, event["session_id"].as_str()) {
+            (Ok(value), _) => Ok(value),
+            (Err(error), None) => Err(error),
+            // One bounded repair turn: resume the same session and ask only for
+            // the JSON object. A second malformed reply fails the step.
+            (Err(error), Some(session)) => {
+                i.db.event(
+                    i.task,
+                    "executor.result_repair",
+                    json!({"step":i.step,"attempt":i.attempt,"error":format!("{error:#}")}),
+                )?;
+                let repair = run_process(
+                    command(Some(session))?,
+                    Some(REPAIR_PROMPT.into()),
+                    i.settings.timeout_seconds,
+                    Some((i.db, i.attempt)),
+                )
+                .await?;
+                let repair = crate::secrets::redact_json(&repair, &invocation_secrets);
+                let repair_stdout = repair["stdout"].as_str().unwrap_or("");
+                let repair_artifact = i.db.artifact(
+                    i.task,
+                    Some(i.step),
+                    "executor-repair-events",
+                    repair_stdout.as_bytes(),
+                    &json!({"attempt":i.attempt}),
+                    false,
+                )?;
+                let repaired = serde_json::from_str::<Value>(repair_stdout.trim())
+                    .context("malformed Claude repair output");
+                match repaired {
+                    Ok(repaired) => {
+                        crate::capacity::ingest_current(
+                            i.db,
+                            config,
+                            generation.as_deref(),
+                            &repaired,
+                        )?;
+                        add_claude_usage(&mut usage, &repaired);
+                        if repaired["subtype"] == STRUCTURED_OUTPUT_EXHAUSTED {
+                            Err(error)
+                        } else {
+                            claude_failure(&repaired, &repair_artifact)?;
+                            claude_answer(&repaired).map_err(|_| error)
+                        }
+                    }
+                    Err(_) => Err(error),
+                }
+                .with_context(|| {
+                    format!("one repair turn did not produce the JSON result; repair events artifact {repair_artifact}")
+                })
             }
-            bail!("Claude reported failure: {event}");
-        }
-        result = event["result"].as_str().map(str::to_owned);
-        usage = json!({"provider":event["usage"],"api_cost_usd":event["total_cost_usd"],"subscription_capacity":null});
+        };
+        (answer, usage)
     } else {
+        let mut result = None;
+        let mut usage = Value::Null;
         for line in stdout.lines().filter(|x| !x.trim().is_empty()) {
             let event: Value = serde_json::from_str(line).context("malformed Codex JSONL")?;
             crate::capacity::ingest_current(i.db, config, generation.as_deref(), &event)?;
@@ -633,18 +705,88 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                 _ => {}
             }
         }
-    }
+        let answer = result
+            .context("executor returned no final result")
+            .and_then(|text| result_object(&text));
+        (answer, usage)
+    };
     usage["executor_role"] = json!(i.spec.role);
     i.db.conn.execute(
         "UPDATE attempts SET usage=? WHERE id=?",
         rusqlite::params![usage.to_string(), i.attempt],
     )?;
-    let text = result.context("executor returned no final result")?;
-    let mut result = parse_result(&text)?;
+    let mut result = accepted(answer.with_context(|| format!("events artifact {artifact}"))?)?;
     result["usage"] = usage;
     result["latency_ms"] = raw["latency_ms"].clone();
     result["events_artifact"] = json!(artifact);
     Ok(result)
+}
+
+/// Result-event subtype when Claude Code gave up producing a schema-valid answer.
+const STRUCTURED_OUTPUT_EXHAUSTED: &str = "error_max_structured_output_retries";
+
+/// The only message of a repair turn.
+pub(crate) const REPAIR_PROMPT: &str = "Your previous reply was not the required completion object. Do not do any more work and do not call tools. Reply with only the JSON object {\"result\": string, \"accepted\": boolean, \"artifacts\": array of paths} for this step, including any required named outputs.";
+
+/// The schema Claude Code enforces on the final answer: the completion fields
+/// plus the step's declared named outputs, matching the native completion tool.
+pub(crate) fn claude_result_schema(step: &Step) -> Value {
+    let mut schema =
+        crate::native_protocol::completion_tool(step)["function"]["parameters"].clone();
+    schema["required"] = json!(["result", "accepted"]);
+    schema
+}
+
+/// Claude's answer from a result event: the schema-validated
+/// `structured_output` when present, else JSON parsed from the result text.
+pub(crate) fn claude_answer(event: &Value) -> Result<Value> {
+    if let Some(structured) = event.get("structured_output").filter(|v| v.is_object()) {
+        return Ok(structured.clone());
+    }
+    result_object(
+        event["result"]
+            .as_str()
+            .context("executor returned no final result")?,
+    )
+}
+
+/// Fail on an error result event, classifying account-capacity messages.
+fn claude_failure(event: &Value, artifact: &str) -> Result<()> {
+    if event["is_error"] == true {
+        let reason = event["result"].as_str().unwrap_or("").trim().to_owned();
+        if is_capacity_message(&reason) {
+            return Err(CapacityFailure(json!({
+                "error": format!("Claude reported failure: {reason}; events artifact {artifact}"),
+                "capacity": true
+            }))
+            .into());
+        }
+        bail!("Claude reported failure: {event}");
+    }
+    Ok(())
+}
+
+/// Add a repair turn's reported usage to the first turn's, so budgets and
+/// metrics count both. Cost stays unknown unless both turns reported it.
+pub(crate) fn add_claude_usage(usage: &mut Value, event: &Value) {
+    if let (Some(total), Some(extra)) = (
+        usage["provider"].as_object_mut(),
+        event["usage"].as_object(),
+    ) {
+        for (key, value) in extra {
+            if let (Some(a), Some(b)) = (total.get(key).and_then(Value::as_u64), value.as_u64()) {
+                total.insert(key.clone(), json!(a + b));
+            }
+        }
+    }
+    usage["api_cost_usd"] = match (
+        usage["api_cost_usd"].as_f64(),
+        event["total_cost_usd"].as_f64(),
+    ) {
+        (Some(a), Some(b)) => json!(a + b),
+        _ => Value::Null,
+    };
+    usage["repair_turns"] = json!(1);
 }
 /// The JSON body of a final message, with any code fence removed. Empty when the
 /// turn carried no answer at all, which callers treat as "not finished yet".
@@ -675,6 +817,10 @@ fn unfenced(text: &str) -> &str {
     text
 }
 pub(crate) fn parse_result(text: &str) -> Result<Value> {
+    accepted(result_object(text)?)
+}
+/// The JSON object in a final message, before the acceptance check.
+fn result_object(text: &str) -> Result<Value> {
     let body = unfenced(text);
     let result: Value = match serde_json::from_str(body) {
         Ok(value) => value,
@@ -700,7 +846,7 @@ pub(crate) fn parse_result(text: &str) -> Result<Value> {
             })?
         }
     };
-    accepted(result)
+    Ok(result)
 }
 
 #[cfg(test)]
