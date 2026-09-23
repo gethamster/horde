@@ -202,7 +202,9 @@ Preconfigured roles: `planner`, `worker`, `reviewer`, `native` (all on
 the same name.
 
 Besides `provider` and `model`, a role may set `account`, `program`, `max_price`,
-`max_tokens`, and `max_api_cost_usd`; each falls back to the provider's value.
+`max_tokens`, `max_api_cost_usd`, and `network`; each falls back to the provider's
+value. `network = true` lets a Codex role reach the network from its
+workspace-write sandbox (off by default); other kinds already have network access.
 Native roles also accept the `extra_body` overrides described above.
 
 A role cannot restate `kind`, `auth_mode`, `base_url`, or `api_key_env` — those four

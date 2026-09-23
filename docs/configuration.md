@@ -405,6 +405,20 @@ Set `autonomy = false` to hold new tasks until the initial question is answered:
 horde answer TASK_ID QUESTION_ID yes
 ```
 
+### Network access for Codex executors
+
+The Codex harness runs `codex exec --sandbox workspace-write`, and that sandbox blocks network access by default. A Codex step then cannot fetch dependencies; for example, `cargo check` in a fresh workspace fails because `index.crates.io` does not resolve. Set `network = true` on a provider, or on a single role, to allow network access inside the sandbox:
+
+```toml
+[executors.reviewer]
+provider = "codex"
+network = true          # passes -c sandbox_workspace_write.network_access=true
+```
+
+A role's `network` overrides its provider's, so `network = false` on a role keeps that role offline even when its provider allows network access. The default is off. Managed Codex accounts get the same setting on the app-server thread. File writes stay limited to the workspace; only the network rule changes. The setting affects only `kind = "codex"`: Claude Code's Bash tool and native command steps already have network access, and Grok does not use this sandbox.
+
+Enabling `network` changes the role's configuration fingerprint, so execution pins that name the old configuration have to be renewed. A runtime older than this release rejects settings that contain `network`, instead of running the step without it.
+
 ## Separate projects and provider accounts
 
 Create a project for each independent body of work, then register its checkouts

@@ -406,6 +406,9 @@ mod capacity_failure_tests {
     }
 }
 
+/// Codex's workspace-write sandbox blocks network access unless this is set.
+pub(crate) const CODEX_NETWORK_OVERRIDE: &str = "sandbox_workspace_write.network_access=true";
+
 async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     let generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
     if !i.settings.allow_commands {
@@ -510,6 +513,9 @@ async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
             ]);
             cmd.arg("-c")
                 .arg("mcp_servers.coordination.default_tools_approval_mode=\"approve\"");
+            if config.network {
+                cmd.arg("-c").arg(CODEX_NETWORK_OVERRIDE);
+            }
             cmd.arg("-c").arg(format!(
                 "mcp_servers.coordination.command={}",
                 toml::Value::String(executable.to_string_lossy().into_owned())

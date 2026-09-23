@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a `network` setting for Codex executors. With `network = true` on a
+  provider or role, Horde passes `-c sandbox_workspace_write.network_access=true`
+  (and sets the same option for managed Codex accounts). A Codex step can then
+  fetch dependencies, for example crates for `cargo check`. Network access stays
+  off by default, and settings without the key serialize exactly as before.
+
 ## 0.6.8 - 2026-09-23
 
 - Make Claude executor steps return their completion object reliably. The

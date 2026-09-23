@@ -172,12 +172,9 @@ async fn execute_inner(
         .request("account/login/start", token.login())
         .await?;
     let executable = std::env::current_exe()?;
-    let thread = session.request("thread/start",json!({"cwd":i.workspace,"model":config.model,"approvalPolicy":"never","sandbox":"workspace-write","config":{
-        "mcp_servers.coordination.command":executable,
-        "mcp_servers.coordination.args":["--data-dir",i.db.root,"mcp"],
-        "mcp_servers.coordination.env.HORDE_WORKER_TOKEN":i.token,
-        "mcp_servers.coordination.default_tools_approval_mode":"approve"
-    }})).await?;
+    let thread = session
+        .request("thread/start", thread_start(i, config, &executable))
+        .await?;
     let thread_id = thread["thread"]["id"]
         .as_str()
         .context("Codex app-server missing thread id")?;
@@ -298,4 +295,68 @@ async fn execute_inner(
     result["events_artifact"] = json!(artifact);
     result["latency_ms"] = json!(started.elapsed().as_millis() as u64);
     Ok(result)
+}
+
+/// The `thread/start` request: a workspace-write sandbox with the coordination
+/// MCP server, plus network access when the executor enables it.
+pub(crate) fn thread_start(
+    i: &crate::executor::Invocation<'_>,
+    config: &crate::config::ExecutorConfig,
+    executable: &std::path::Path,
+) -> Value {
+    let mut request = json!({"cwd":i.workspace,"model":config.model,"approvalPolicy":"never","sandbox":"workspace-write","config":{
+        "mcp_servers.coordination.command":executable,
+        "mcp_servers.coordination.args":["--data-dir",i.db.root,"mcp"],
+        "mcp_servers.coordination.env.HORDE_WORKER_TOKEN":i.token,
+        "mcp_servers.coordination.default_tools_approval_mode":"approve"
+    }});
+    if config.network {
+        request["config"]["sandbox_workspace_write.network_access"] = json!(true);
+    }
+    request
+}
+
+#[cfg(test)]
+mod tests {
+    use super::thread_start;
+    use serde_json::json;
+
+    #[test]
+    fn managed_thread_opens_the_sandbox_network_only_when_enabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = crate::store::Store::open(&temp.path().join("data")).unwrap();
+        let step: crate::template::Step = serde_json::from_value(json!({"id":"review"})).unwrap();
+        let settings = crate::config::Settings::default();
+        let invocation = crate::executor::Invocation {
+            db: &db,
+            task: "task",
+            step: "step",
+            attempt: "attempt",
+            worker: "worker",
+            token: "token",
+            workspace: temp.path(),
+            spec: &step,
+            settings: &settings,
+            context: json!({}),
+        };
+        let mut config = settings.executor("codex").unwrap();
+        let offline = thread_start(&invocation, &config, std::path::Path::new("/bin/horde"));
+        assert_eq!(offline["sandbox"], "workspace-write");
+        assert!(
+            offline["config"]
+                .get("sandbox_workspace_write.network_access")
+                .is_none()
+        );
+        config.network = true;
+        let online = thread_start(&invocation, &config, std::path::Path::new("/bin/horde"));
+        assert_eq!(online["sandbox"], "workspace-write");
+        assert_eq!(
+            online["config"]["sandbox_workspace_write.network_access"],
+            true
+        );
+        assert_eq!(
+            online["config"]["mcp_servers.coordination.default_tools_approval_mode"],
+            "approve"
+        );
+    }
 }
