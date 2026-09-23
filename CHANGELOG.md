@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.9 - 2026-09-23
+
 - Add a `network` setting for Codex executors. With `network = true` on a
   provider or role, Horde passes `-c sandbox_workspace_write.network_access=true`
   (and sets the same option for managed Codex accounts). A Codex step can then
