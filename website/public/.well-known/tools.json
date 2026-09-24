@@ -1,5 +1,5 @@
 {
-  "count": 105,
+  "count": 110,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -159,6 +159,9 @@
           },
           "slug": {
             "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
           }
         },
         "required": [
@@ -214,6 +217,9 @@
             "type": "string"
           },
           "project": {
+            "type": "string"
+          },
+          "tenant_id": {
             "type": "string"
           }
         },
@@ -2310,6 +2316,9 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "brief_id": {
+            "type": "string"
+          },
           "context": {
             "items": {
               "type": "object"
@@ -2419,6 +2428,9 @@
           },
           "template": {
             "type": "string"
+          },
+          "thread_id": {
+            "type": "string"
           }
         },
         "required": [
@@ -2475,6 +2487,125 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Read the current remote release base commit for a Run",
+      "name": "run_main_head",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Fast-forward a Run branch from authorized external commits",
+      "name": "run_reconcile",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_head": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Validate and record an exact Run branch checkpoint",
+      "name": "run_checkpoint",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_head": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "validation": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Publish a verified Run checkpoint without force push",
+      "name": "run_publish",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_head": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Read versioned, project-scoped Run events",
+      "name": "run_events",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
           "project": {
             "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"

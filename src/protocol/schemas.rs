@@ -27,6 +27,7 @@ pub fn admin_schema(name: &str) -> Value {
             ("id", "string"),
             ("name", "string"),
             ("slug", "string"),
+            ("tenant_id", "string"),
             ("concurrency", "integer"),
             ("isolation", "string"),
         ],
@@ -34,6 +35,7 @@ pub fn admin_schema(name: &str) -> Value {
         "project_inspect" => &[("project", "string")],
         "project_update" => &[
             ("project", "string"),
+            ("tenant_id", "string"),
             ("concurrency", "integer"),
             ("isolation", "string"),
         ],
@@ -204,6 +206,8 @@ pub fn admin_schema(name: &str) -> Value {
             ("objective", "string"),
             ("repo", "string"),
             ("template", "string"),
+            ("thread_id", "string"),
+            ("brief_id", "string"),
         ],
         "send_message" => &[
             ("task", "string"),
@@ -378,6 +382,18 @@ pub fn admin_schema(name: &str) -> Value {
             ("task", "string"),
             ("worker", "string"),
             ("validation", "array"),
+        ],
+        "run_reconcile" | "run_publish" => &[("task", "string"), ("expected_head", "string")],
+        "run_checkpoint" => &[
+            ("task", "string"),
+            ("expected_head", "string"),
+            ("validation", "array"),
+            ("idempotency_key", "string"),
+        ],
+        "run_events" => &[
+            ("task", "string"),
+            ("after", "integer"),
+            ("limit", "integer"),
         ],
         "register_worker" => &[("task", "string"), ("step", "string")],
         "release_claims" | "reconcile_worker" => &[("task", "string"), ("worker", "string")],

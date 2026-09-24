@@ -12,7 +12,7 @@ description = "Local-first durable task orchestration and worker coordination"
 rcgen = { version = "0.14", features = ["x509-parser"] }
 pem = "3"
 x509-parser = { version = "0.18", features = ["verify"] }
-time = { version = "0.3", features = ["parsing"] }
+time = { version = "0.3", features = ["parsing", "formatting"] }
 base64 = "0.22"
 ring = "0.17.14"
 anyhow = "1"

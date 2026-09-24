@@ -457,6 +457,7 @@ pub fn integrate(
     }
     let commit = run(workspace, &["rev-parse", "HEAD"])?;
     let target = task_workspace(db, oid)?;
+    crate::run::reconcile_at_integration_safe_point(db, oid)?;
     let previous = db.rows(
         "SELECT evidence FROM integrations WHERE task=? AND worker=? AND commit_id=?",
         &[&oid, &wid, &commit],

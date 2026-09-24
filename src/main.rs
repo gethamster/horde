@@ -215,6 +215,9 @@ enum ProjectCommands {
         id: Option<String>,
         #[arg(long)]
         slug: Option<String>,
+        /// Immutable tenant owning this project (defaults to the project ID).
+        #[arg(long)]
+        tenant_id: Option<String>,
         #[arg(long, default_value_t = 4)]
         concurrency: usize,
         #[arg(long, default_value="native", value_parser=["native","vm"])]
@@ -230,6 +233,9 @@ enum ProjectCommands {
         concurrency: Option<usize>,
         #[arg(long, value_parser=["native","vm"])]
         isolation: Option<String>,
+        /// Bind a legacy unused project to a tenant before submitting work.
+        #[arg(long)]
+        tenant_id: Option<String>,
     },
     Configure {
         project: String,
@@ -881,11 +887,12 @@ async fn main() -> Result<()> {
                     name,
                     id,
                     slug,
+                    tenant_id,
                     concurrency,
                     isolation,
                 } => (
                     "project_create",
-                    json!({"name":name,"id":id,"slug":slug,"concurrency":concurrency,"isolation":isolation}),
+                    json!({"name":name,"id":id,"slug":slug,"tenant_id":tenant_id,"concurrency":concurrency,"isolation":isolation}),
                 ),
                 ProjectCommands::List => ("project_list", json!({})),
                 ProjectCommands::Inspect { project } => {
@@ -895,6 +902,7 @@ async fn main() -> Result<()> {
                     project,
                     concurrency,
                     isolation,
+                    tenant_id,
                 } => {
                     let mut args = json!({"project":project});
                     if let Some(concurrency) = concurrency {
@@ -902,6 +910,9 @@ async fn main() -> Result<()> {
                     }
                     if let Some(isolation) = isolation {
                         args["isolation"] = json!(isolation);
+                    }
+                    if let Some(tenant_id) = tenant_id {
+                        args["tenant_id"] = json!(tenant_id);
                     }
                     ("project_update", args)
                 }

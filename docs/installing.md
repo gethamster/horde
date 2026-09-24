@@ -189,7 +189,7 @@ start without the default project's account or runtime grants.
 
 The version advances only after the additive migrations succeed. On a migration
 error, keep the database and backup together and resolve the reported cause
-before restarting. Binaries that support only older schemas reject schema 6.
+before restarting. Binaries that support only older schemas reject schema 7. Upgrading a schema 6 database saves a private `pre-runs-*.sqlite3` backup before adding authoritative tenant and Run bindings.
 A backup predates any work recorded after the upgrade; restoring it requires a
 stopped daemon and inspection of later local and remote effects before execution
 can resume. Do not replace a running daemon's database or discard its WAL files

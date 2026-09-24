@@ -1584,6 +1584,452 @@ fn bare_origin(dir: &Path, repo: &Path) -> String {
     git::run(&scratch, &["rev-parse", "HEAD"]).unwrap()
 }
 
+#[test]
+fn run_branch_reconciles_external_fast_forward_and_requires_new_checkpoint() {
+    let f = Fixture::new();
+    bare_origin(f.dir.path(), &f.repo());
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    let initial = git::run(&integrated, &["rev-parse", "HEAD"]).unwrap();
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":initial,"validation":["git","status","--porcelain"]}),
+    )
+    .unwrap();
+    f.call("run_publish", json!({"expected_head":initial}))
+        .unwrap();
+    assert_eq!(
+        f.call("run_publish", json!({"expected_head":initial}))
+            .unwrap()["duplicate"],
+        true
+    );
+    assert_eq!(f.events("run.branch_published").len(), 1);
+
+    let scratch = f.dir.path().join("scratch");
+    let branch = format!("horde/{}", f.oid);
+    git::run(&scratch, &["fetch", "origin", &branch]).unwrap();
+    git::run(&scratch, &["checkout", "-B", &branch, "FETCH_HEAD"]).unwrap();
+    git::run(
+        &scratch,
+        &["commit", "--allow-empty", "-m", "human feedback edit"],
+    )
+    .unwrap();
+    git::run(&scratch, &["push", "origin", &branch]).unwrap();
+    let external = git::run(&scratch, &["rev-parse", "HEAD"]).unwrap();
+
+    let reconciled = f
+        .call("run_reconcile", json!({"expected_head":initial}))
+        .unwrap();
+    assert_eq!(reconciled["head_sha"], external);
+    assert_eq!(
+        f.call("summary", json!({})).unwrap()["run"]["head_sha"],
+        external
+    );
+    assert!(
+        f.call("run_publish", json!({"expected_head":external}))
+            .is_err()
+    );
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":external,"validation":["git","status","--porcelain"]}),
+    )
+    .unwrap();
+    assert_eq!(
+        f.call("summary", json!({})).unwrap()["run"]["checkpoint"]["head_sha"],
+        external
+    );
+}
+
+#[test]
+fn checkpoint_reconciles_before_signing_and_rejects_stale_remote_head() {
+    let f = Fixture::new();
+    bare_origin(f.dir.path(), &f.repo());
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    let initial = git::run(&integrated, &["rev-parse", "HEAD"]).unwrap();
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":initial,"validation":["git","status","--porcelain"]}),
+    )
+    .unwrap();
+    f.call("run_publish", json!({"expected_head":initial}))
+        .unwrap();
+    let scratch = f.dir.path().join("scratch");
+    let branch = format!("horde/{}", f.oid);
+    git::run(&scratch, &["fetch", "origin", &branch]).unwrap();
+    git::run(&scratch, &["checkout", "-B", &branch, "FETCH_HEAD"]).unwrap();
+    git::run(
+        &scratch,
+        &["commit", "--allow-empty", "-m", "external checkpoint edit"],
+    )
+    .unwrap();
+    git::run(&scratch, &["push", "origin", &branch]).unwrap();
+    assert!(
+        f.call(
+            "run_checkpoint",
+            json!({"expected_head":initial,"validation":["git","status","--porcelain"]})
+        )
+        .is_err()
+    );
+    assert_ne!(
+        f.call("summary", json!({})).unwrap()["run"]["head_sha"],
+        initial
+    );
+    assert_eq!(f.events("run.checkpoint_verified").len(), 1);
+}
+
+#[test]
+fn worker_integration_reconciles_external_branch_before_combined_validation() {
+    let f = Fixture::new();
+    bare_origin(f.dir.path(), &f.repo());
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    let initial = git::run(&integrated, &["rev-parse", "HEAD"]).unwrap();
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":initial,"validation":["git","status","--porcelain"]}),
+    )
+    .unwrap();
+    f.call("run_publish", json!({"expected_head":initial}))
+        .unwrap();
+    let worker = f.coding_worker();
+    let workspace = f.db.worker(&worker).unwrap()["workspace"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    git::run(
+        Path::new(&workspace),
+        &["commit", "--allow-empty", "-m", "worker edit"],
+    )
+    .unwrap();
+    let scratch = f.dir.path().join("scratch");
+    let branch = format!("horde/{}", f.oid);
+    git::run(&scratch, &["fetch", "origin", &branch]).unwrap();
+    git::run(&scratch, &["checkout", "-B", &branch, "FETCH_HEAD"]).unwrap();
+    git::run(&scratch, &["commit", "--allow-empty", "-m", "human edit"]).unwrap();
+    git::run(&scratch, &["push", "origin", &branch]).unwrap();
+    let human = git::run(&scratch, &["rev-parse", "HEAD"]).unwrap();
+    let result = git::integrate(
+        &f.db,
+        &f.oid,
+        &worker,
+        &["git".into(), "status".into(), "--porcelain".into()],
+    )
+    .unwrap();
+    let head = result["integrated_head"].as_str().unwrap();
+    assert!(git::run(&integrated, &["merge-base", "--is-ancestor", &human, head]).is_ok());
+    assert_eq!(f.events("run.reconciled").len(), 1);
+    assert_eq!(f.events("integration.succeeded").len(), 1);
+}
+
+#[test]
+fn run_branch_rejects_divergence() {
+    let f = Fixture::new();
+    bare_origin(f.dir.path(), &f.repo());
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    let initial = git::run(&integrated, &["rev-parse", "HEAD"]).unwrap();
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":initial,"validation":["git","status","--porcelain"]}),
+    )
+    .unwrap();
+    f.call("run_publish", json!({"expected_head":initial}))
+        .unwrap();
+
+    let scratch = f.dir.path().join("scratch");
+    let branch = format!("horde/{}", f.oid);
+    git::run(&scratch, &["fetch", "origin", &branch]).unwrap();
+    git::run(&scratch, &["checkout", "-B", &branch, "FETCH_HEAD"]).unwrap();
+    git::run(&scratch, &["commit", "--allow-empty", "-m", "remote edit"]).unwrap();
+    git::run(&scratch, &["push", "origin", &branch]).unwrap();
+    git::run(
+        &integrated,
+        &["commit", "--allow-empty", "-m", "local edit"],
+    )
+    .unwrap();
+    let local = git::run(&integrated, &["rev-parse", "HEAD"]).unwrap();
+    assert!(
+        f.call("run_reconcile", json!({"expected_head":local}))
+            .is_err()
+    );
+    assert_eq!(
+        git::run(&integrated, &["rev-parse", "HEAD"]).unwrap(),
+        local
+    );
+    let summary = f.call("summary", json!({})).unwrap();
+    assert_eq!(summary["run"]["reconciliation"]["state"], "repair_required");
+    assert_eq!(
+        summary["run"]["reconciliation"]["reason"],
+        "divergent_heads"
+    );
+    assert_eq!(summary["run"]["reconciliation"]["local_head_sha"], local);
+    git::run(
+        &scratch,
+        &[
+            "fetch",
+            f.repo().to_str().unwrap(),
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .unwrap();
+    git::run(&scratch, &["merge", "--no-edit", "FETCH_HEAD"]).unwrap();
+    git::run(&scratch, &["push", "origin", &branch]).unwrap();
+    let repaired = f
+        .call("run_reconcile", json!({"expected_head":local}))
+        .unwrap();
+    assert_eq!(repaired["state"], "fast_forwarded");
+    assert_eq!(
+        f.call("summary", json!({})).unwrap()["run"]["reconciliation"]["state"],
+        "healthy"
+    );
+}
+
+#[test]
+fn run_branch_rejects_observed_remote_rewrite() {
+    let f = Fixture::new();
+    bare_origin(f.dir.path(), &f.repo());
+    let integrated = git::task_workspace(&f.db, &f.oid).unwrap();
+    let initial = git::run(&integrated, &["rev-parse", "HEAD"]).unwrap();
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":initial,"validation":["git","status","--porcelain"]}),
+    )
+    .unwrap();
+    f.call("run_publish", json!({"expected_head":initial}))
+        .unwrap();
+    let scratch = f.dir.path().join("scratch");
+    let branch = format!("horde/{}", f.oid);
+    git::run(&scratch, &["fetch", "origin", &branch]).unwrap();
+    git::run(&scratch, &["checkout", "-B", &branch, "FETCH_HEAD"]).unwrap();
+    git::run(&scratch, &["commit", "--allow-empty", "-m", "remote edit"]).unwrap();
+    git::run(&scratch, &["push", "origin", &branch]).unwrap();
+    let advanced = f
+        .call("run_reconcile", json!({"expected_head":initial}))
+        .unwrap()["head_sha"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    git::run(
+        &scratch,
+        &[
+            "push",
+            "--force",
+            "origin",
+            &format!("{initial}:refs/heads/{branch}"),
+        ],
+    )
+    .unwrap();
+    let error = f
+        .call("run_reconcile", json!({"expected_head":advanced}))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("rewound") || error.contains("rewrite"),
+        "{error}"
+    );
+    let summary = f.call("summary", json!({})).unwrap();
+    assert_eq!(summary["run"]["reconciliation"]["state"], "repair_required");
+    assert_eq!(summary["run"]["reconciliation"]["reason"], "remote_rewrite");
+    assert_eq!(summary["run"]["reconciliation"]["local_head_sha"], advanced);
+    assert_eq!(summary["run"]["reconciliation"]["remote_head_sha"], initial);
+    git::run(&scratch, &["push", "origin", &branch]).unwrap();
+    let repaired = f
+        .call("run_reconcile", json!({"expected_head":advanced}))
+        .unwrap();
+    assert_eq!(repaired["state"], "current");
+    assert_eq!(
+        f.call("summary", json!({})).unwrap()["run"]["reconciliation"]["state"],
+        "healthy"
+    );
+}
+
+#[test]
+fn run_checkpoint_is_bound_to_submission_context_and_exact_head() {
+    let f = Fixture::new();
+    let submitted = protocol::dispatch(
+        &f.db,
+        "submit_task",
+        json!({
+            "objective":"branch feedback",
+            "repo":f.repo(),
+            "template":"simulated",
+            "thread_id":"thread-1",
+            "brief_id":"brief-1"
+        }),
+        None,
+    )
+    .unwrap();
+    let run = submitted["id"].as_str().unwrap();
+    let path = git::task_workspace(&f.db, run).unwrap();
+    let sha = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    let summary = protocol::dispatch(&f.db, "summary", json!({"task":run}), None).unwrap();
+    assert_eq!(summary["run"]["run_id"], run);
+    assert_eq!(summary["run"]["thread_id"], "thread-1");
+    assert_eq!(summary["run"]["brief_id"], "brief-1");
+    assert_eq!(
+        summary["run"]["branch_ref"],
+        format!("refs/heads/horde/{run}")
+    );
+    assert!(
+        protocol::dispatch(
+            &f.db,
+            "run_checkpoint",
+            json!({"task":run,"expected_head":"stale","validation":["git","status"]}),
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        protocol::dispatch(
+            &f.db,
+            "run_checkpoint",
+            json!({"task":run,"expected_head":sha,"validation":["git","rev-parse","missing"]}),
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        f.db.rows(
+            "SELECT seq FROM events WHERE task=? AND kind='run.checkpoint_verified'",
+            &[&run]
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let checkpoint = protocol::dispatch(
+        &f.db,
+        "run_checkpoint",
+        json!({"task":run,"expected_head":sha,"validation":["git","status","--porcelain"],"idempotency_key":"validation-1"}),
+        None,
+    )
+    .unwrap();
+    assert_eq!(checkpoint["commit_sha"], sha);
+    assert!(checkpoint["validation_id"].is_string());
+    let repeated = protocol::dispatch(&f.db, "run_checkpoint", json!({"task":run,"expected_head":sha,"validation":["git","status","--porcelain"],"idempotency_key":"validation-1"}), None).unwrap();
+    assert_eq!(repeated["validation_id"], checkpoint["validation_id"]);
+    assert_eq!(repeated["duplicate"], true);
+    assert!(protocol::dispatch(&f.db, "run_checkpoint", json!({"task":run,"expected_head":sha,"validation":["git","status"],"idempotency_key":"validation-1"}), None).is_err());
+    let summary = protocol::dispatch(&f.db, "summary", json!({"task":run}), None).unwrap();
+    assert_eq!(summary["run"]["checkpoint"]["current"], true);
+    let foreign = horde::projects::dispatch(&f.db, "project_create", &json!({"slug":"foreign"}))
+        .unwrap()
+        .unwrap();
+    assert!(
+        protocol::dispatch_scoped(
+            &f.db,
+            "run_checkpoint",
+            json!({"task":run,"expected_head":sha,"validation":["git","status"]}),
+            None,
+            foreign["id"].as_str()
+        )
+        .is_err()
+    );
+    let worker = f.db.register(run, None).unwrap();
+    assert!(
+        protocol::dispatch(
+            &f.db,
+            "run_publish",
+            json!({"task":run,"expected_head":sha}),
+            worker["token"].as_str()
+        )
+        .is_err()
+    );
+    git::run(
+        &path,
+        &["commit", "--allow-empty", "-m", "another checkpoint"],
+    )
+    .unwrap();
+    let summary = protocol::dispatch(&f.db, "summary", json!({"task":run}), None).unwrap();
+    assert_eq!(summary["run"]["checkpoint"]["current"], false);
+    assert!(
+        protocol::dispatch(
+            &f.db,
+            "run_publish",
+            json!({"task":run,"expected_head":summary["run"]["head_sha"]}),
+            None
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn run_binding_survives_event_redaction_and_restart() {
+    let f = Fixture::new();
+    let secret = "secret-thread-id";
+    f.db.conn
+        .execute(
+            "INSERT INTO task_bundles VALUES(?,?,?)",
+            rusqlite::params![f.oid, "run-identity-app", "v1"],
+        )
+        .unwrap();
+    let bundles = f.db.root.join("remote-secrets").join(&f.oid);
+    std::fs::create_dir_all(&bundles).unwrap();
+    std::fs::write(
+        bundles.join(horde::store::hash(b"run-identity-app")),
+        json!({"version":"v1","values":{"APP_SECRET":secret}}).to_string(),
+    )
+    .unwrap();
+    horde::run::bind_run_context(&f.db, &f.oid, Some(secret), Some("brief-1")).unwrap();
+    assert!(
+        f.db.conn
+            .execute(
+                "UPDATE run_bindings SET thread_id='other' WHERE task=?",
+                [&f.oid]
+            )
+            .is_err()
+    );
+    assert_eq!(f.events("run.bound")[0]["thread_id"], "[REDACTED]");
+    let reopened = Store::open(&f.db.root).unwrap();
+    let summary = protocol::dispatch(&reopened, "summary", json!({"task":f.oid}), None).unwrap();
+    assert_eq!(summary["run"]["thread_id"], secret);
+    assert_eq!(summary["run"]["brief_id"], "brief-1");
+}
+
+#[test]
+fn run_events_wrap_legacy_rows_with_authoritative_identity_and_stable_cursor() {
+    let f = Fixture::new();
+    horde::run::bind_run_context(&f.db, &f.oid, Some("thread-1"), Some("brief-1")).unwrap();
+    let first = f.call("run_events", json!({"after":0,"limit":1})).unwrap();
+    let event = &first["events"][0];
+    assert_eq!(event["schema_version"], 1);
+    assert_eq!(event["event_type"], "run.bound");
+    assert_eq!(event["tenant_id"], "default");
+    assert_eq!(event["project_id"], "default");
+    assert_eq!(event["thread_id"], "thread-1");
+    assert_eq!(event["brief_id"], "brief-1");
+    assert_eq!(event["run_id"], f.oid);
+    assert_eq!(event["idempotency_key"], event["event_id"]);
+    assert!(event["occurred_at"].as_str().unwrap().ends_with('Z'));
+    let cursor = first["next_cursor"].as_i64().unwrap();
+    assert_eq!(
+        f.call("run_events", json!({"after":0,"limit":1})).unwrap()["events"][0],
+        *event
+    );
+    assert!(
+        f.call("run_events", json!({"after":cursor})).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(f.call("run_events", json!({"after":-1})).is_err());
+    assert!(f.call("run_events", json!({"after":"0"})).is_err());
+}
+
+#[test]
+fn run_main_head_reads_live_remote_base_not_stale_tracking_ref() {
+    let f = Fixture::new();
+    let tip = bare_origin(f.dir.path(), &f.repo());
+    let stale = git::run(&f.repo(), &["rev-parse", "refs/remotes/origin/main"]).unwrap();
+    assert_ne!(tip, stale);
+    let observed = f.call("run_main_head", json!({})).unwrap();
+    assert_eq!(observed["branch_ref"], "refs/heads/main");
+    assert_eq!(observed["commit_sha"], tip);
+    assert_eq!(observed["expected_main_head"], tip);
+    assert_eq!(
+        git::run(&f.repo(), &["rev-parse", "refs/remotes/origin/main"]).unwrap(),
+        stale
+    );
+    let disconnected = Fixture::new();
+    assert!(disconnected.call("run_main_head", json!({})).is_err());
+}
+
 fn delivery_base(base: &str) -> Settings {
     Settings {
         delivery: horde::config::Delivery {

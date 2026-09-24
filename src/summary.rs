@@ -25,9 +25,14 @@ pub fn build(db: &Store, task: &str) -> Result<Value> {
         |r| r.get(0),
     )?;
     let delivery = delivery_outcome(db, task, &settings, &steps)?;
+    let head = integrated_head(db, task)?;
+    let context = crate::run::run_context(db, task)?;
+    let checkpoint = latest_checkpoint(db, task, &head)?;
+    let project = context["project"].clone();
+    let tenant = context["tenant_id"].clone();
     let mut summary = json!({
         "task": task,
-        "project": crate::projects::task_project(db, task)?,
+        "project": project,
         "execution": crate::project_runtime::inspection(db, task)?,
         "objective": row["objective"],
         "repo": row["repo"],
@@ -35,7 +40,20 @@ pub fn build(db: &Store, task: &str) -> Result<Value> {
         "terminal": TERMINAL_STATUSES.contains(&status.as_str()),
         "steps": steps,
         "branch": format!("horde/{task}"),
-        "integrated_head": integrated_head(db, task)?,
+        "integrated_head": head,
+        "run": {
+            "run_id": task,
+            "tenant_id": tenant,
+            "project_id": project,
+            "thread_id": context["thread_id"],
+            "brief_id": context["brief_id"],
+            "branch_ref": format!("refs/heads/horde/{task}"),
+            "commit_sha": head,
+            "head_commit_sha": head,
+            "head_sha": head,
+            "checkpoint": checkpoint,
+            "reconciliation": crate::run::reconciliation_status(db, task)?,
+        },
         "questions_pending": questions_pending,
         "delivery": delivery,
     });
@@ -43,6 +61,19 @@ pub fn build(db: &Store, task: &str) -> Result<Value> {
         summary["delivery_skipped"] = summary["delivery"]["reason"].clone();
     }
     Ok(summary)
+}
+
+fn latest_checkpoint(db: &Store, task: &str, head: &Value) -> Result<Value> {
+    let rows = db.rows(
+        "SELECT data FROM events WHERE task=? AND kind='run.checkpoint_verified' ORDER BY seq DESC LIMIT 1",
+        &[&task],
+    )?;
+    let Some(raw) = rows.first().and_then(|row| row["data"].as_str()) else {
+        return Ok(Value::Null);
+    };
+    let mut checkpoint: Value = serde_json::from_str(raw)?;
+    checkpoint["current"] = json!(checkpoint["commit_sha"] == *head);
+    Ok(checkpoint)
 }
 
 fn step_summary(db: &Store, step: &Value) -> Result<Value> {
