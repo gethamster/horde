@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.6.12 - 2026-09-24
+
+- Route Horde's Linux CI, release, and website jobs to dedicated x64, ARM64,
+  and small runners in `horde-fleet`. Keep macOS jobs on their existing hosts.
+  The pre-cutover canary checked Git worktree support, disk capacity, Rust,
+  Docker, and PostgreSQL on each pool.
+
 ## 0.6.11 - 2026-09-23
 
 - Request worker cleanup and stop admitting work when host disk space falls
