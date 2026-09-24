@@ -1,5 +1,17 @@
 pub const OPERATIONS: &[(&str, &str)] = &[
     (
+        "runtime_storage_status",
+        "Inspect local disk space and storage policy",
+    ),
+    (
+        "runtime_storage_configure",
+        "Configure host disk reserve and completed worker workspace retention",
+    ),
+    (
+        "runtime_storage_cleanup",
+        "Preview or reclaim eligible completed worker workspaces; dry run by default",
+    ),
+    (
         "account_usage",
         "Inspect granted account quotas and usage attributed to this project",
     ),

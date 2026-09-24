@@ -172,6 +172,18 @@ pub fn admin_schema(name: &str) -> Value {
         "runtime_config_get" | "runtime_drain" | "runtime_resume" | "runtime_status"
         | "account_status" => &[],
         "runtime_config_set" => &[("concurrency", "integer")],
+        "runtime_storage_status" => &[],
+        "runtime_storage_configure" => &[
+            ("min_free_bytes", "integer"),
+            ("warning_free_bytes", "integer"),
+            ("resume_free_bytes", "integer"),
+            ("cleanup_command", "array"),
+            ("watch_paths", "array"),
+            ("cleanup_timeout_seconds", "integer"),
+            ("retention_seconds", "integer"),
+            ("automatic_cleanup", "boolean"),
+        ],
+        "runtime_storage_cleanup" => &[("dry_run", "boolean"), ("limit", "integer")],
         "account_observe" => &[
             ("account", "string"),
             ("provider", "string"),
@@ -460,6 +472,10 @@ pub fn admin_schema(name: &str) -> Value {
             if name == "skill_apply" && *k == "accepted" {
                 s["const"] = json!(true);
                 s["description"] = json!("Set only after the user agrees to this proposed persistent skill change.");
+            }
+            if name == "runtime_storage_configure" && ["warning_free_bytes", "resume_free_bytes"].contains(k) {
+                s["type"] = json!(["integer", "null"]);
+                s["description"] = json!("Free-space threshold in bytes; null restores the threshold derived from the preceding level.");
             }
             if *t == "array" {
                 s["items"] = if *k == "steps" {

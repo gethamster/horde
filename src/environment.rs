@@ -208,6 +208,7 @@ fn reserve_port() -> Result<(std::net::TcpListener, u16, ReservedPort)> {
 pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
     ensure!(i.settings.allow_commands, "commands disabled");
     spec.validate()?;
+    crate::storage::control::checkpoint().await;
     let r = crate::delegation::root(i.db, i.task)?;
     let tree = crate::delegation::tree(i.db, i.task)?;
     let limits: crate::delegation::Limits =
@@ -252,6 +253,7 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
     let _env_file = materialize_env(i, &scratch, &values, spec.env_file.as_deref())?;
     let mut compose = None;
     let mut child = None;
+    let mut storage_process = None;
     let mut logs = None;
     let browser_authorized = spec.browser_test.is_some()
         && i.settings.decision.mode == crate::config::DecisionMode::Shadow
@@ -261,7 +263,7 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
             .is_ok_and(|current| current.decision == i.settings.decision);
     let mut tested_commit = None;
     let operation = async {
-        tokio::time::timeout(Duration::from_secs(spec.timeout_seconds), async {
+        crate::storage::control::timeout(Duration::from_secs(spec.timeout_seconds), async {
             loop {
                 match crate::federation::environment_lease(i.db, i.task, true).await {
                     Ok(()) => break Ok::<_, anyhow::Error>(()),
@@ -296,8 +298,12 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
                 });
             }
             drop(listener);
+            crate::storage::control::checkpoint().await;
             let mut c = cmd.spawn().context("start application")?;
             owned.pid = c.id();
+            storage_process = Some(crate::storage::control::register_process(
+                c.id().context("application pid")?,
+            )?);
             if let Some(identity) = c.id().and_then(process_identity) {
                 i.db.conn.execute(
                     "INSERT INTO app_process_identity VALUES(?,?)",
@@ -477,7 +483,7 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(2))
                 .build()?;
-            tokio::time::timeout(Duration::from_secs(spec.readiness_seconds), async {
+            crate::storage::control::timeout(Duration::from_secs(spec.readiness_seconds), async {
                 loop {
                     if let Some(c) = child.as_mut()
                         && c.try_wait()?.is_some()
@@ -607,10 +613,11 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
         );
         Ok::<_, anyhow::Error>(result)
     };
-    let mut result = tokio::time::timeout(Duration::from_secs(spec.timeout_seconds), operation)
-        .await
-        .map_err(|_| anyhow::anyhow!("application environment lifetime expired"))
-        .and_then(|r| r);
+    let mut result =
+        crate::storage::control::timeout(Duration::from_secs(spec.timeout_seconds), operation)
+            .await
+            .map_err(|_| anyhow::anyhow!("application environment lifetime expired"))
+            .and_then(|r| r);
     if browser_authorized {
         match crate::browser::verified_commit(i.workspace) {
             Ok(after) if Some(after.as_str()) == tested_commit.as_deref() => {}
@@ -650,6 +657,7 @@ pub async fn execute(i: &Invocation<'_>, spec: &Environment) -> Result<Value> {
             }
         }
         let _ = c.wait().await;
+        drop(storage_process.take());
         owned.pid = None;
     }
     if let Some((out, err)) = logs {
@@ -815,6 +823,17 @@ pub async fn cleanup_pending(db: &Store) -> Result<()> {
 async fn reconcile_inner(db: &Store, startup: bool) -> Result<()> {
     for row in db.rows("SELECT * FROM app_environments WHERE state!='removed' AND (? OR (state IN ('cleanup_pending','held') AND NOT EXISTS(SELECT 1 FROM attempts a WHERE a.id=app_environments.attempt AND a.state='running')))", &[&startup])? {
         let eid = row["id"].as_str().context("environment")?;
+        // A crashed storage hold is deliberately left for operator recovery.
+        // Saved receipts are evidence of uncertainty, never authority to signal.
+        {
+            let held: bool = db.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_settings WHERE key GLOB 'storage.pause:*' AND json_extract(CASE WHEN json_valid(value) THEN value ELSE '{}' END,'$.attempt')=?)",
+                [row["attempt"].as_str()],
+                |row| row.get(0),
+            )?;
+            let cancelled: bool = db.conn.query_row("SELECT status='cancelled' FROM tasks WHERE id=?", [row["task"].as_str()], |row| row.get(0))?;
+            if held && !cancelled { continue; }
+        }
         let mut group_held=false;
         for group in db.rows("SELECT pid,identity FROM app_process_groups WHERE environment=?",&[&eid])? {
             let pid=group["pid"].as_i64().context("process group")? as i32;

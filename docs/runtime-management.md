@@ -121,6 +121,72 @@ remains pending reconciliation. Inspect delivery state with
 `horde --project PROJECT account delivery-list ACCOUNT_ID`; reconnect and
 reconcile before treating remote cleanup as complete.
 
+## Disk space and workspace retention
+
+Each daemon watches free space on the data, project workspace, repository, active
+worker workspace, and home filesystems. `watch_paths` adds other cache or build
+volumes. By default, below 10 GiB Horde stops new admissions, advertises zero
+available capacity, and sends each active worker one durable cleanup request.
+Below 2 GiB it suspends the process groups it owns and holds subsequent tool
+calls. Failed space probes also hold work. Recovery requires 14 GiB free to avoid
+repeated stop/start cycles. These thresholds are configurable for large downloads.
+
+A held attempt retains its identity and capacity reservations. Suspension does
+not consume command timeouts or progress budgets. Cancellation still kills owned
+process groups. When space recovers, the same attempt continues automatically;
+Horde does not migrate a running process or resize the instance.
+
+Inspect or configure the local policy through the administrative MCP tools or CLI:
+
+```sh
+horde call runtime_storage_status '{}'
+horde call runtime_storage_configure '{"min_free_bytes":5368709120,"warning_free_bytes":42949672960,"resume_free_bytes":53687091200,"watch_paths":["/mnt/build-cache"]}'
+horde call runtime_storage_configure '{"cleanup_command":["/usr/local/bin/horde-clean-disposable-caches"],"cleanup_timeout_seconds":60}'
+horde call runtime_storage_cleanup '{}'
+horde call runtime_storage_cleanup '{"dry_run":false,"limit":16}'
+```
+
+The cleanup command is optional, runs once per pressure incident in an independent
+lane, and can reclaim known disposable caches while workers are suspended. Its
+executable must be an absolute path. Horde supplies `HORDE_STORAGE_PRESSURE_FILE`
+to the command and managed worker processes; that JSON file records host pressure
+transitions. The command has a bounded timeout and its output is discarded;
+status retains its outcome. An interrupted hook is not automatically rerun for
+the same incident. Configure a command appropriate to the tools and caches on
+that host. An empty `cleanup_command` disables the hook.
+
+Worker cleanup requests are cooperative: workers act at a mailbox check, and a
+suspended worker cannot perform cleanup until resumed. Arbitrary programs do not
+automatically understand the pressure file. Only locally owned process groups
+are suspended. Docker containers keep running independently of their CLI; an
+in-flight remote provider request also cannot be suspended, and its transport
+timeout can still fail the attempt during a hold. Other host processes
+can continue consuming disk, so these controls are not a filesystem quota.
+
+Manual workspace cleanup defaults to a preview. Automatic maintenance runs once
+a minute and considers a bounded batch of worker checkouts from successful tasks
+older than seven days. It only removes Horde-owned, clean worker checkouts whose
+commits are retained in the integrated task branch. Dirty, untracked, or ignored
+files prevent removal. Active work and unresolved recovery records also prevent
+cleanup. The integrated checkout, Git branches, artifacts, credentials, and task
+history remain intact. A later invocation can recreate a removed worker checkout
+from its recorded branch and commit. Horde does not automatically delete shared
+build caches; the host cleanup command controls any such removal.
+
+The policy belongs to the host administrator; project configuration and worker
+tokens cannot change it. Each remote daemon enforces its own policy. Set
+`automatic_cleanup` to `false` to disable periodic workspace cleanup; this does
+not disable pressure monitoring or the separately configured hook. When omitted,
+`warning_free_bytes` is 8 GiB above `min_free_bytes`, and `resume_free_bytes` is
+4 GiB above the warning threshold. The status operation reports all watched
+volumes, pressure state, process hold receipts, and cleanup outcomes.
+
+After a daemon crash, held attempts become uncertain and require reconciliation.
+Saved PID receipts never authorize automatic resumption. Inspect the process and
+its effects before resolving the attempt. If the disk is already full, Horde
+still attempts to stop verified live owned groups even when it cannot persist
+the hold receipt, and reports that failure in daemon logs.
+
 ## Optional project VMs with Lima
 
 Native execution works without Lima. On macOS and Linux, a `provider = "lima"`

@@ -51,6 +51,7 @@ pub async fn call(
     settings: &Settings,
     allowed: &[String],
 ) -> Result<Value> {
+    crate::storage::control::checkpoint().await;
     if !allowed.iter().any(|x| x == name) {
         bail!("tool {name} not allowed for step");
     }

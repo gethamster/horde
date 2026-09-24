@@ -11,6 +11,7 @@ pub struct Session {
     output: BufReader<tokio::process::ChildStdout>,
     next_id: u64,
     pid: u32,
+    _storage_process: crate::storage::control::ProcessGuard,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -53,6 +54,10 @@ impl Session {
         }
         let mut child = cmd.spawn().context("launch Codex app-server")?;
         let pid = child.id().context("app-server pid")?;
+        let storage_process =
+            crate::storage::control::register_process(pid).inspect_err(|_| unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            })?;
         if let Some((db, attempt)) = record {
             db.conn.execute(
                 "UPDATE attempts SET pid=? WHERE id=?",
@@ -65,9 +70,11 @@ impl Session {
             child,
             next_id: 1,
             pid,
+            _storage_process: storage_process,
         })
     }
     pub async fn send(&mut self, value: Value) -> Result<()> {
+        crate::storage::control::checkpoint().await;
         let mut bytes = serde_json::to_vec(&value)?;
         bytes.push(b'\n');
         self.input.write_all(&bytes).await?;
@@ -131,7 +138,7 @@ pub async fn execute(
     project: &str,
     account: &str,
 ) -> Result<Value> {
-    tokio::time::timeout(
+    crate::storage::control::timeout(
         std::time::Duration::from_secs(i.settings.timeout_seconds),
         execute_inner(i, config, project, account),
     )
@@ -166,6 +173,7 @@ async fn execute_inner(
         "cli_auth_credentials_store=\"ephemeral\"",
     ]);
     cmd.current_dir(i.workspace);
+    crate::storage::control::checkpoint().await;
     let mut session = Session::spawn(cmd, Some((i.db, i.attempt)))?;
     session.initialize().await?;
     session
