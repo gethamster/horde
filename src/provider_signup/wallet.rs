@@ -669,23 +669,21 @@ mod tests {
             pid_file.display()
         );
         let command = fake_command(root.path(), &script);
-        let error = run(
-            root.path(),
-            "test-timeout",
-            command,
-            Duration::from_millis(150),
-        )
-        .await
-        .err()
-        .unwrap()
-        .to_string();
+        // Allow the shell to start and record both PIDs even under parallel
+        // test load; the sleeping child still outlives this timeout.
+        let error = run(root.path(), "test-timeout", command, Duration::from_secs(5))
+            .await
+            .err()
+            .unwrap()
+            .to_string();
         assert!(error.contains("timed out"));
         let pids = std::fs::read_to_string(pid_file).unwrap();
-        for (index, pid) in pids
+        let pids = pids
             .split_whitespace()
             .map(|pid| pid.parse::<i32>().unwrap())
-            .enumerate()
-        {
+            .collect::<Vec<_>>();
+        assert_eq!(pids.len(), 2, "the CLI must record itself and its child");
+        for (index, pid) in pids.into_iter().enumerate() {
             for _ in 0..30 {
                 if !still_executing(pid, index != 0) {
                     break;
