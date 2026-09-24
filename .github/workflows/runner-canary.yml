@@ -1,0 +1,85 @@
+name: Dedicated runner canary
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/runner-canary.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  canary:
+    # No shared-pool fallback: a missing dedicated pool must remain visible.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [horde-build-small, horde-build-x64, horde-build-arm64]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: mirror.gcr.io/library/postgres:16
+        env:
+          POSTGRES_USER: canary
+          POSTGRES_PASSWORD: canary
+          POSTGRES_DB: canary
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U canary"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify platform and disk capacity
+        env:
+          SELECTED_RUNNER: ${{ matrix.runner }}
+          ACTUAL_ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          test "$ID" = ubuntu
+          test "$VERSION_ID" = 22.04
+          test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.35'
+          git --version
+          git worktree list --porcelain -z >/dev/null
+          case "$SELECTED_RUNNER" in
+            horde-build-arm64) test "$ACTUAL_ARCH" = ARM64; test "$(uname -m)" = aarch64 ;;
+            horde-build-x64|horde-build-small) test "$ACTUAL_ARCH" = X64; test "$(uname -m)" = x86_64 ;;
+            *) echo 'Unexpected runner pool' >&2; exit 1 ;;
+          esac
+          df -h / "$GITHUB_WORKSPACE"
+          nproc
+          free -h
+          python3 - <<'PYTHON'
+          import os, shutil
+          disk = shutil.disk_usage(os.environ['GITHUB_WORKSPACE'])
+          print(f'Workspace disk: {disk.total / 2**30:.1f} GiB total, {disk.free / 2**30:.1f} GiB free')
+          assert disk.total >= 100 * 2**30, 'Expected at least 100 GiB workspace capacity'
+          assert disk.free >= 20 * 2**30, 'Expected at least 20 GiB workspace headroom'
+          PYTHON
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Compile and run a Rust smoke test
+        run: |
+          set -euo pipefail
+          smoke_dir=$(mktemp -d "$RUNNER_TEMP/runner-smoke.XXXXXX")
+          trap 'rm -rf "$smoke_dir"' EXIT
+          cargo init --bin --name runner_smoke "$smoke_dir"
+          cargo fmt --manifest-path "$smoke_dir/Cargo.toml" -- --check
+          cargo run --offline --manifest-path "$smoke_dir/Cargo.toml"
+      - name: Verify Docker and localhost service containers
+        env:
+          PGPASSWORD: canary
+        run: |
+          set -euo pipefail
+          docker version
+          docker info --format '{{.ServerVersion}} {{.Driver}} {{.NCPU}}cpu {{.MemTotal}}B'
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          test "$(psql -h 127.0.0.1 -U canary -d canary -Atc 'SELECT 1')" = 1

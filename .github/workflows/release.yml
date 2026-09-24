@@ -30,7 +30,8 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-15
             target: aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
+    # Keep logical platform names/check identities; Linux runs on dedicated Jammy ARC pods.
+    runs-on: ${{ fromJSON('{"ubuntu-latest":"horde-build-x64","ubuntu-22.04":"horde-build-x64","ubuntu-24.04-arm":"horde-build-arm64","macos-15":"macos-15","macos-15-intel":"macos-15-intel"}')[matrix.os] }}
     env:
       HORDE_RELEASE_PUBLIC_KEY: ${{ vars.HORDE_RELEASE_PUBLIC_KEY }}
       CC_x86_64_unknown_linux_musl: musl-gcc
@@ -135,7 +136,7 @@ jobs:
           if-no-files-found: error
   publish:
     needs: [build, checks]
-    runs-on: ubuntu-22.04
+    runs-on: horde-build-small
     permissions:
       contents: write
       packages: write
@@ -220,7 +221,7 @@ jobs:
   # loader, and a site advertising a version whose release never published.
   verify:
     needs: publish
-    runs-on: ubuntu-22.04
+    runs-on: horde-build-small
     steps:
       - name: Wait for the public release to serve this version
         run: |
@@ -262,7 +263,7 @@ jobs:
   deploy-website:
     needs: verify
     if: ${{ !contains(github.ref_name, '-') }}
-    runs-on: ubuntu-22.04
+    runs-on: horde-build-small
     steps:
       - name: Redeploy horde.sh against the new release
         env:
