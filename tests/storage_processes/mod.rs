@@ -1,7 +1,99 @@
 use super::*;
 use std::{os::unix::process::CommandExt, process::Command};
 
-fn child(root: &Path) -> std::process::Child {
+struct TestChild(std::process::Child);
+impl std::ops::Deref for TestChild {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for TestChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Drop for TestChild {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            // This test owns the child regardless of deliberately corrupted
+            // production identity records, including while assertions unwind.
+            unsafe {
+                libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+            }
+            let _ = self.0.wait();
+        }
+    }
+}
+
+fn counter(root: &Path) -> u64 {
+    match std::fs::metadata(root.join("counter")) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => panic!("read test counter: {error}"),
+    }
+}
+fn wait_for_progress(root: &Path, baseline: u64) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let current = counter(root);
+        if current > baseline {
+            return current;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "counter did not advance beyond {baseline}; observed {current}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+async fn wait_for_progress_async(root: &Path, baseline: u64) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let current = counter(root);
+        if current > baseline {
+            return current;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "counter did not advance beyond {baseline}; observed {current}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+async fn wait_for_stop(child: &TestChild) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut status = 0;
+        let observed = unsafe {
+            libc::waitpid(
+                child.id() as i32,
+                &mut status,
+                libc::WUNTRACED | libc::WNOHANG,
+            )
+        };
+        assert!(
+            observed >= 0,
+            "observe stopped child: {}",
+            std::io::Error::last_os_error()
+        );
+        if observed != 0 {
+            assert!(
+                libc::WIFSTOPPED(status),
+                "child exited before stop acknowledgment"
+            );
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "child {} did not stop",
+            child.id()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn child(root: &Path) -> TestChild {
     let mut command = Command::new("sh");
     command
         .args(["-c", "while :; do printf x >> counter; sleep 0.02; done"])
@@ -14,7 +106,7 @@ fn child(root: &Path) -> std::process::Child {
             Ok(())
         });
     }
-    command.spawn().unwrap()
+    TestChild(command.spawn().unwrap())
 }
 
 #[tokio::test]
@@ -25,10 +117,10 @@ async fn pause_stops_same_process_and_resume_continues() {
     scope(control.clone(), async {
         let mut child = child(dir.path());
         let guard = register_process(child.id()).unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        wait_for_progress_async(dir.path(), 0).await;
         control.set_paused(true).unwrap();
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        let before = std::fs::metadata(dir.path().join("counter")).unwrap().len();
+        wait_for_stop(&child).await;
+        let before = counter(dir.path());
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
             before,
@@ -48,8 +140,7 @@ async fn pause_stops_same_process_and_resume_continues() {
         let unchanged: bool = db.conn.query_row("SELECT json_extract(value,'$.retry_probe') FROM runtime_settings WHERE key LIKE 'storage.pause:%'", [], |row| row.get(0)).unwrap();
         assert!(unchanged, "repeated holds must not rewrite applied receipts");
         control.set_paused(false).unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(std::fs::metadata(dir.path().join("counter")).unwrap().len() > before);
+        wait_for_progress_async(dir.path(), before).await;
         drop(guard);
         child.wait().unwrap();
     })
@@ -89,6 +180,7 @@ async fn dropping_paused_process_guard_kills_group() {
     scope(control.clone(), async {
         let mut child = child(dir.path());
         let guard = register_process(child.id()).unwrap();
+        wait_for_progress_async(dir.path(), 0).await;
         control.set_paused(true).unwrap();
         drop(guard);
         let status = child.wait().unwrap();
@@ -112,9 +204,10 @@ fn mismatched_identity_is_never_signaled() {
     let dir = tempfile::tempdir().unwrap();
     crate::store::Store::open(dir.path()).unwrap();
     let control = Control::new(dir.path(), "identity");
-    let mut child = child(dir.path());
+    let child = child(dir.path());
     let pid = child.id();
     let guard = blocking_scope(Some(control.clone()), || register_process(pid)).unwrap();
+    wait_for_progress(dir.path(), 0);
     control
         .state
         .lock()
@@ -124,13 +217,10 @@ fn mismatched_identity_is_never_signaled() {
         .unwrap()
         .identity = "mismatch".into();
     assert!(control.set_paused(true).is_err());
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(std::fs::metadata(dir.path().join("counter")).unwrap().len() > 1);
-    unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
-    }
-    child.wait().unwrap();
+    let baseline = counter(dir.path());
+    wait_for_progress(dir.path(), baseline);
     drop(guard);
+    drop(child);
 }
 
 #[tokio::test]
@@ -223,13 +313,14 @@ async fn receipt_write_failure_still_stops_every_owned_group_and_retries() {
         let mut second = child(dir.path());
         let first_guard = register_process(first.id()).unwrap();
         let second_guard = register_process(second.id()).unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        wait_for_progress_async(dir.path(), 0).await;
         db.conn.execute_batch("CREATE TRIGGER no_pause_receipt BEFORE INSERT ON runtime_settings WHEN NEW.key GLOB 'storage.pause:*' BEGIN SELECT RAISE(ABORT, 'simulated disk full'); END;").unwrap();
         let error = control.set_paused(true).unwrap_err().to_string();
         assert!(error.contains("simulated disk full"));
         assert!(control.is_paused());
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        let before = std::fs::metadata(dir.path().join("counter")).unwrap().len();
+        wait_for_stop(&first).await;
+        wait_for_stop(&second).await;
+        let before = counter(dir.path());
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(before, std::fs::metadata(dir.path().join("counter")).unwrap().len());
         let receipts: i64 = db.conn.query_row("SELECT count(*) FROM runtime_settings WHERE key LIKE 'storage.pause:%'", [], |row|row.get(0)).unwrap();
@@ -244,8 +335,9 @@ async fn receipt_write_failure_still_stops_every_owned_group_and_retries() {
         assert!(control.state.lock().unwrap().processes.values().all(|process| !process.paused));
         control.set_paused(true).unwrap();
         assert!(control.state.lock().unwrap().processes.values().all(|process| process.paused));
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        let before = std::fs::metadata(dir.path().join("counter")).unwrap().len();
+        wait_for_stop(&first).await;
+        wait_for_stop(&second).await;
+        let before = counter(dir.path());
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(before, std::fs::metadata(dir.path().join("counter")).unwrap().len());
         db.conn.execute_batch("DROP TRIGGER no_receipt_delete;").unwrap();
@@ -324,4 +416,36 @@ async fn fast_executor_commands_complete_under_storage_supervision() {
         }
     })
     .await;
+}
+
+#[test]
+fn fixture_reaps_child_when_identity_mismatch_assertion_unwinds() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::store::Store::open(dir.path()).unwrap();
+    let control = Control::new(dir.path(), "panic-cleanup");
+    let pid = std::sync::atomic::AtomicU32::new(0);
+    use std::sync::atomic::Ordering;
+    let result = std::panic::catch_unwind(|| {
+        let child = child(dir.path());
+        pid.store(child.id(), Ordering::SeqCst);
+        let _guard =
+            blocking_scope(Some(control.clone()), || register_process(child.id())).unwrap();
+        control
+            .state
+            .lock()
+            .unwrap()
+            .processes
+            .get_mut(&child.id())
+            .unwrap()
+            .identity = "mismatch".into();
+        panic!("exercise test fixture cleanup");
+    });
+    assert!(result.is_err());
+    let pid = pid.load(Ordering::SeqCst);
+    assert!(pid > 1);
+    assert!(
+        process_absent(pid),
+        "fixture must kill and reap its child during unwinding"
+    );
+    assert!(control.state.lock().unwrap().processes.is_empty());
 }
