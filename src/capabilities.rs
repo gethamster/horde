@@ -322,6 +322,20 @@ fn capability(
         },
     })
 }
+
+fn platform_docker(
+    isolation: &str,
+    probe: impl FnOnce() -> docker::Support,
+    cli: impl FnOnce() -> Evidence,
+) -> (bool, Option<bool>) {
+    if matches!(isolation, "native" | "gvisor") {
+        let support = probe();
+        (support.docker, Some(support.compose))
+    } else {
+        (cli() == Evidence::Available, None)
+    }
+}
+
 fn local_from(
     db: &Store,
     settings: &Settings,
@@ -351,7 +365,7 @@ fn local_from(
         })
         .collect::<Result<Vec<_>>>()?;
     let isolation = management::value(db, "isolation")?.unwrap_or_else(|| "native".into());
-    let docker_support = (isolation == "gvisor").then(docker::support);
+    let (docker, compose) = platform_docker(&isolation, docker::support, || executable("docker"));
     let record = RuntimeInventory {
         runtime,
         name: Some(crate::runtime_directory::local_name(db)?),
@@ -386,9 +400,8 @@ fn local_from(
         platform: Some(Platform {
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
-            docker: docker_support
-                .map_or_else(|| executable("docker") == Evidence::Available, |s| s.docker),
-            compose: docker_support.map(|s| s.compose),
+            docker,
+            compose,
             isolation,
         }),
     };
@@ -814,6 +827,61 @@ mod tests {
         crate::management::set(&db, "concurrency", "3").unwrap();
         crate::runtime_directory::set_local_name(&db, "test-host").unwrap();
         db
+    }
+    #[test]
+    fn native_platform_reports_working_docker_daemon_and_compose_plugin() {
+        for (support, expected) in [
+            (
+                docker::Support {
+                    docker: false,
+                    compose: false,
+                },
+                (false, Some(false)),
+            ),
+            (
+                docker::Support {
+                    docker: true,
+                    compose: false,
+                },
+                (true, Some(false)),
+            ),
+            (
+                docker::Support {
+                    docker: true,
+                    compose: true,
+                },
+                (true, Some(true)),
+            ),
+        ] {
+            assert_eq!(
+                platform_docker(
+                    "native",
+                    || support,
+                    || panic!("CLI evidence is insufficient")
+                ),
+                expected
+            );
+            assert_eq!(
+                platform_docker(
+                    "gvisor",
+                    || support,
+                    || panic!("CLI evidence is insufficient")
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn lima_platform_keeps_its_existing_cli_evidence() {
+        assert_eq!(
+            platform_docker(
+                "lima",
+                || panic!("host daemon probe is irrelevant"),
+                || { Evidence::Available }
+            ),
+            (true, None)
+        );
     }
     #[test]
     fn project_authentication_uses_granted_profiles_without_ambient_keys() {

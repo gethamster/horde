@@ -1,4 +1,4 @@
-//! Bounded checks of the Docker daemon and Compose in AX workers.
+//! Bounded checks of the Docker daemon and Compose on native and AX workers.
 use std::{
     process::{Command, Stdio},
     sync::{Mutex, OnceLock},
@@ -16,8 +16,8 @@ struct Sample {
     support: Support,
 }
 
-/// AX runner environments are fixed for the lifetime of the process. Cache the
-/// probe so heartbeat publication never repeatedly starts Docker processes.
+/// Reuse a recent result across inventory calls, but refresh quickly so a
+/// stopped or restarted Docker daemon stops receiving Docker-required work.
 pub(super) fn support() -> Support {
     static CACHE: OnceLock<Mutex<Option<Sample>>> = OnceLock::new();
     let mut cache = CACHE
@@ -25,7 +25,7 @@ pub(super) fn support() -> Support {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     if let Some(sample) = cache.as_ref()
-        && sample.observed.elapsed() < Duration::from_secs(60)
+        && sample.observed.elapsed() < Duration::from_secs(15)
     {
         return sample.support;
     }
