@@ -1,0 +1,5 @@
+self-hosted-runner:
+  labels:
+    - horde-build-x64
+    - horde-build-arm64
+    - horde-build-small

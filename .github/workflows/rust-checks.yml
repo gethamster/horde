@@ -9,7 +9,7 @@ permissions:
   contents: read
 jobs:
   ax-wrapper:
-    runs-on: ubuntu-latest
+    runs-on: horde-build-small
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -19,7 +19,7 @@ jobs:
       - run: go test ./...
         working-directory: containers/ax/runsc-wrapper
   format:
-    runs-on: ubuntu-latest
+    runs-on: horde-build-small
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -33,7 +33,8 @@ jobs:
       matrix:
         os: ${{ fromJSON(inputs.platforms) }}
         check: [lint, test]
-    runs-on: ${{ matrix.os }}
+    # Keep logical platform names/check identities; Linux runs on dedicated Jammy ARC pods.
+    runs-on: ${{ fromJSON('{"ubuntu-latest":"horde-build-x64","ubuntu-22.04":"horde-build-x64","ubuntu-24.04-arm":"horde-build-arm64","macos-15":"macos-15","macos-15-intel":"macos-15-intel"}')[matrix.os] }}
     env:
       HORDE_RELEASE_PUBLIC_KEY: ${{ vars.HORDE_RELEASE_PUBLIC_KEY }}
     steps:
