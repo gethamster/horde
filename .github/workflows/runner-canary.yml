@@ -41,6 +41,8 @@ jobs:
           test "$ID" = ubuntu
           test "$VERSION_ID" = 22.04
           test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.35'
+          git --version
+          git worktree list --porcelain -z >/dev/null
           case "$SELECTED_RUNNER" in
             horde-build-arm64) test "$ACTUAL_ARCH" = ARM64; test "$(uname -m)" = aarch64 ;;
             horde-build-x64|horde-build-small) test "$ACTUAL_ARCH" = X64; test "$(uname -m)" = x86_64 ;;
