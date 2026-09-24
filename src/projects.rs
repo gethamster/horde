@@ -17,11 +17,18 @@ CREATE INDEX IF NOT EXISTS task_projects_owner ON task_projects(project,task);
 CREATE TABLE IF NOT EXISTS project_runtime_grants(project TEXT NOT NULL REFERENCES projects(id),runtime TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(project,runtime));
 CREATE TABLE IF NOT EXISTS project_runtime_revocations(project TEXT NOT NULL REFERENCES projects(id),runtime TEXT NOT NULL,PRIMARY KEY(project,runtime));
 CREATE TABLE IF NOT EXISTS runtime_project_bindings(runtime TEXT PRIMARY KEY,project TEXT NOT NULL REFERENCES projects(id));
+CREATE TABLE IF NOT EXISTS project_tenants(project TEXT PRIMARY KEY REFERENCES projects(id),tenant_id TEXT NOT NULL,explicit INTEGER NOT NULL CHECK(explicit IN (0,1)));
 CREATE TRIGGER IF NOT EXISTS runtime_project_immutable BEFORE UPDATE ON runtime_project_bindings BEGIN SELECT RAISE(ABORT,'runtime project ownership is immutable'); END;
 INSERT OR IGNORE INTO projects VALUES('default','default','Default',64,'native',0);
+INSERT OR IGNORE INTO project_tenants SELECT id,id,0 FROM projects;
 CREATE TRIGGER IF NOT EXISTS task_project_immutable BEFORE UPDATE ON task_projects BEGIN SELECT RAISE(ABORT,'task project and repository ownership is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS repository_project_immutable BEFORE UPDATE OF project,common_dir ON project_repositories BEGIN SELECT RAISE(ABORT,'repository ownership is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS project_identity_immutable BEFORE UPDATE OF id ON projects BEGIN SELECT RAISE(ABORT,'project identity is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS project_tenant_immutable BEFORE UPDATE ON project_tenants
+WHEN OLD.explicit=1 OR EXISTS(SELECT 1 FROM task_projects WHERE project=OLD.project)
+BEGIN SELECT RAISE(ABORT,'project tenant binding is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS project_tenant_delete_immutable BEFORE DELETE ON project_tenants
+BEGIN SELECT RAISE(ABORT,'project tenant binding is immutable'); END;
 ")?;
         let version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version < 6 {
@@ -100,6 +107,31 @@ pub fn task_project(db: &Store, task: &str) -> Result<String> {
         )
         .optional()?
         .context("task project not found")
+}
+/// Operator-owned tenant binding. Existing installations retain one tenant per
+/// project until an unused project is explicitly assigned to a shared tenant.
+pub fn tenant(db: &Store, project: &str) -> Result<String> {
+    let project = resolve(db, project)?;
+    Ok(db
+        .conn
+        .query_row(
+            "SELECT tenant_id FROM project_tenants WHERE project=?",
+            [&project],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(project))
+}
+fn validate_tenant(value: &str) -> Result<()> {
+    ensure!(
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'),
+        "tenant_id must contain 1..128 letters, digits, hyphens or underscores"
+    );
+    Ok(())
 }
 pub fn authorize_task(db: &Store, project: &str, task: &str) -> Result<()> {
     ensure!(
@@ -354,18 +386,35 @@ pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
             } else {
                 id()
             };
-            db.conn.execute(
-                "INSERT INTO projects VALUES(?,?,?,?,?,?)",
-                params![id, slug, name, concurrency, isolation, now()],
-            )?;
-            json!({"id":id,"slug":slug,"name":name,"concurrency":concurrency,"isolation":isolation})
+            let tenant_id = args["tenant_id"].as_str().unwrap_or(&id);
+            validate_tenant(tenant_id)?;
+            db.atomic(|| {
+                db.conn.execute(
+                    "INSERT INTO projects VALUES(?,?,?,?,?,?)",
+                    params![id, slug, name, concurrency, isolation, now()],
+                )?;
+                db.conn.execute(
+                    "INSERT INTO project_tenants VALUES(?,?,1)",
+                    params![id, tenant_id],
+                )?;
+                Ok(())
+            })?;
+            json!({"id":id,"slug":slug,"name":name,"tenant_id":tenant_id,"concurrency":concurrency,"isolation":isolation})
         }
-        "project_list" => json!(db.rows("SELECT * FROM projects ORDER BY slug", &[])?),
+        "project_list" => {
+            let mut projects = db.rows("SELECT * FROM projects ORDER BY slug", &[])?;
+            for project in &mut projects {
+                project["tenant_id"] =
+                    json!(tenant(db, project["id"].as_str().context("project id")?)?);
+            }
+            json!(projects)
+        }
         "project_inspect" => {
             let project = resolve(db, required(args, "project")?)?;
             let mut value = db
                 .rows("SELECT * FROM projects WHERE id=?", &[&project])?
                 .remove(0);
+            value["tenant_id"] = json!(tenant(db, &project)?);
             value["repositories"] = json!(db.rows(
                 "SELECT * FROM project_repositories WHERE project=? ORDER BY path",
                 &[&project]
@@ -390,11 +439,43 @@ pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
                 old["concurrency"].as_u64().context("concurrency")?,
                 old["isolation"].as_str().context("isolation")?,
             )?;
-            db.conn.execute(
-                "UPDATE projects SET concurrency=?,isolation=? WHERE id=?",
-                params![concurrency, isolation, project],
-            )?;
-            json!({"id":project,"concurrency":concurrency,"isolation":isolation})
+            let existing_tenant = tenant(db, &project)?;
+            let tenant_id = args["tenant_id"].as_str().unwrap_or(&existing_tenant);
+            validate_tenant(tenant_id)?;
+            if tenant_id != existing_tenant {
+                let occupied: bool = db.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM task_projects WHERE project=?)",
+                    [&project],
+                    |row| row.get(0),
+                )?;
+                ensure!(
+                    !occupied,
+                    "project tenant binding is immutable after its first task"
+                );
+                let explicit: Option<bool> = db
+                    .conn
+                    .query_row(
+                        "SELECT explicit FROM project_tenants WHERE project=?",
+                        [&project],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                ensure!(
+                    explicit != Some(true),
+                    "project tenant binding is immutable"
+                );
+            }
+            db.atomic(|| {
+                db.conn.execute(
+                    "UPDATE projects SET concurrency=?,isolation=? WHERE id=?",
+                    params![concurrency, isolation, project],
+                )?;
+                if tenant_id != existing_tenant {
+                    db.conn.execute("INSERT INTO project_tenants VALUES(?,?,1) ON CONFLICT(project) DO UPDATE SET tenant_id=excluded.tenant_id,explicit=1", params![project,tenant_id])?;
+                }
+                Ok(())
+            })?;
+            json!({"id":project,"tenant_id":tenant_id,"concurrency":concurrency,"isolation":isolation})
         }
         "project_configure" => {
             let project = resolve(db, required(args, "project")?)?;

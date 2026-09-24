@@ -40,6 +40,14 @@ Native file writes and patches check exclusive claims. An atomic prefix handoff 
 
 Artifact bytes are addressed by SHA-256, synced before the database reference commits, and checked on retrieval. Each link records inputs and verification status. Knowledge has its own provenance and relationship tables. Execution state is never inferred from a knowledge claim or conversation.
 
+## Branch-based Runs
+
+Each local Run keeps the existing `refs/heads/horde/<task-id>` branch and integrated worktree. Submission can bind a Thread and Brief to the Run; Horde records those IDs with the project and its operator-owned tenant binding. The task summary reports the branch, current commit, and latest verified checkpoint even after task execution ends.
+
+`run_reconcile` fetches that exact remote ref while holding the integration lock. Horde also reconciles before merging a worker commit, so combined validation covers accepted external edits. Reconciliation fast-forwards the integrated worktree when an authorized external push extends its history, and it rejects divergence, a dirty worktree, or a rewrite of a previously observed remote head. A rejected branch records `run.branch_conflict` with both heads and appears in `summary.run.reconciliation` as `repair_required`. An authorized person can restore the observed remote history or merge the local and remote heads on the remote Run branch, then reconcile again; success clears the repair state without rewriting the local branch. The Git host must also prohibit force pushes for the branch; Horde cannot authenticate a Git pusher or prevent an unseen rewrite at the host.
+
+`run_checkpoint` executes a validation command against an exact expected commit and records a durable validation ID. A configured `HORDE_RUN_ATTESTATION_KEY` signs the project, tenant, Thread, Brief, branch, commit, validation ID, and passed command with HMAC-SHA256; signing requires both Thread and Brief IDs. The key is a base64-encoded 32-byte secret shared with the trusted release verifier. `run_publish` pushes only a currently verified commit with Git's ordinary non-force push. `run_events` pages through versioned Run events with authoritative project and tenant identity and stable event IDs. These operations do not require a PR; templates that include the older delivery step retain their existing GitHub behavior.
+
 ## Scheduling and recovery
 
 A step becomes eligible after its dependencies reach terminal states and its condition is satisfied. Unhandled failed dependencies skip downstream work. Retry counts are bounded. Explicit failure branches can repair a failure and lead to another verification step. Role fallbacks are opt-in, cycle-checked TOML mappings and are recorded as escalation events.
@@ -271,7 +279,7 @@ Schema version 4 records execution policies, submission receipts, and project
 skill revisions. The version advances only after all additive migrations finish;
 reopening never lowers it. Older runtimes reject this database instead of running
 tasks without their saved execution constraints. Release manifests advertise the schema range supported by their binary; the current
-database schema is 6.
+database schema is 7.
 
 Administrative runtime settings, capacity snapshots, enrollment fingerprints,
 management receipts, provider resources, and operation intents are stored separately

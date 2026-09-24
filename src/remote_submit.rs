@@ -45,6 +45,7 @@ pub fn submit(db: &Store, args: &Value) -> Result<Value> {
         .transpose()?;
     db.atomic(|| {
         let id = db.submit_project(&project, objective, &repo, &settings, &plan)?;
+        crate::run::bind_run_context(db, &id, args["thread_id"].as_str(), args["brief_id"].as_str())?;
         if let Some(execution) = &execution {
             crate::execution_selection::pin(db, &id, execution)?;
             crate::execution_selection::validate_target(db, &id, Some(&peer))?;

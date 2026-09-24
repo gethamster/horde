@@ -784,6 +784,7 @@ fn ordinary_doctor_resolves_auto_from_a_minimal_default_provider_block() {
         .arg(dir.path())
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("HORDE_DATA_DIR", dir.path().join("data/horde"))
         .output()
         .unwrap();
     assert!(
@@ -970,6 +971,7 @@ fn doctor_probes_a_named_provider_with_auto_model() {
         .arg(dir.path())
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("HORDE_DATA_DIR", dir.path().join("data/horde"))
         .output()
         .unwrap();
     assert!(

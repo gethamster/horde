@@ -348,6 +348,7 @@ fn validate_captures_the_catalog_a_submission_would_pin() {
             .arg(dir.path().join("data"))
             .env("XDG_CONFIG_HOME", dir.path().join("config"))
             .env("XDG_DATA_HOME", dir.path().join("data"))
+            .env("HORDE_DATA_DIR", dir.path().join("data/horde"))
             .output()
             .unwrap()
     };

@@ -374,6 +374,12 @@ fn dispatch_authorized(
         }
         return db.atomic(|| {
             let oid = db.submit_project(project, objective, &repo, &settings, &plan)?;
+            crate::run::bind_run_context(
+                db,
+                &oid,
+                args["thread_id"].as_str(),
+                args["brief_id"].as_str(),
+            )?;
             if let Some(selection) = &selection {
                 crate::execution_selection::pin(db, &oid, selection)?;
                 crate::execution_selection::validate_target(db, &oid, None)?;
@@ -472,6 +478,29 @@ fn dispatch_authorized(
             json!({"task":db.task(oid)?,"project_runtime":crate::project_runtime::inspection(db,oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
         ),
         "summary" => crate::summary::build(db, oid),
+        "run_main_head" => crate::run::main_head(db, oid),
+        "run_reconcile" => crate::run::reconcile_run(db, oid, string(&args, "expected_head")?),
+        "run_checkpoint" => crate::run::checkpoint_run(
+            db,
+            oid,
+            string(&args, "expected_head")?,
+            &strings(&args, "validation")?,
+            args["idempotency_key"].as_str(),
+        ),
+        "run_publish" => crate::run::publish_run(db, oid, string(&args, "expected_head")?),
+        "run_events" => {
+            let after = args
+                .get("after")
+                .map(|value| value.as_i64().context("after must be an integer"))
+                .transpose()?
+                .unwrap_or(0);
+            let limit = args
+                .get("limit")
+                .map(|value| value.as_i64().context("limit must be an integer"))
+                .transpose()?
+                .unwrap_or(100);
+            crate::run::events(db, oid, after, limit)
+        }
         "events" => {
             let cursor:i64=if let Some(consumer)=args["consumer"].as_str(){db.conn.query_row("SELECT COALESCE((SELECT seq FROM event_receipts WHERE task=? AND consumer=?),0)",rusqlite::params![oid,consumer],|r|r.get(0))?}else{0};
             Ok(json!(db.rows("SELECT * FROM events WHERE task=? AND seq>? ORDER BY seq LIMIT 1000",&[&oid,&args["after"].as_i64().unwrap_or(cursor)])?))

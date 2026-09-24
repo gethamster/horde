@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 /// Status of the per-task synthetic worker row that carries operator steering messages.
 /// Operator rows never receive mail, never wake, and are hidden from worker listings.
 pub const OPERATOR_STATUS: &str = "operator";
@@ -103,7 +103,7 @@ impl Store {
         }
         // Hold the daemon lock through migration so an older scheduler cannot
         // dispatch work while the new ownership schema is being installed.
-        let _migration_lock = if version == 5 {
+        let _migration_lock = if (5..=6).contains(&version) {
             use fs2::FileExt;
             let lock = std::fs::OpenOptions::new()
                 .create(true)
@@ -112,7 +112,7 @@ impl Store {
                 .write(true)
                 .open(root.join("daemon.lock"))?;
             lock.try_lock_exclusive()
-                .context("stop the running Horde daemon before migrating its schema 5 database")?;
+                .context("stop the running Horde daemon before migrating its database")?;
             version = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
             if version > i64::from(SCHEMA_VERSION) {
                 bail!(
@@ -133,6 +133,15 @@ impl Store {
         }
         if version == 5 {
             let backup = root.join(format!("pre-projects-{}.sqlite3", id()));
+            conn.execute("VACUUM INTO ?", [backup.to_string_lossy().as_ref()])?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+        if version == 6 {
+            let backup = root.join(format!("pre-runs-{}.sqlite3", id()));
             conn.execute("VACUUM INTO ?", [backup.to_string_lossy().as_ref()])?;
             #[cfg(unix)]
             {
@@ -183,6 +192,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             crate::knowledge::migrate(&conn)?;
         }
         crate::projects::migrate(&conn)?;
+        crate::run::migrate(&conn)?;
         crate::accounts::migrate(&conn)?;
         crate::project_runtime::migrate(&conn)?;
         if version != i64::from(SCHEMA_VERSION) {

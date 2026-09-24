@@ -21,6 +21,94 @@ fn create(db: &Store, slug: &str) -> String {
         .unwrap()
         .into()
 }
+
+#[test]
+fn project_tenant_binding_is_operator_owned_and_immutable_after_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(dir.path()).unwrap();
+    let first = projects::dispatch(
+        &db,
+        "project_create",
+        &json!({"slug":"first","tenant_id":"shared-tenant"}),
+    )
+    .unwrap()
+    .unwrap();
+    let second = projects::dispatch(
+        &db,
+        "project_create",
+        &json!({"slug":"second","tenant_id":"shared-tenant"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        projects::tenant(&db, first["id"].as_str().unwrap()).unwrap(),
+        "shared-tenant"
+    );
+    assert_eq!(
+        projects::tenant(&db, second["id"].as_str().unwrap()).unwrap(),
+        "shared-tenant"
+    );
+    assert!(
+        projects::dispatch(
+            &db,
+            "project_update",
+            &json!({"project":first["id"],"tenant_id":"other"})
+        )
+        .is_err()
+    );
+    assert!(
+        db.conn
+            .execute(
+                "UPDATE project_tenants SET tenant_id='other' WHERE project=?",
+                [first["id"].as_str().unwrap()]
+            )
+            .is_err()
+    );
+    let legacy = create(&db, "legacy");
+    assert_eq!(projects::tenant(&db, &legacy).unwrap(), legacy);
+}
+
+#[test]
+fn schema_six_migration_defaults_legacy_run_and_tenant_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    repository(&repo);
+    let db = Store::open(&dir.path().join("data")).unwrap();
+    let project = create(&db, "legacy-project");
+    projects::dispatch(
+        &db,
+        "project_repo_add",
+        &json!({"project":project,"path":repo}),
+    )
+    .unwrap();
+    let plan = template::compile(
+        "simulated",
+        &template::load_templates(&repo).unwrap(),
+        BTreeMap::from([("task".into(), "legacy".into())]),
+    )
+    .unwrap();
+    let task = db
+        .submit_project(&project, "legacy", &repo, &Settings::default(), &plan)
+        .unwrap();
+    db.conn
+        .execute_batch(
+            "DROP TABLE run_bindings; DROP TABLE project_tenants; PRAGMA user_version=6;",
+        )
+        .unwrap();
+    drop(db);
+    let reopened = Store::open(&dir.path().join("data")).unwrap();
+    assert_eq!(projects::tenant(&reopened, &project).unwrap(), project);
+    let binding = horde::run::run_context(&reopened, &task).unwrap();
+    assert_eq!(binding["tenant_id"], project);
+    assert_eq!(binding["project"], project);
+    assert!(binding["thread_id"].is_null());
+    assert!(
+        std::fs::read_dir(dir.path().join("data"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("pre-runs-"))
+    );
+}
 #[test]
 fn repositories_and_worktrees_have_one_owner_and_tasks_are_immutable() {
     let dir = tempfile::tempdir().unwrap();
@@ -132,7 +220,7 @@ fn schema_five_migration_backs_up_before_changes() {
         db.conn
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        6
+        horde::store::SCHEMA_VERSION
     );
     let backups: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()

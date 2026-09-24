@@ -249,6 +249,23 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "summary",
         "Terminal summary: status, step outcomes, integrated head, delivery outcome",
     ),
+    (
+        "run_main_head",
+        "Read the current remote release base commit for a Run",
+    ),
+    (
+        "run_reconcile",
+        "Fast-forward a Run branch from authorized external commits",
+    ),
+    (
+        "run_checkpoint",
+        "Validate and record an exact Run branch checkpoint",
+    ),
+    (
+        "run_publish",
+        "Publish a verified Run checkpoint without force push",
+    ),
+    ("run_events", "Read versioned, project-scoped Run events"),
     ("list_tasks", "List submitted tasks and their status"),
     ("events", "Read ordered activity events"),
     ("cancel", "Cancel a task"),

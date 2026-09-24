@@ -13,6 +13,7 @@ fn validate_reports_ignored_names_from_nested_templates_without_retaining_values
         .args(["validate", "outer", "--repo"])
         .arg(dir.path())
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("HORDE_DATA_DIR", dir.path().join("data/horde"))
         .output()
         .unwrap();
     assert!(
