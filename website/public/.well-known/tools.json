@@ -1,5 +1,5 @@
 {
-  "count": 102,
+  "count": 105,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -7,6 +7,98 @@
   },
   "specVersion": "1.0",
   "tools": [
+    {
+      "description": "Inspect local disk space and storage policy",
+      "name": "runtime_storage_status",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Configure host disk reserve and completed worker workspace retention",
+      "name": "runtime_storage_configure",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "automatic_cleanup": {
+            "type": "boolean"
+          },
+          "cleanup_command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cleanup_timeout_seconds": {
+            "type": "integer"
+          },
+          "min_free_bytes": {
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "resume_free_bytes": {
+            "description": "Free-space threshold in bytes; null restores the threshold derived from the preceding level.",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retention_seconds": {
+            "type": "integer"
+          },
+          "warning_free_bytes": {
+            "description": "Free-space threshold in bytes; null restores the threshold derived from the preceding level.",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "watch_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Preview or reclaim eligible completed worker workspaces; dry run by default",
+      "name": "runtime_storage_cleanup",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
     {
       "description": "Inspect granted account quotas and usage attributed to this project",
       "name": "account_usage",

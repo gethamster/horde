@@ -330,7 +330,7 @@ fn local_from(
     let runtime = crate::projects::local_runtime(db)?;
     let concurrency = crate::project_runtime::host_limit(db)?;
     let active = crate::project_runtime::host_active(db)?;
-    let draining = management::draining(db)?;
+    let draining = management::draining(db)? || crate::storage::status(db)?["pressure"] == true;
     let capabilities = settings
         .executors
         .iter()

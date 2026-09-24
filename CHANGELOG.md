@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.6.10 - 2026-09-23
+
+- Request worker cleanup and stop admitting work when host disk space falls
+  below a configurable warning threshold. Suspend owned process groups at
+  critical pressure, preserve their attempts and remaining execution budgets,
+  and resume when enough space returns. An optional host cleanup command runs
+  independently of paused workers. Hosts advertise no available fleet capacity
+  while under pressure. Docker containers and in-flight remote requests are not
+  suspended by these controls.
+- Reclaim old, clean Horde worker checkouts from successful tasks while retaining
+  their branches and integrated results. Cleanup preserves dirty workspaces,
+  ignored caches, artifacts, and recovery data; removed checkouts can be restored
+  for later work. Administrators can inspect storage health, configure policy,
+  and preview cleanup through MCP or the CLI.
+
 ## 0.6.9 - 2026-09-23
 
 - Add a `network` setting for Codex executors. With `network = true` on a

@@ -19,6 +19,7 @@ pub mod provider_signup;
 pub mod provider_wallet;
 pub mod provisioning;
 pub mod runtime;
+pub mod storage;
 pub mod store;
 pub mod summary;
 pub mod template;

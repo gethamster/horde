@@ -63,6 +63,9 @@ pub fn draining(db: &Store) -> Result<bool> {
     Ok(value(db, "draining")?.as_deref() == Some("true"))
 }
 pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
+    if let Some(value) = crate::storage::dispatch(db, name, args)? {
+        return Ok(Some(value));
+    }
     if let Some(v) = crate::fleet::dispatch(db, name, args)? {
         return Ok(Some(v));
     }
@@ -144,7 +147,7 @@ pub fn status(db: &Store) -> Result<Value> {
         Err(error) => (Value::Null, Some(error.to_string())),
     };
     Ok(
-        json!({"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"concurrency":limit(db)?,"active":active,"draining":draining(db)?,"drained":draining(db)?&&active==0,"update_state":value(db,"update_state")?,"fleet_updates_paused":value(db,"fleet_updates_paused")?.as_deref()==Some("true"),"skill_pack":skill_pack,"skill_pack_error":skill_pack_error,"data_dir":db.root,"isolated":value(db,"worker_isolated")?.as_deref()==Some("true")}),
+        json!({"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"concurrency":limit(db)?,"active":active,"storage":crate::storage::status(db)?,"draining":draining(db)?,"drained":draining(db)?&&active==0,"update_state":value(db,"update_state")?,"fleet_updates_paused":value(db,"fleet_updates_paused")?.as_deref()==Some("true"),"skill_pack":skill_pack,"skill_pack_error":skill_pack_error,"data_dir":db.root,"isolated":value(db,"worker_isolated")?.as_deref()==Some("true")}),
     )
 }
 

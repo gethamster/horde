@@ -92,7 +92,8 @@ An earlier recorded experiment measured a version predating 0.4.0, so its raw re
 - Git metadata inspection/integration runs locally and synchronously. Custom repository Git hooks can extend these operations; fully cancellable hook/process reconciliation during integration is not covered by the process tests.
 - Remote repository transfer is limited to committed file/directory snapshots; symlinks, special files, large archives, and tracked `.env`/`*.key` files are rejected. Each remote child reserves one root worker slot. There is no network-mounted SQLite or hostile-runtime isolation.
 - App bundle redaction covers selected literal values. Source files and worktrees remain accessible to the same OS user. Process mode has lifecycle controls, not container CPU/memory enforcement.
-- Worktrees, attempts and artifacts are retained. There is no automatic retention/garbage-collection policy, distributed scheduler, dashboard, or multi-user authorization layer.
+- Disk-pressure regressions cover admission, cleanup requests, owned process suspension and cancellation, timeout/budget preservation, recovery headroom, cleanup-hook deduplication, and daemon recovery without retrying the attempt. Docker container suspension and remote request cancellation are not provided.
+- Automatic storage maintenance can remove old, clean worker checkouts from successful tasks while preserving branches and integrated results. Attempts, artifacts, dirty workspaces, and recovery data remain retained. There is no distributed scheduler, dashboard, or multi-user authorization layer.
 
 These boundaries are explicit so mock coverage and a working early release are not confused with a production rollout across every external service in the plan.
 

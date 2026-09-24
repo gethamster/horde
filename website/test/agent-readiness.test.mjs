@@ -208,6 +208,28 @@ describe("markdown content negotiation", () => {
 
 describe("function calling compatibility", () => {
   const catalog = () => readJson(".well-known/tools.json");
+  const supportedTypes = new Set(["string", "integer", "number", "boolean", "array", "object", "null"]);
+  const assertTypedProperty = (schema, name) => {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    assert.ok(
+      types.length > 0 && types.every((type) => supportedTypes.has(type)),
+      `${name} has type ${JSON.stringify(schema.type)}`,
+    );
+    assert.equal(new Set(types).size, types.length, `${name} repeats a type`);
+    if (types.includes("array")) assert.ok(schema.items, `${name} has untyped items`);
+  };
+
+  test("typed property checks accept unions without accepting malformed declarations", () => {
+    assertTypedProperty({ type: ["integer", "null"] }, "nullable integer");
+    assertTypedProperty({ type: ["array", "null"], items: { type: "string" } }, "nullable array");
+    for (const type of [undefined, [], "unknown", ["integer", "unknown"], ["null", "null"]]) {
+      assert.throws(() => assertTypedProperty({ type }, "invalid"), assert.AssertionError);
+    }
+    assert.throws(
+      () => assertTypedProperty({ type: ["array", "null"] }, "nullable array"),
+      /untyped items/,
+    );
+  });
 
   test("every tool has a unique id, a description and a closed typed schema", () => {
     const { tools, count } = catalog();
@@ -222,15 +244,23 @@ describe("function calling compatibility", () => {
       assert.equal(tool.parameters.type, "object");
       assert.equal(tool.parameters.additionalProperties, false, `${tool.name} has an open schema`);
       for (const [key, schema] of Object.entries(tool.parameters.properties)) {
-        assert.ok(
-          ["string", "integer", "number", "boolean", "array", "object"].includes(schema.type),
-          `${tool.name}.${key} has type ${schema.type}`,
-        );
-        if (schema.type === "array") assert.ok(schema.items, `${tool.name}.${key} has untyped items`);
+        assertTypedProperty(schema, `${tool.name}.${key}`);
       }
       for (const required of tool.parameters.required) {
         assert.ok(tool.parameters.properties[required], `${tool.name} requires unknown ${required}`);
       }
+    }
+  });
+
+  test("storage thresholds advertise null for restoring derived defaults", () => {
+    const storage = catalog().tools.find((tool) => tool.name === "runtime_storage_configure");
+    assert.ok(storage, "storage configuration is missing");
+    for (const name of ["warning_free_bytes", "resume_free_bytes"]) {
+      assert.deepEqual(
+        new Set(storage.parameters.properties[name].type),
+        new Set(["integer", "null"]),
+        `${name} must accept an integer or null`,
+      );
     }
   });
 

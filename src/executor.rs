@@ -32,6 +32,9 @@ pub fn clean_command(program: &str) -> Command {
     }
     c.env("GIT_TERMINAL_PROMPT", "0");
     c.env("CI", "true");
+    if let Some(control) = crate::storage::control::current() {
+        c.env("HORDE_STORAGE_PRESSURE_FILE", control.pressure_file());
+    }
     c
 }
 pub fn process_alive(pid: i32) -> bool {
@@ -127,9 +130,11 @@ pub(crate) async fn run_process(
             Ok(())
         });
     }
+    crate::storage::control::checkpoint().await;
     let mut child = cmd.spawn().context("launch executor")?;
     let pid = child.id().context("child pid")?;
     let _group = ProcessGroup(pid);
+    let _storage_process = crate::storage::control::register_process(pid)?;
     if let Some((db, attempt)) = record {
         if let Some(identity) = crate::environment::process_identity(pid) {
             db.conn.execute("INSERT OR REPLACE INTO app_process_groups SELECT id,?,? FROM app_environments WHERE attempt=? AND state!='removed'",rusqlite::params![pid,identity,attempt])?;
@@ -143,7 +148,7 @@ pub(crate) async fn run_process(
     let mut stdin = child.stdin.take().context("stdin")?;
     let stdout = child.stdout.take().context("stdout")?;
     let stderr = child.stderr.take().context("stderr")?;
-    let result=tokio::time::timeout(std::time::Duration::from_secs(timeout),async{
+    let result=crate::storage::control::timeout(std::time::Duration::from_secs(timeout),async{
         let write=async {if let Some(input)=input {stdin.write_all(input.as_bytes()).await?;}drop(stdin);Ok::<_,anyhow::Error>(())};
         let read=|stream:Box<dyn tokio::io::AsyncRead+Unpin>|async move {let mut bytes=vec![];stream.take(8*1024*1024+1).read_to_end(&mut bytes).await?;if bytes.len()>8*1024*1024{bail!("executor output exceeds 8 MiB");}Ok::<_,anyhow::Error>(bytes)};
         let (_,out,err,status)=tokio::try_join!(write,read(Box::new(stdout)),read(Box::new(stderr)),async{Ok::<_,anyhow::Error>(child.wait().await?)})?;
@@ -173,7 +178,7 @@ impl Invocation<'_> {
     pub fn prompt(&self) -> Result<String> {
         let skills = crate::skills::prompt(self.db, self.task, self.attempt, self.spec)?;
         Ok(format!(
-            "You are worker {} assigned step {} in task {}.\nInstructions: {}\nCompletion: once this assigned step meets its acceptance criteria, commit any code changes and return {{\"result\": string, \"accepted\": boolean, \"artifacts\": array of paths}} using the completion mechanism below. Do not repeat completed tool calls to signal completion. If blocked, explain why with accepted=false.\nAcceptance criteria: {}\nExpected artifacts: {}\nRequired named outputs (JSON types): {}\nWrite scope: {}\nContext with provenance: {}\n{skills}\nWhen delegating, retain inherited context and cite source IDs. Inspect child results with list_children and import changes with integrate_child plus a real parent verification command. Do not mark the parent complete until children are integrated and checked. Questions go to your immediate caller; answer child questions within your authority or escalate them unchanged. Read coordination messages BEFORE editing and BEFORE submitting. Use the coordination MCP tools for messages and claims. Messaging never changes ownership; acquire or transfer claims explicitly. Stay inside this workspace and your claimed paths. Commit code changes if you made any. The accepted field means THIS ASSIGNED STEP is complete. A planning-only step is accepted when its plan is complete, even when baseline repository tests fail. Return a JSON object with result (string), accepted (boolean), and artifacts (array of paths). For implementation or verification steps, do not claim acceptance if their required checks fail.\n",
+            "You are worker {} assigned step {} in task {}.\nInstructions: {}\nCompletion: once this assigned step meets its acceptance criteria, commit any code changes and return {{\"result\": string, \"accepted\": boolean, \"artifacts\": array of paths}} using the completion mechanism below. Do not repeat completed tool calls to signal completion. If blocked, explain why with accepted=false.\nAcceptance criteria: {}\nExpected artifacts: {}\nRequired named outputs (JSON types): {}\nWrite scope: {}\nContext with provenance: {}\n{skills}\nWhen delegating, retain inherited context and cite source IDs. Inspect child results with list_children and import changes with integrate_child plus a real parent verification command. Do not mark the parent complete until children are integrated and checked. Questions go to your immediate caller; answer child questions within your authority or escalate them unchanged. Read coordination messages BEFORE editing and BEFORE submitting. If Horde requests storage cleanup, remove only caches you own and can safely regenerate, using the relevant tool cleanup command; report what was reclaimed or why cleanup is unsafe. HORDE_STORAGE_PRESSURE_FILE describes host disk health. Do not delete arbitrary shared caches. Critical pressure may suspend your process until the host recovers. Use the coordination MCP tools for messages and claims. Messaging never changes ownership; acquire or transfer claims explicitly. Stay inside this workspace and your claimed paths. Commit code changes if you made any. The accepted field means THIS ASSIGNED STEP is complete. A planning-only step is accepted when its plan is complete, even when baseline repository tests fail. Return a JSON object with result (string), accepted (boolean), and artifacts (array of paths). For implementation or verification steps, do not claim acceptance if their required checks fail.\n",
             self.worker,
             self.step,
             self.task,
@@ -1148,6 +1153,7 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                 "native provider request exceeds configured context byte ceiling after conservative pruning"
             );
         }
+        crate::storage::control::checkpoint().await;
         let response = client
             .post(format!(
                 "{}/chat/completions",
@@ -1234,6 +1240,7 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
             let mut proposed_steps = false;
             let mut step_result = None;
             for call in calls {
+                crate::storage::control::checkpoint().await;
                 let name = call["function"]["name"].as_str().context("tool name")?;
                 let tool_started = Instant::now();
                 let args: Result<Value> = (|| {

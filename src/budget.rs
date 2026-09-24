@@ -1,5 +1,5 @@
 //! Daemon-owned progress budgets. Events retain timing without changing the database layout.
-use crate::{config::Settings, store::Store, template::Step};
+use crate::{config::Settings, storage::control as pressure, store::Store, template::Step};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
@@ -72,7 +72,8 @@ fn record(db: &Store, a: &Value, worker: &str, reason: &str, fingerprint: &str) 
         .with(|slot| slot.borrow().clone())
         .or_else(|| COMMAND_CONTROL.try_with(Clone::clone).ok());
     if let Some(control) = control {
-        let deadline = std::time::Instant::now()
+        let deadline = active_now(control.pressure.as_ref())
+            .into_std()
             .checked_add(Duration::from_secs(
                 timing["budget_s"].as_u64().context("budget")?,
             ))
@@ -83,9 +84,11 @@ fn record(db: &Store, a: &Value, worker: &str, reason: &str, fingerprint: &str) 
 }
 
 pub fn status(db: &Store, attempt: &str) -> Result<Value> {
-    let events = db.rows("SELECT kind,data FROM events WHERE kind IN ('step.budget_started','step.progress','step.budget_finished') AND json_extract(data,'$.attempt')=? ORDER BY seq", &[&attempt])?;
+    let events = db.rows("SELECT kind,data FROM events WHERE kind IN ('step.budget_started','step.progress','step.budget_finished','storage.paused','storage.resumed') AND json_extract(data,'$.attempt')=? ORDER BY seq", &[&attempt])?;
     let mut started = None;
     let mut last = 0;
+    let mut pauses = Vec::new();
+    let mut paused_at = None;
     for event in events {
         let data: Value = serde_json::from_str(event["data"].as_str().context("event")?)?;
         match event["kind"].as_str() {
@@ -95,6 +98,14 @@ pub fn status(db: &Store, attempt: &str) -> Result<Value> {
             }
             Some("step.progress") => last = last.max(data["at_ms"].as_u64().unwrap_or(0)),
             Some("step.budget_finished") => return Ok(data["timing"].clone()),
+            Some("storage.paused") => {
+                paused_at.get_or_insert(data["at_ms"].as_u64().unwrap_or(0));
+            }
+            Some("storage.resumed") => {
+                if let Some(at) = paused_at.take() {
+                    pauses.push((at, data["at_ms"].as_u64().unwrap_or(at)));
+                }
+            }
             _ => {}
         }
     }
@@ -109,13 +120,23 @@ pub fn status(db: &Store, attempt: &str) -> Result<Value> {
         .map(|s| s.saturating_mul(1000))
         .unwrap_or_else(millis);
     let elapsed = end.saturating_sub(started["at_ms"].as_u64().unwrap_or(end)) as f64 / 1000.0;
-    if started["budget_exempt"] == true {
-        return Ok(exempt_timing(elapsed));
+    if let Some(at) = paused_at {
+        pauses.push((at, end));
     }
-    let idle = end.saturating_sub(last) as f64 / 1000.0;
+    let paused_since = |since| -> u64 {
+        pauses
+            .iter()
+            .map(|&(a, b)| b.min(end).saturating_sub(a.max(since)))
+            .sum()
+    };
+    let paused = paused_since(started["at_ms"].as_u64().unwrap_or(end)) as f64 / 1000.0;
+    if started["budget_exempt"] == true {
+        return Ok(exempt_timing(elapsed, paused));
+    }
+    let idle = end.saturating_sub(last).saturating_sub(paused_since(last)) as f64 / 1000.0;
     let budget = started["budget_s"].as_u64().unwrap_or(0);
     Ok(
-        json!({"elapsed_s":elapsed,"idle_s":idle,"budget_s":budget,"remaining_s":(budget as f64-idle).max(0.0)}),
+        json!({"elapsed_s":elapsed,"paused_s":paused,"idle_s":idle,"budget_s":budget,"remaining_s":(budget as f64-idle).max(0.0)}),
     )
 }
 
@@ -139,14 +160,17 @@ where
     F: std::future::Future<Output = Result<Value>>,
 {
     let start = Instant::now();
+    let pressure = pressure::current();
+    let paused_start = paused_duration(pressure.as_ref());
     let Some(budget_s) = budget_s else {
         db.event(task, "step.budget_started", json!({"step":step,"attempt":attempt,"worker":worker,"budget_exempt":true,"budget_s":null,"elapsed_s":0,"remaining_s":null,"at_ms":millis()}))?;
         let control = CommandControl {
             deadline: std::sync::Arc::new(std::sync::Mutex::new(None)),
             cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pressure: pressure.clone(),
         };
         let result = COMMAND_CONTROL.scope(control, work).await;
-        db.event(task, "step.budget_finished", json!({"step":step,"attempt":attempt,"worker":worker,"timing":exempt_timing(start.elapsed().as_secs_f64())}))?;
+        db.event(task, "step.budget_finished", json!({"step":step,"attempt":attempt,"worker":worker,"timing":exempt_timing(start.elapsed().as_secs_f64(), paused_duration(pressure.as_ref()).saturating_sub(paused_start).as_secs_f64())}))?;
         return result;
     };
     anyhow::ensure!(budget_s > 0, "step_budget_seconds must be positive");
@@ -156,7 +180,9 @@ where
         workspace_fingerprint(db, worker).await.ok().flatten(),
     ));
     let start = Instant::now();
-    let initial_deadline = start
+    let active_start = active_now(pressure.as_ref());
+    let paused_start = paused_duration(pressure.as_ref());
+    let initial_deadline = active_start
         .checked_add(Duration::from_secs(budget_s))
         .context("step budget is too large")?;
     let started_ms = millis();
@@ -164,23 +190,33 @@ where
     let root = db.root.clone();
     let watched_worker = worker.to_owned();
     let watched = observed.clone();
-    let _watcher = Watcher(tokio::task::spawn_local(async move {
+    let observer = async move {
         let Ok(db) = Store::open(&root) else {
             return;
         };
         loop {
+            pressure::checkpoint().await;
             let _ = observe(&db, &watched_worker, &watched).await;
             tokio::time::sleep(Duration::from_millis(OBSERVER_INTERVAL_MS)).await;
+        }
+    };
+    let watched_pressure = pressure.clone();
+    let _watcher = Watcher(tokio::task::spawn_local(async move {
+        if let Some(pressure) = watched_pressure {
+            pressure::scope(pressure, observer).await;
+        } else {
+            observer.await;
         }
     }));
     let control = CommandControl {
         deadline: std::sync::Arc::new(std::sync::Mutex::new(Some(initial_deadline.into_std()))),
         cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        pressure: pressure.clone(),
     };
     let deadline_control = control.deadline.clone();
     let work = COMMAND_CONTROL.scope(control, work);
     tokio::pin!(work);
-    let mut last_progress = start;
+    let mut last_progress = active_start;
     let mut last_ms = started_ms;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let budget = Duration::from_secs(budget_s);
@@ -193,12 +229,15 @@ where
             .checked_add(budget)
             .context("step budget is too large")?;
         *deadline_control.lock().unwrap() = Some(deadline.into_std());
+        let paused = pressure.as_ref().is_some_and(|p| p.is_paused());
+        let wake =
+            Instant::now() + deadline.saturating_duration_since(active_now(pressure.as_ref()));
         tokio::select! {
             biased;
-            _ = tokio::time::sleep_until(deadline), if sample.is_none() => {
+            _ = tokio::time::sleep_until(wake), if sample.is_none() && !paused => {
                 // A mutation may have committed just before the timer became runnable.
-                renew(db, attempt, &mut last_ms, &mut last_progress)?;
-                if last_progress.elapsed() < budget { continue; }
+                renew(db, attempt, &mut last_ms, &mut last_progress, pressure.as_ref())?;
+                if pressure.as_ref().is_some_and(|p| p.is_paused()) || active_now(pressure.as_ref()).saturating_duration_since(last_progress) < budget { continue; }
                 // The poll samples the workspace on its own schedule, which a loaded host
                 // stretches without bound. Exhaustion is a claim that nothing changed for a
                 // whole budget, so it is ruled on a sample taken now, not on the last one the
@@ -207,9 +246,9 @@ where
             }
             _ = async { match sample.as_mut() { Some(s) => s.await, None => std::future::pending().await } }, if sample.is_some() => {
                 sample = None;
-                renew(db, attempt, &mut last_ms, &mut last_progress)?;
-                if last_progress.elapsed() < budget { continue; }
-                let timing = timing(start, last_progress, budget_s);
+                renew(db, attempt, &mut last_ms, &mut last_progress, pressure.as_ref())?;
+                if pressure.as_ref().is_some_and(|p| p.is_paused()) || active_now(pressure.as_ref()).saturating_duration_since(last_progress) < budget { continue; }
+                let timing = timing(start, last_progress, budget_s, pressure.as_ref(), paused_start);
                 let value = json!({"error":"step budget exhausted","elapsed_s":timing["elapsed_s"],"idle_s":timing["idle_s"],"budget_s":budget_s});
                 db.event(task, "step.budget_exhausted", json!({"step":step,"attempt":attempt,"worker":worker,"error":"step budget exhausted","elapsed_s":timing["elapsed_s"],"idle_s":timing["idle_s"],"budget_s":budget_s,"remaining_s":0}))?;
                 break Err(Exhausted(value).into());
@@ -218,39 +257,67 @@ where
                 // Idleness ends when the work does; a sample that returns later than
                 // that reports on the workspace the work left behind, not on time it
                 // spent after finishing.
-                let finished = Instant::now();
-                renew(db, attempt, &mut last_ms, &mut last_progress)?;
+                let finished = active_now(pressure.as_ref());
+                renew(db, attempt, &mut last_ms, &mut last_progress, pressure.as_ref())?;
                 if finished.saturating_duration_since(last_progress) >= budget {
                     let _ = match sample.take() {
                         Some(sample) => sample.await,
                         None => observe(db, worker, &observed).await,
                     };
-                    renew(db, attempt, &mut last_ms, &mut last_progress)?;
+                    renew(db, attempt, &mut last_ms, &mut last_progress, pressure.as_ref())?;
                 }
                 if finished.saturating_duration_since(last_progress) >= budget {
-                    let timing = timing(start, last_progress, budget_s);
+                    let timing = timing(start, last_progress, budget_s, pressure.as_ref(), paused_start);
                     let value = json!({"error":"step budget exhausted","elapsed_s":timing["elapsed_s"],"idle_s":timing["idle_s"],"budget_s":budget_s});
                     db.event(task, "step.budget_exhausted", json!({"step":step,"attempt":attempt,"worker":worker,"error":"step budget exhausted","elapsed_s":timing["elapsed_s"],"idle_s":timing["idle_s"],"budget_s":budget_s,"remaining_s":0}))?;
                     break Err(Exhausted(value).into());
                 }
                 break result;
             },
-            _ = tick.tick() => { renew(db, attempt, &mut last_ms, &mut last_progress)?; }
+            _ = tick.tick() => { renew(db, attempt, &mut last_ms, &mut last_progress, pressure.as_ref())?; }
         }
     };
     drop(sample);
     // Dropping the work future stops owned async command process groups.
-    db.event(task,"step.budget_finished",json!({"step":step,"attempt":attempt,"worker":worker,"timing":timing(start,last_progress,budget_s)}))?;
+    db.event(task,"step.budget_finished",json!({"step":step,"attempt":attempt,"worker":worker,"timing":timing(start,last_progress,budget_s,pressure.as_ref(),paused_start)}))?;
     result
 }
-fn exempt_timing(elapsed: f64) -> Value {
-    json!({"elapsed_s":elapsed,"idle_s":null,"budget_s":null,"remaining_s":null,"budget_exempt":true})
+fn exempt_timing(elapsed: f64, paused: f64) -> Value {
+    json!({"elapsed_s":elapsed,"paused_s":paused,"idle_s":null,"budget_s":null,"remaining_s":null,"budget_exempt":true})
 }
-fn timing(start: Instant, progress: Instant, budget: u64) -> Value {
-    let idle = progress.elapsed().as_secs_f64();
-    json!({"elapsed_s":start.elapsed().as_secs_f64(),"idle_s":idle,"budget_s":budget,"remaining_s":(budget as f64-idle).max(0.0)})
+fn paused_duration(pressure: Option<&std::sync::Arc<pressure::Control>>) -> Duration {
+    pressure.map_or(Duration::ZERO, |p| p.paused_duration())
 }
-fn renew(db: &Store, attempt: &str, last_ms: &mut u64, progress: &mut Instant) -> Result<bool> {
+
+// Async supervision and blocking commands share this clock, so a suspended
+// command cannot race the supervisor using an unadjusted wall deadline.
+fn active_now(pressure: Option<&std::sync::Arc<pressure::Control>>) -> Instant {
+    let paused = paused_duration(pressure);
+    Instant::now() - paused
+}
+
+fn timing(
+    start: Instant,
+    progress: Instant,
+    budget: u64,
+    pressure: Option<&std::sync::Arc<pressure::Control>>,
+    paused_start: Duration,
+) -> Value {
+    let idle = active_now(pressure)
+        .saturating_duration_since(progress)
+        .as_secs_f64();
+    let paused = paused_duration(pressure)
+        .saturating_sub(paused_start)
+        .as_secs_f64();
+    json!({"elapsed_s":start.elapsed().as_secs_f64(),"paused_s":paused,"idle_s":idle,"budget_s":budget,"remaining_s":(budget as f64-idle).max(0.0)})
+}
+fn renew(
+    db: &Store,
+    attempt: &str,
+    last_ms: &mut u64,
+    progress: &mut Instant,
+    pressure: Option<&std::sync::Arc<pressure::Control>>,
+) -> Result<bool> {
     let latest = db.rows("SELECT data FROM events WHERE kind='step.progress' AND json_extract(data,'$.attempt')=? ORDER BY seq DESC LIMIT 1", &[&attempt])?;
     let at = latest
         .first()
@@ -262,9 +329,13 @@ fn renew(db: &Store, attempt: &str, last_ms: &mut u64, progress: &mut Instant) -
         return Ok(false);
     }
     *last_ms = at;
-    *progress = Instant::now()
-        .checked_sub(Duration::from_millis(millis().saturating_sub(at)))
-        .unwrap_or_else(Instant::now);
+    // Persisted pause intervals make delayed progress observations consume only
+    // active time, including when the report arrived during suspension.
+    let idle = status(db, attempt)?["idle_s"].as_f64().unwrap_or(0.0);
+    let now = active_now(pressure);
+    *progress = now
+        .checked_sub(Duration::from_secs_f64(idle))
+        .unwrap_or(now);
     Ok(true)
 }
 
@@ -346,7 +417,7 @@ async fn workspace_fingerprint(db: &Store, worker: &str) -> Result<Option<String
                     );
                 } else if metadata.is_file() {
                     let mut file = tokio::fs::File::open(path).await?;
-                    let mut bytes = [0; 65536];
+                    let mut bytes = vec![0; 65536];
                     loop {
                         let n = file.read(&mut bytes).await?;
                         if n == 0 {
@@ -381,6 +452,7 @@ pub fn annotate(db: &Store, mut attempts: Vec<Value>) -> Result<Vec<Value>> {
 struct CommandControl {
     deadline: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pressure: Option<std::sync::Arc<pressure::Control>>,
 }
 tokio::task_local! { static COMMAND_CONTROL: CommandControl; }
 thread_local! { static BLOCKING_CONTROL: std::cell::RefCell<Option<CommandControl>> = const { std::cell::RefCell::new(None) }; }
@@ -402,11 +474,13 @@ pub async fn blocking<T: Send + 'static>(
         .try_with(|c| CommandControl {
             deadline: c.deadline.clone(),
             cancelled,
+            pressure: c.pressure.clone(),
         })
         .ok();
+    let pressure = pressure::current();
     tokio::task::spawn_blocking(move || {
         BLOCKING_CONTROL.with(|slot| *slot.borrow_mut() = control);
-        let result = work();
+        let result = pressure::blocking_scope(pressure, work);
         BLOCKING_CONTROL.with(|slot| *slot.borrow_mut() = None);
         result
     })
@@ -418,16 +492,21 @@ pub fn command_output(command: &mut std::process::Command) -> Result<std::proces
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::sync::atomic::Ordering;
-    let Some(control) = BLOCKING_CONTROL.with(|slot| slot.borrow().clone()) else {
+    let inherited = BLOCKING_CONTROL.with(|slot| slot.borrow().clone());
+    if inherited.is_none() && pressure::current().is_none() {
         return Ok(command.output()?);
-    };
+    }
+    let control = inherited.unwrap_or_else(|| CommandControl {
+        deadline: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        pressure: pressure::current(),
+    });
     let expired = || {
         control.cancelled.load(Ordering::SeqCst)
-            || control
-                .deadline
-                .lock()
-                .unwrap()
-                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+            || (!control.pressure.as_ref().is_some_and(|p| p.is_paused())
+                && control.deadline.lock().unwrap().is_some_and(|deadline| {
+                    active_now(control.pressure.as_ref()).into_std() >= deadline
+                }))
     };
     anyhow::ensure!(!expired(), "step budget exhausted");
     command
@@ -442,6 +521,15 @@ pub fn command_output(command: &mut std::process::Command) -> Result<std::proces
             Ok(())
         });
     }
+    // A newly launched command can write before SIGSTOP registration. Wait before
+    // spawning, retaining cancellation so dropping a held attempt cannot launch it.
+    loop {
+        anyhow::ensure!(!expired(), "step budget exhausted");
+        if !control.pressure.as_ref().is_some_and(|p| p.is_paused()) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let mut child = command.spawn()?;
     struct Group(u32);
     impl Drop for Group {
@@ -452,6 +540,7 @@ pub fn command_output(command: &mut std::process::Command) -> Result<std::proces
         }
     }
     let _group = Group(child.id());
+    let _pressure_guard = pressure::register_process(child.id())?;
     let stdout = child.stdout.take().context("stdout")?;
     let stderr = child.stderr.take().context("stderr")?;
     std::thread::scope(|scope| {
@@ -493,3 +582,7 @@ pub fn command_output(command: &mut std::process::Command) -> Result<std::proces
         })
     })
 }
+
+#[cfg(test)]
+#[path = "budget/tests.rs"]
+mod pressure_tests;

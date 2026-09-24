@@ -46,6 +46,23 @@ A step becomes eligible after its dependencies reach terminal states and its con
 
 The daemon applies its user-level concurrency ceiling across tasks; a project's concurrency setting can further restrict its own task. Claims prevent overlapping coding steps from dispatching. Verification and delivery commands run exclusively against the combined workspace. Git integration is serialized with a per-task file lock and a durable queue record. There is no distributed lease service.
 
+Host-owned storage policy holds new invocations when the data, workspace, or
+repository filesystem is below its warning threshold. At critical pressure, the
+daemon suspends live owned process groups and gates subsequent tool calls. A
+failed space check also holds work. Separate recovery headroom prevents oscillation;
+command and progress budgets exclude suspended time. Attempts and reservations stay
+active, and the existing cancellation path remains available. Durable cleanup
+requests are advisory; authoritative pressure state belongs to the host. An optional
+operator cleanup command runs once per incident outside worker holds. Saved pause
+receipts require reconciliation after a crash and never authorize automatic signals.
+Docker containers and in-flight remote HTTP requests are outside local process
+suspension. Periodic
+maintenance removes only eligible old, clean worker checkouts from successful
+tasks, retaining their branches and integrated results. Durable removal intent
+allows a later invocation to recreate the checkout; unexpected missing
+workspaces still require reconciliation. Recovery records and artifacts are never
+deleted by this policy. See [disk space and retention](runtime-management.md#disk-space-and-workspace-retention).
+
 A hard restart marks running attempts uncertain and blocks their tasks. It never assumes an interrupted process, model call, merge, or external write did nothing. Reconciliation checks recorded PIDs, preserves claims, and requires inspection of local/external effects. A subsequent delivery attempt queries PR/merge/deployment state before retrying. Graceful SIGINT/SIGTERM and cancellation stop command process groups.
 
 Automatic delivery has a separate operator-owned policy and immutable preflight, authorization, and merge-intent records. It requires a held-out qualification artifact before Jev can veto an otherwise eligible merge. GitHub checks and approvals are bound to the exact PR head; strict branch protection and the base commit are checked at the merge boundary. After a squash merge, the recorded base must be its first parent. A unique push-triggered deployment run, exact version, and app-specific smoke result complete the delivery evidence. Interrupted external effects are observed before any retry.

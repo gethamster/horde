@@ -61,6 +61,9 @@ impl Daemon {
         daemon_client::request(&self.root, method, args).unwrap()
     }
     fn submit(&self, slug: &str) -> (String, String) {
+        self.submit_with_delay(slug, 1)
+    }
+    fn submit_with_delay(&self, slug: &str, seconds: u64) -> (String, String) {
         let project = self.call("project_create", json!({"slug":slug,"concurrency":1}))["id"]
             .as_str()
             .unwrap()
@@ -84,7 +87,7 @@ kind = "simulated"
 id = "write"
 kind = "command"
 needs = ["plan"]
-command = ["/bin/sh", "-c", "sleep 1; printf '{slug}' > result.txt; pwd"]
+command = ["/bin/sh", "-c", "sleep {seconds}; printf '{slug}' > result.txt; pwd"]
 "#
             ),
         )
@@ -101,6 +104,62 @@ command = ["/bin/sh", "-c", "sleep 1; printf '{slug}' > result.txt; pwd"]
         self.call("project_repo_add", json!({"project":project,"path":repo}));
         let task=self.call("submit_task",json!({"project":project,"objective":format!("build {slug}"),"repo":repo,"template":"project-test"}))["id"].as_str().unwrap().to_owned();
         (project, task)
+    }
+}
+
+#[test]
+fn disk_pressure_queues_work_and_recovers_without_a_restart() {
+    let daemon = Daemon::new();
+    daemon.call(
+        "runtime_storage_configure",
+        json!({"min_free_bytes":1024_u64.pow(5)}),
+    );
+    let (_project, task) = daemon.submit("storage-pressure");
+    let started = Instant::now();
+    loop {
+        let db = Store::open(&daemon.root).unwrap();
+        let reasons = db
+            .rows("SELECT reason FROM project_queue WHERE task=?", &[&task])
+            .unwrap();
+        if reasons
+            .first()
+            .is_some_and(|row| row["reason"].as_str().unwrap_or("").contains("disk space"))
+        {
+            assert!(
+                db.rows(
+                    "SELECT a.id FROM attempts a JOIN steps s ON s.id=a.step WHERE s.task=?",
+                    &[&task]
+                )
+                .unwrap()
+                .is_empty()
+            );
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "task did not queue for disk space"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(
+        daemon.call("runtime_storage_status", json!({}))["pressure"],
+        true
+    );
+    daemon.call(
+        "runtime_storage_configure",
+        json!({"min_free_bytes":1048576}),
+    );
+    let started = Instant::now();
+    loop {
+        let db = Store::open(&daemon.root).unwrap();
+        if db.task(&task).unwrap()["status"] == "succeeded" {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "task did not resume"
+        );
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 
@@ -177,4 +236,103 @@ fn two_projects_share_native_daemon_and_keep_results_and_workspaces_separate() {
             && b["isolation"] == "native"
             && b["account"].is_null()));
     }
+}
+
+#[test]
+fn active_disk_pressure_requests_cleanup_and_resumes_the_same_attempt() {
+    let daemon = Daemon::new();
+    let (_, task) = daemon.submit_with_delay("active-storage", 4);
+    let db = Store::open(&daemon.root).unwrap();
+    let started = Instant::now();
+    let attempt = loop {
+        let rows = db.rows("SELECT a.* FROM attempts a JOIN steps s ON s.id=a.step WHERE s.task=? AND s.name='write' AND a.pid IS NOT NULL AND a.state='running'", &[&task]).unwrap();
+        if let Some(row) = rows.first() {
+            break row.clone();
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "command did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    daemon.call("runtime_storage_configure",json!({"min_free_bytes":1024_u64.pow(5),"cleanup_command":["/bin/sh","-c","echo cleaned >> cleanup-hook-runs"]}));
+    let started = Instant::now();
+    loop {
+        let held = db
+            .rows(
+                "SELECT seq FROM events WHERE task=? AND kind='storage.paused'",
+                &[&task],
+            )
+            .unwrap();
+        if !held.is_empty() {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "attempt did not pause"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(1300));
+    let id = attempt["id"].as_str().unwrap();
+    let active = db
+        .rows("SELECT * FROM attempts WHERE id=?", &[&id])
+        .unwrap();
+    assert_eq!(active[0]["state"], "running");
+    assert_eq!(active[0]["pid"], attempt["pid"]);
+    assert!(horde::project_runtime::host_active(&db).unwrap() >= 1);
+    let requests = db
+        .rows(
+            "SELECT id FROM messages WHERE task=? AND id LIKE 'storage-cleanup:%'",
+            &[&task],
+        )
+        .unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(daemon.root.join("cleanup-hook-runs")).unwrap(),
+        "cleaned\n"
+    );
+    assert_eq!(
+        daemon.call("runtime_storage_status", json!({}))["paused"],
+        true
+    );
+    daemon.call(
+        "runtime_storage_configure",
+        json!({"min_free_bytes":1048576}),
+    );
+    let started = Instant::now();
+    loop {
+        if db.task(&task).unwrap()["status"] == "succeeded" {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "held attempt did not resume"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(
+        db.rows(
+            "SELECT id FROM attempts WHERE step=?",
+            &[&attempt["step"].as_str().unwrap()]
+        )
+        .unwrap()
+        .len(),
+        1
+    );
+    assert_eq!(
+        db.rows(
+            "SELECT seq FROM events WHERE task=? AND kind='storage.resumed'",
+            &[&task]
+        )
+        .unwrap()
+        .len(),
+        1
+    );
+    assert!(
+        daemon.call("runtime_storage_status", json!({}))["process_holds"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }

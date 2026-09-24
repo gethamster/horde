@@ -280,6 +280,7 @@ pub fn allocate(db: &Store, oid: &str, wid: &str) -> Result<PathBuf> {
     }
     if let Some(path) = worker["workspace"].as_str() {
         let path = PathBuf::from(path);
+        crate::storage::restore(db, oid, wid, &path)?;
         if run(&path, &["branch", "--show-current"])?
             != worker["branch"].as_str().context("registered branch")?
         {

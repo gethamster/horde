@@ -109,6 +109,10 @@ pub fn ready(db: &Store, oid: &str) -> Result<Vec<Value>> {
 fn begin(db: &Store, step: &Value) -> Result<(String, String, String)> {
     let tid = step["id"].as_str().context("step")?;
     let oid = step["task"].as_str().context("task")?;
+    anyhow::ensure!(
+        crate::storage::admission(db, oid)?,
+        "disk admission unavailable"
+    );
     let previous = db.rows(
         "SELECT id FROM workers WHERE step=? ORDER BY updated DESC LIMIT 1",
         &[&tid],
@@ -177,14 +181,20 @@ async fn run_step(
     let role = row["dispatch_role"].as_str().unwrap_or(&step.role);
     let seconds =
         (!step.step_budget_exempt).then(|| crate::budget::seconds(&settings, &step, role));
-    let result = crate::budget::supervise(
+    let result = crate::storage::pressure::supervise(
         &db,
         oid,
-        tid,
         &attempt,
         &wid,
-        seconds,
-        execute_step(&db, &row, &attempt, &wid, &token),
+        crate::budget::supervise(
+            &db,
+            oid,
+            tid,
+            &attempt,
+            &wid,
+            seconds,
+            execute_step(&db, &row, &attempt, &wid, &token),
+        ),
     )
     .await;
     db.finish(tid, &attempt, &wid, result)?;
@@ -612,10 +622,6 @@ struct Scheduler {
 }
 impl Scheduler {
     async fn tick(&mut self, db: &Store, remote_ready: bool) -> Result<()> {
-        // Advisory failures are isolated from authoritative scheduling.
-        let _ = self.decisions.tick(db).await;
-        let _ = self.reviews.scan(db);
-        let _ = self.reviews.tick(db).await;
         crate::project_runtime::reconcile_releases(db).await?;
         crate::accounts::cleanup_ungranted(db)?;
         let finished: Vec<_> = self
@@ -672,10 +678,24 @@ impl Scheduler {
         if crate::management::draining(db)? {
             return Ok(());
         }
+        // Stop new advisory calls too, while still reaping and cancelling attempts.
+        if crate::storage::status(db)?["pressure"] != true {
+            let _ = self.decisions.tick(db).await;
+            let _ = self.reviews.scan(db);
+            let _ = self.reviews.tick(db).await;
+        }
         notify_completed_children(db)?;
         wake_notified(db)?;
         for o in crate::project_runtime::ordered_tasks(db)? {
             let oid = o["id"].as_str().context("task")?;
+            // Finalize existing work even when storage cannot admit another step.
+            settle(db, oid)?;
+            if db.task(oid)?["status"] != "running" {
+                continue;
+            }
+            if !crate::storage::admission(db, oid)? {
+                continue;
+            }
             match crate::federation::route_queued(db, oid) {
                 Ok(false) => (),
                 Ok(true) => continue,
@@ -718,13 +738,15 @@ impl Scheduler {
             } else {
                 settings
             };
-            settle(db, oid)?;
             let mut active = self
                 .running
                 .values()
                 .filter(|(o, _, _, _)| o == oid)
                 .count();
             for mut row in ready(db, oid)? {
+                if !crate::storage::admission(db, oid)? {
+                    break;
+                }
                 if !crate::project_runtime::eligible(db, oid)? {
                     break;
                 }
@@ -820,7 +842,16 @@ impl Scheduler {
                 if !crate::project_runtime::acquire_remote(db, &mut row).await? {
                     continue;
                 }
-                let (attempt, wid, token) = begin(db, &row)?;
+                let (attempt, wid, token) = match begin(db, &row) {
+                    Ok(started) => started,
+                    Err(error) => {
+                        crate::project_runtime::release_remote(db, &tid).await?;
+                        if !crate::storage::admission(db, oid)? {
+                            break;
+                        }
+                        return Err(error);
+                    }
+                };
                 let decision_job = (step.kind == "agent"
                     && settings.decision.mode == crate::config::DecisionMode::Shadow)
                     .then(|| {
@@ -926,6 +957,24 @@ pub async fn daemon(root: &Path) -> Result<()> {
         loop {
             if let Err(error) = crate::provider_signup::topup::tick(&funding_root).await {
                 eprintln!("Provider funding maintenance: {error:#}");
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
+    let storage_pressure =
+        tokio::task::spawn_local(crate::storage::pressure::monitor(root.to_owned()));
+    let storage_root = root.to_owned();
+    let storage_maintenance = tokio::task::spawn_local(async move {
+        loop {
+            let root = storage_root.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                Store::open(&root).and_then(|db| crate::storage::maintain(&db))
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => (),
+                Ok(Err(error)) => eprintln!("Storage maintenance: {error:#}"),
+                Err(error) => eprintln!("Storage maintenance task: {error}"),
             }
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
@@ -1103,6 +1152,10 @@ pub async fn daemon(root: &Path) -> Result<()> {
     crate::provider_wallet::shutdown(root);
     maintenance.abort();
     let _ = maintenance.await;
+    storage_pressure.abort();
+    let _ = storage_pressure.await;
+    storage_maintenance.abort();
+    let _ = storage_maintenance.await;
     scheduler.decisions.shutdown(&db).await;
     scheduler.reviews.shutdown(&db).await;
     for (tid, (_, attempt, wid, h)) in scheduler.running {
@@ -1244,6 +1297,68 @@ mod scheduling_limits {
             .submit("admission", repo, &Settings::default(), &plan)
             .unwrap();
         db.steps(&task).unwrap().remove(0)
+    }
+
+    #[test]
+    fn disk_pressure_holds_launch_without_consuming_capacity() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Store::open_with_config_dir(temp.path(), &temp.path().join("config")).unwrap();
+        let row = queued_step(&db, temp.path());
+        crate::storage::dispatch(
+            &db,
+            "runtime_storage_configure",
+            &json!({"min_free_bytes":1024_u64.pow(5)}),
+        )
+        .unwrap();
+        assert!(begin(&db, &row).unwrap_err().to_string().contains("disk"));
+        assert_eq!(crate::project_runtime::host_active(&db).unwrap(), 0);
+        assert!(
+            db.rows(
+                "SELECT * FROM workers WHERE step=?",
+                &[&row["id"].as_str().unwrap()]
+            )
+            .unwrap()
+            .is_empty()
+        );
+        crate::storage::dispatch(
+            &db,
+            "runtime_storage_configure",
+            &json!({"min_free_bytes":1048576}),
+        )
+        .unwrap();
+        begin(&db, &row).unwrap();
+        assert_eq!(crate::project_runtime::host_active(&db).unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn disk_pressure_still_settles_completed_tasks() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let temp = tempfile::tempdir().unwrap();
+                let db =
+                    Store::open_with_config_dir(temp.path(), &temp.path().join("config")).unwrap();
+                let row = queued_step(&db, temp.path());
+                let task = row["task"].as_str().unwrap();
+                db.conn
+                    .execute("UPDATE steps SET state='succeeded' WHERE task=?", [task])
+                    .unwrap();
+                crate::storage::dispatch(
+                    &db,
+                    "runtime_storage_configure",
+                    &json!({"min_free_bytes":1024_u64.pow(5)}),
+                )
+                .unwrap();
+                let mut scheduler = Scheduler {
+                    running: HashMap::new(),
+                    decisions: crate::decision::shadow::Queue::default(),
+                    reviews: crate::decision::review::Queue::default(),
+                    limit: 1,
+                };
+                scheduler.tick(&db, true).await.unwrap();
+                assert_eq!(db.task(task).unwrap()["status"], "succeeded");
+                assert!(scheduler.running.is_empty());
+            })
+            .await;
     }
 
     #[test]
