@@ -31,4 +31,16 @@ fn pressure_warns_before_critical_and_requires_recovery_headroom() {
     ] {
         assert!(protocol::dispatch(&db, "runtime_storage_configure", args, None).is_err());
     }
+    let reset = protocol::dispatch(
+        &db,
+        "runtime_storage_configure",
+        json!({"warning_free_bytes":null,"resume_free_bytes":null}),
+        None,
+    )
+    .unwrap();
+    assert!(reset["warning_free_bytes"].is_null());
+    assert!(reset["resume_free_bytes"].is_null());
+    let status = horde::storage::status(&db).unwrap();
+    assert_eq!(status["warning_free_bytes"], 1048576 + 8 * 1024_u64.pow(3));
+    assert_eq!(status["resume_free_bytes"], 1048576 + 12 * 1024_u64.pow(3));
 }
