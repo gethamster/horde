@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.6.10 - 2026-09-23
+## 0.6.11 - 2026-09-23
 
 - Request worker cleanup and stop admitting work when host disk space falls
   below a configurable warning threshold. Suspend owned process groups at
@@ -16,6 +16,9 @@
   ignored caches, artifacts, and recovery data; removed checkouts can be restored
   for later work. Administrators can inspect storage health, configure policy,
   and preview cleanup through MCP or the CLI.
+- Wait for observed process progress in storage-control tests and ensure test
+  processes are reaped on failure. This release includes the disk-management
+  changes from the unpublished v0.6.10 tag.
 
 ## 0.6.9 - 2026-09-23
 
