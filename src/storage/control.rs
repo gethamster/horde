@@ -125,10 +125,14 @@ impl Control {
     }
 }
 
+fn process_absent(pid: u32) -> bool {
+    (unsafe { libc::kill(pid as i32, 0) }) != 0
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
 fn verify_identity(pid: u32, expected: &str, actual: Option<String>) -> Result<bool> {
     let Some(actual) = actual else {
-        let absent = unsafe { libc::kill(pid as i32, 0) } != 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        let absent = process_absent(pid);
         ensure!(
             absent,
             "cannot verify live process {pid}; refusing storage pressure signal"
@@ -194,11 +198,24 @@ pub(crate) fn register_process(pid: u32) -> Result<ProcessGuard> {
         return Ok(ProcessGuard { control: None, pid });
     };
     ensure!(
-        pid > 1 && unsafe { libc::getpgid(pid as i32) } == pid as i32,
-        "storage process must own its session group"
+        pid > 1 && pid <= i32::MAX as u32,
+        "invalid storage process PID"
     );
-    let identity = crate::environment::process_identity(pid)
-        .context("cannot identify owned storage process")?;
+    let group = unsafe { libc::getpgid(pid as i32) };
+    if group != pid as i32 {
+        let absent =
+            group == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if absent || process_absent(pid) {
+            return Ok(ProcessGuard { control: None, pid });
+        }
+        bail!("storage process must own its session group");
+    }
+    let identity = match crate::environment::process_identity(pid) {
+        Some(identity) => identity,
+        // Fast children can be reaped between the group and identity probes.
+        None if process_absent(pid) => return Ok(ProcessGuard { control: None, pid }),
+        None => bail!("cannot identify owned storage process"),
+    };
     let mut state = control.state.lock().unwrap();
     ensure!(
         !state.processes.contains_key(&pid),

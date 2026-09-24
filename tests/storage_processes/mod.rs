@@ -270,3 +270,58 @@ fn unavailable_identity_is_inconclusive_for_a_live_process() {
     child.wait().unwrap();
     assert!(!verify_identity(pid, "unavailable", None).unwrap());
 }
+
+#[test]
+fn registration_after_child_exit_does_not_create_an_owned_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let control = Control::new(dir.path(), "already-exited");
+    let mut command = Command::new("sh");
+    command.args(["-c", "exit 0"]);
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    let pid = child.id();
+    assert!(child.wait().unwrap().success());
+    blocking_scope(Some(control.clone()), || {
+        let guard = register_process(pid).expect("an exited child needs no storage tracking");
+        assert!(guard.control.is_none());
+        assert!(control.state.lock().unwrap().processes.is_empty());
+    });
+}
+
+#[test]
+fn registration_still_rejects_live_process_without_owned_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let control = Control::new(dir.path(), "wrong-group");
+    let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+    let result = blocking_scope(Some(control.clone()), || register_process(child.id()));
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(result.is_err());
+    assert!(control.state.lock().unwrap().processes.is_empty());
+}
+
+#[tokio::test]
+async fn fast_executor_commands_complete_under_storage_supervision() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::store::Store::open(dir.path()).unwrap();
+    let control = Control::new(dir.path(), "fast-commands");
+    scope(control.clone(), async {
+        for _ in 0..32 {
+            let mut command = crate::executor::clean_command("sh");
+            command.args(["-c", "exit 0"]);
+            let result = crate::executor::run_process(command, None, 1, None)
+                .await
+                .unwrap();
+            assert_eq!(result["success"], true);
+            assert!(control.state.lock().unwrap().processes.is_empty());
+        }
+    })
+    .await;
+}

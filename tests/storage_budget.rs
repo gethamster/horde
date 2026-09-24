@@ -69,15 +69,20 @@ fn status_excludes_only_paused_time_since_actual_progress() {
         data["at_ms"] = json!(at);
         f.db.event(&f.task, kind, data).unwrap();
     }
+    // Exercise an ongoing hold after wall time has advanced, independent of
+    // whether recording the fixture happens to be fast on this machine.
+    std::thread::sleep(std::time::Duration::from_millis(150));
     let timing = budget::status(&f.db, "attempt").unwrap();
     assert!(
         (timing["idle_s"].as_f64().unwrap() - 1.0).abs() < 0.1,
         "{timing}"
     );
-    assert!(
-        (timing["paused_s"].as_f64().unwrap() - 7.0).abs() < 0.1,
-        "{timing}"
-    );
+    // The hold remains open while the fixture writes events. That time must
+    // count as paused too, regardless of how long the filesystem takes.
+    let elapsed = timing["elapsed_s"].as_f64().unwrap();
+    let paused = timing["paused_s"].as_f64().unwrap();
+    assert!(paused >= 7.0, "{timing}");
+    assert!((elapsed - paused - 3.0).abs() < 0.001, "{timing}");
     assert!(
         (timing["remaining_s"].as_f64().unwrap() - 9.0).abs() < 0.1,
         "{timing}"
