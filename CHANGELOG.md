@@ -6,6 +6,8 @@
 
 - Resume a failed Run through skipped dependent steps so repair continues on the
   same branch. Completed work and unrelated conditional skips retain their state.
+  If selected work changes before resume commits, recovery holds without
+  resetting an active attempt or partially applying the retry.
 
 ## 0.6.13 - 2026-09-27
 
