@@ -1,5 +1,5 @@
 {
-  "count": 110,
+  "count": 111,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -2501,6 +2501,31 @@
       "scope": "admin"
     },
     {
+      "description": "Merge the expected current main into a durable Run branch",
+      "name": "run_integrate_main",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_head": {
+            "type": "string"
+          },
+          "expected_main_head": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
       "description": "Read the current remote release base commit for a Run",
       "name": "run_main_head",
       "parameters": {
@@ -2547,7 +2572,16 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "artifact_digest": {
+            "type": "string"
+          },
+          "build_id": {
+            "type": "string"
+          },
           "expected_head": {
+            "type": "string"
+          },
+          "expected_main_head": {
             "type": "string"
           },
           "idempotency_key": {
