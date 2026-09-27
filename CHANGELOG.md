@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.6.13 - 2026-09-27
+
+- Integrate the current main branch into a durable Run with explicit head checks.
+  Conflicts retain the previous checkpoint and record repair evidence.
+- Bind checkpoint signatures to the tested Git tree, expected main head, and an
+  already-built image and build identity. Changed or omitted identities cannot
+  reuse the same checkpoint idempotency key.
+- Publish a local Docker runner from committed source with persistent Cargo
+  caches. A sandbox-owned Docker daemon supports development and Compose tests
+  without mounting the host daemon socket.
+
 ## 0.6.12 - 2026-09-24
 
 - Route Horde's Linux CI, release, and website jobs to dedicated x64, ARM64,

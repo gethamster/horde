@@ -478,6 +478,7 @@ fn dispatch_authorized(
             json!({"task":db.task(oid)?,"project_runtime":crate::project_runtime::inspection(db,oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
         ),
         "summary" => crate::summary::build(db, oid),
+        "run_integrate_main" => crate::run::integrate_main(db, oid, string(&args, "expected_head")?, string(&args, "expected_main_head")?),
         "run_main_head" => crate::run::main_head(db, oid),
         "run_reconcile" => crate::run::reconcile_run(db, oid, string(&args, "expected_head")?),
         "run_checkpoint" => crate::run::checkpoint_run(
@@ -486,6 +487,7 @@ fn dispatch_authorized(
             string(&args, "expected_head")?,
             &strings(&args, "validation")?,
             args["idempotency_key"].as_str(),
+            crate::run::CheckpointOptions { expected_main_head: args["expected_main_head"].as_str(), artifact_digest: args["artifact_digest"].as_str(), build_id: args["build_id"].as_str() },
         ),
         "run_publish" => crate::run::publish_run(db, oid, string(&args, "expected_head")?),
         "run_events" => {

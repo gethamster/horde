@@ -169,6 +169,100 @@ pub fn main_head(db: &Store, oid: &str) -> Result<Value> {
     )
 }
 
+/// Integrate a freshly observed release base into the durable Run branch.
+pub fn integrate_main(db: &Store, oid: &str, expected: &str, expected_main: &str) -> Result<Value> {
+    let _lock = run_lock(db, oid)?;
+    let (path, branch, before) = run_branch(db, oid)?;
+    expected_head(&before, expected)?;
+    reconcile_locked(db, oid, expected)?;
+    expected_head(&head(&path)?, expected)?;
+    let base = main_head(db, oid)?;
+    ensure!(
+        base["commit_sha"] == expected_main,
+        "main head changed; integrate and validate again"
+    );
+    let base_ref = base["branch_ref"].as_str().context("main branch ref")?;
+    run(&path, &["fetch", "--no-tags", "origin", base_ref])?;
+    let fetched = run(&path, &["rev-parse", "FETCH_HEAD^{commit}"])?;
+    expected_head(&fetched, expected_main)?;
+    if run(&path, &["merge", "--no-edit", expected_main]).is_err() {
+        // Leave the durable branch at its previous checkpoint, with explicit repair evidence.
+        run(&path, &["merge", "--abort"])?;
+        record_conflict(
+            db,
+            oid,
+            &branch,
+            &before,
+            Some(expected_main),
+            "main_merge_conflict",
+        )?;
+        bail!("main conflicts with Run branch; repair on the Run branch before validation");
+    }
+    let sha = head(&path)?;
+    let tree = run(&path, &["rev-parse", "HEAD^{tree}"])?;
+    let result = json!({"branch_ref":format!("refs/heads/{branch}"),"previous_head_sha":before,"head_sha":sha,"commit_sha":sha,"tree_sha":tree,"expected_main_head":expected_main});
+    db.event(oid, "run.main_integrated", result.clone())?;
+    Ok(result)
+}
+
+#[derive(Default)]
+pub struct CheckpointOptions<'a> {
+    pub expected_main_head: Option<&'a str>,
+    pub artifact_digest: Option<&'a str>,
+    pub build_id: Option<&'a str>,
+}
+
+fn checkpoint_identity(
+    path: &Path,
+    db: &Store,
+    oid: &str,
+    options: &CheckpointOptions<'_>,
+) -> Result<Value> {
+    let mut identity = json!({"tree_sha":run(path, &["rev-parse", "HEAD^{tree}"])?});
+    if let Some(main) = options.expected_main_head {
+        ensure!(
+            main_head(db, oid)?["commit_sha"] == main,
+            "main head changed; integrate and validate again"
+        );
+        ensure!(
+            run(path, &["merge-base", "--is-ancestor", main, "HEAD"]).is_ok(),
+            "Run branch must integrate main before validation"
+        );
+        identity["expected_main_head"] = json!(main);
+    }
+    ensure!(
+        options.artifact_digest.is_some() == options.build_id.is_some(),
+        "artifact_digest and build_id must be supplied together"
+    );
+    if let (Some(digest), Some(build)) = (options.artifact_digest, options.build_id) {
+        ensure!(
+            digest
+                .rsplit_once("@sha256:")
+                .is_some_and(|(repository, hash)| !repository.is_empty()
+                    && repository.len() <= 512
+                    && repository
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"./:_-".contains(&byte))
+                    && hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))),
+            "artifact_digest must be a full OCI image reference pinned by SHA-256"
+        );
+        ensure!(
+            !build.trim().is_empty() && build.len() <= 256 && !build.chars().any(char::is_control),
+            "invalid build_id"
+        );
+        ensure!(
+            options.expected_main_head.is_some(),
+            "artifact checkpoint requires expected_main_head"
+        );
+        identity["artifact_digest"] = json!(digest);
+        identity["build_id"] = json!(build);
+    }
+    Ok(identity)
+}
+
 fn hmac_sha256(key: &[u8], payload: &[u8]) -> String {
     let mut inner_pad = [0x36u8; 64];
     let mut outer_pad = [0x5cu8; 64];
@@ -192,6 +286,7 @@ fn checkpoint_attestation(
     sha: &str,
     validation: &[String],
     validation_id: &str,
+    identity: &Value,
 ) -> Result<Value> {
     let key = match std::env::var("HORDE_RUN_ATTESTATION_KEY") {
         Ok(key) => key,
@@ -207,7 +302,7 @@ fn checkpoint_attestation(
     );
     let context = run_context(db, oid)?;
     require_signed_identity(&context)?;
-    let payload = json!({
+    let mut payload = json!({
         "tenant_id":context["tenant_id"],
         "project_id":context["project"],
         "thread_id":context["thread_id"],
@@ -218,6 +313,9 @@ fn checkpoint_attestation(
         "validation_id":validation_id,
         "passed_checks":[validation],
     });
+    for (key, value) in identity.as_object().context("checkpoint identity")? {
+        payload[key] = value.clone();
+    }
     let bytes = serde_json::to_vec(&payload)?;
     let mut signed = RUN_CHECKPOINT_DOMAIN.to_vec();
     signed.extend_from_slice(&bytes);
@@ -492,6 +590,7 @@ pub fn checkpoint_run(
     expected: &str,
     validation: &[String],
     idempotency_key: Option<&str>,
+    options: CheckpointOptions<'_>,
 ) -> Result<Value> {
     let _lock = run_lock(db, oid)?;
     ensure!(
@@ -514,6 +613,7 @@ pub fn checkpoint_run(
         reconcile_locked(db, oid, &sha)?;
         expected_head(&head(&path)?, expected)?;
     }
+    let identity = checkpoint_identity(&path, db, oid, &options)?;
     if std::env::var_os("HORDE_RUN_ATTESTATION_KEY").is_some() {
         require_signed_identity(&run_context(db, oid)?)?;
     }
@@ -525,12 +625,22 @@ pub fn checkpoint_run(
         if let Some(raw) = previous.first().and_then(|row| row["data"].as_str()) {
             let recorded: Value = serde_json::from_str(raw)?;
             ensure!(
-                recorded["commit_sha"] == sha && recorded["validation"] == json!(validation),
+                recorded["commit_sha"] == sha
+                    && recorded["validation"] == json!(validation)
+                    && [
+                        "tree_sha",
+                        "expected_main_head",
+                        "artifact_digest",
+                        "build_id"
+                    ]
+                    .iter()
+                    .all(|key| recorded[*key] == identity[*key]),
                 "checkpoint idempotency_key reused with different request"
             );
-            return Ok(
-                json!({"branch_ref":recorded["branch_ref"],"head_sha":sha,"commit_sha":sha,"validation_id":recorded["validation_id"],"verified":true,"attestation":recorded["attestation"],"idempotency_key":key,"duplicate":true}),
-            );
+            let mut result = recorded;
+            result["verified"] = json!(true);
+            result["duplicate"] = json!(true);
+            return Ok(result);
         }
     }
     let values = crate::secrets::values(db, oid)?;
@@ -555,12 +665,26 @@ pub fn checkpoint_run(
         db.event(oid, "run.checkpoint_failed", json!({"branch_ref":format!("refs/heads/{branch}"),"head_sha":sha,"validation":validation,"status":output.status.code()}))?;
         bail!("Run checkpoint validation failed");
     }
+    ensure!(
+        checkpoint_identity(&path, db, oid, &options)? == identity,
+        "checkpoint identity changed during validation"
+    );
     let validation_id = id();
-    let attestation = checkpoint_attestation(db, oid, &branch, &sha, validation, &validation_id)?;
-    db.event(oid, "run.checkpoint_verified", json!({"branch_ref":format!("refs/heads/{branch}"),"head_sha":sha,"commit_sha":sha,"validation_id":validation_id,"validation":validation,"idempotency_key":idempotency_key,"attestation":attestation}))?;
-    Ok(
-        json!({"branch_ref":format!("refs/heads/{branch}"),"head_sha":sha,"commit_sha":sha,"validation_id":validation_id,"verified":true,"attestation":attestation,"idempotency_key":idempotency_key,"duplicate":false}),
-    )
+    let attestation = checkpoint_attestation(
+        db,
+        oid,
+        &branch,
+        &sha,
+        validation,
+        &validation_id,
+        &identity,
+    )?;
+    let mut result = json!({"branch_ref":format!("refs/heads/{branch}"),"head_sha":sha,"commit_sha":sha,"validation_id":validation_id,"validation":validation,"verified":true,"attestation":attestation,"idempotency_key":idempotency_key,"duplicate":false});
+    for (key, value) in identity.as_object().context("checkpoint identity")? {
+        result[key] = value.clone();
+    }
+    db.event(oid, "run.checkpoint_verified", result.clone())?;
+    Ok(result)
 }
 
 /// Publish only a verified exact head using Git's normal non-force push.
