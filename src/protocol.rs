@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
 
 mod operations;
+mod resume;
 pub use operations::OPERATIONS;
 pub const KNOWLEDGE_KINDS: &[&str] = &["fact", "decision", "evidence"];
 
@@ -634,7 +635,18 @@ fn dispatch_authorized(
             if questions > 0 {
                 bail!("answer pending questions before resuming");
             }
-            db.atomic(||{db.conn.execute("UPDATE steps SET state='pending' WHERE task=? AND state IN ('failed','cancelled','uncertain')",[oid])?;db.conn.execute("UPDATE tasks SET status='running' WHERE id=?",[oid])?;db.event(oid,"task.resumed",json!({}))?;Ok(())})?;
+            let retry = resume::steps(db, oid)?;
+            db.atomic(|| {
+                for step in &retry {
+                    db.conn.execute(
+                        "UPDATE steps SET state='pending' WHERE task=? AND id=?",
+                        rusqlite::params![oid, step["id"].as_str().context("step id")?],
+                    )?;
+                }
+                db.conn.execute("UPDATE tasks SET status='running' WHERE id=?", [oid])?;
+                db.event(oid, "task.resumed", json!({"steps":retry.iter().map(|step| &step["name"]).collect::<Vec<_>>()}))?;
+                Ok(())
+            })?;
             Ok(json!({"resumed":true}))
         }
         "request_question" => crate::delegation::ask(db,oid,&args),
