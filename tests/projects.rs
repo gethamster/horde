@@ -109,6 +109,38 @@ fn schema_six_migration_defaults_legacy_run_and_tenant_identity() {
             .any(|entry| entry.file_name().to_string_lossy().starts_with("pre-runs-"))
     );
 }
+
+#[test]
+fn schema_seven_upgrade_adds_recovery_receipts_without_losing_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("data");
+    let db = Store::open(&root).unwrap();
+    let project = create(&db, "existing-project");
+    db.conn
+        .execute_batch("DROP TABLE run_step_recoveries; PRAGMA user_version=7;")
+        .unwrap();
+    drop(db);
+
+    let upgraded = Store::open(&root).unwrap();
+    let receipts: i64 = upgraded
+        .conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='run_step_recoveries'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipts, 1);
+    assert_eq!(projects::tenant(&upgraded, &project).unwrap(), project);
+    assert_eq!(
+        upgraded
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .unwrap(),
+        horde::store::SCHEMA_VERSION
+    );
+}
+
 #[test]
 fn repositories_and_worktrees_have_one_owner_and_tasks_are_immutable() {
     let dir = tempfile::tempdir().unwrap();

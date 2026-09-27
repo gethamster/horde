@@ -317,7 +317,7 @@ Schema version 4 records execution policies, submission receipts, and project
 skill revisions. The version advances only after all additive migrations finish;
 reopening never lowers it. Older runtimes reject this database instead of running
 tasks without their saved execution constraints. Release manifests advertise the schema range supported by their binary; the current
-database schema is 7.
+database schema is 8.
 
 Administrative runtime settings, capacity snapshots, enrollment fingerprints,
 management receipts, provider resources, and operation intents are stored separately

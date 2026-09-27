@@ -8,6 +8,8 @@
   operator validation. Horde commits the tested tree with worker and attempt
   provenance, integrates it on the same branch, and resumes skipped dependent
   work. Head changes and failed checks hold the recovery for renewed review.
+- Upgrade existing schema 7 stores with the recovery receipt table before a
+  failed-step recovery runs.
 
 ## 0.6.14 - 2026-09-27
 
