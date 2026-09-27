@@ -520,7 +520,21 @@ pub fn integrate_expected(
     .success();
     if !already {
         db.conn.execute("UPDATE integrations SET state='running',evidence=? WHERE task=? AND worker=? AND commit_id=?",rusqlite::params![json!({"before":before,"validation":validation}).to_string(),oid,wid,commit])?;
-        if let Err(e) = run(&target, &["merge", "--no-ff", "--no-edit", &commit]) {
+        let merge_args: Vec<&str> = if expected_run_head.is_some() {
+            vec![
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                &commit,
+            ]
+        } else {
+            vec!["merge", "--no-ff", "--no-edit", &commit]
+        };
+        if let Err(e) = run(&target, &merge_args) {
             let conflicts =
                 run(&target, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
             let evidence = json!({"error":e.to_string(),"conflicts":conflicts,"before":before,"integrated_head":before,"validation":validation,"revision":crate::decision::review::current_revision(db,oid)?});
