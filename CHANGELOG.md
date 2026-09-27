@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.14 - 2026-09-27
+
+- Resume a failed Run through skipped dependent steps so repair continues on the
+  same branch. Completed work and unrelated conditional skips retain their state.
+
 ## 0.6.13 - 2026-09-27
 
 - Integrate the current main branch into a durable Run with explicit head checks.

@@ -632,6 +632,49 @@ fn invalid_compositions_are_rejected() {
     assert!(template::compile("bad", &all, BTreeMap::from([("task".into(), "x".into())])).is_err());
 }
 #[test]
+fn resume_reconsiders_skipped_descendants_without_repeating_completed_work() {
+    let f = Fixture::new();
+    f.call(
+        "add_steps",
+        json!({"steps": [
+            {"id":"retry", "kind":"simulated"},
+            {"id":"dependent", "kind":"simulated", "needs":["retry"]},
+            {"id":"nested", "kind":"simulated", "needs":["dependent"]},
+            {"id":"conditional", "kind":"simulated", "needs":["retry"],
+             "when":{"step":"retry", "status":"succeeded"}},
+            {"id":"completed", "kind":"simulated", "needs":["retry"]},
+            {"id":"unrelated", "kind":"simulated"}
+        ]}),
+    )
+    .unwrap();
+    f.db.conn.execute("UPDATE steps SET state=CASE name WHEN 'retry' THEN 'failed' WHEN 'completed' THEN 'succeeded' ELSE 'skipped' END WHERE task=?", [&f.oid]).unwrap();
+    f.db.conn
+        .execute("UPDATE tasks SET status='failed' WHERE id=?", [&f.oid])
+        .unwrap();
+    let branch = git::task_workspace(&f.db, &f.oid).unwrap();
+    let before = git::run(&branch, &["rev-parse", "HEAD"]).unwrap();
+    f.call("resume", json!({})).unwrap();
+    let states: BTreeMap<_, _> =
+        f.db.steps(&f.oid)
+            .unwrap()
+            .iter()
+            .map(|s| {
+                (
+                    s["name"].as_str().unwrap().to_owned(),
+                    s["state"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+    for name in ["retry", "dependent", "nested", "conditional"] {
+        assert_eq!(states[name], "pending", "{name}");
+    }
+    assert_eq!(states["completed"], "succeeded");
+    assert_eq!(states["unrelated"], "skipped");
+    assert_eq!(git::run(&branch, &["rev-parse", "HEAD"]).unwrap(), before);
+    assert_eq!(f.db.task(&f.oid).unwrap()["status"], "running");
+}
+
+#[test]
 fn restart_holds_attempts_and_preserves_claims() {
     let f = Fixture::new();
     let wid = f.coding_worker();
