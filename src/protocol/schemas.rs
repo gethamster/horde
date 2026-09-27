@@ -384,6 +384,14 @@ pub fn admin_schema(name: &str) -> Value {
             ("validation", "array"),
         ],
         "run_reconcile" | "run_publish" => &[("task", "string"), ("expected_head", "string")],
+        "run_recover_step" => &[
+            ("task", "string"),
+            ("step", "string"),
+            ("expected_worker_head", "string"),
+            ("expected_run_head", "string"),
+            ("validation", "array"),
+            ("idempotency_key", "string"),
+        ],
         "run_integrate_main" => &[
             ("task", "string"),
             ("expected_head", "string"),
@@ -510,6 +518,10 @@ pub fn admin_schema(name: &str) -> Value {
                     json!({"type":"string"})
                 };
             }
+            if name == "run_recover_step" && *k == "validation" {
+                s["minItems"] = json!(1);
+                s["maxItems"] = json!(32);
+            }
             if matches!(name, "add_knowledge" | "knowledge") && *k == "scope" {
                 s["enum"] = json!(crate::knowledge::SCOPES);
                 s["default"] = json!("task");
@@ -565,6 +577,14 @@ pub fn admin_schema(name: &str) -> Value {
         "management_ack" => &["consumer", "seq"],
         "decisions" | "reviews" => &["task"],
         "submit_task" => &["objective", "repo"],
+        "run_recover_step" => &[
+            "task",
+            "step",
+            "expected_worker_head",
+            "expected_run_head",
+            "validation",
+            "idempotency_key",
+        ],
         "remote_result" => &["task"],
         "delegate_task" => &["id", "objective"],
         "read_skill" => &["name"],

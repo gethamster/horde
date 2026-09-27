@@ -440,6 +440,18 @@ pub fn integrate(
     wid: &str,
     validation: &[String],
 ) -> Result<serde_json::Value> {
+    integrate_expected(db, oid, wid, validation, None)
+}
+
+/// Integrate a worker only while the durable Run still has the reviewed head.
+/// Recovery uses this after its checks, including the remote reconciliation.
+pub fn integrate_expected(
+    db: &Store,
+    oid: &str,
+    wid: &str,
+    validation: &[String],
+    expected_run_head: Option<&str>,
+) -> Result<serde_json::Value> {
     // A single daemon serializes this function; file lock also protects explicit integration calls.
     use fs2::FileExt;
     let lock = std::fs::OpenOptions::new()
@@ -459,7 +471,7 @@ pub fn integrate(
     let target = task_workspace(db, oid)?;
     crate::run::reconcile_at_integration_safe_point(db, oid)?;
     let previous = db.rows(
-        "SELECT evidence FROM integrations WHERE task=? AND worker=? AND commit_id=?",
+        "SELECT state,evidence FROM integrations WHERE task=? AND worker=? AND commit_id=?",
         &[&oid, &wid, &commit],
     )?;
     let remembered: Vec<String> = previous
@@ -479,6 +491,22 @@ pub fn integrate(
         rusqlite::params![iid, oid, wid, commit, now()],
     )?;
     let before = run(&target, &["rev-parse", "HEAD"])?;
+    if let Some(expected) = expected_run_head {
+        // A prior attempt may have created this exact merge before validation
+        // or the final response was recorded. Re-run the combined checks; all
+        // unrelated head changes require a fresh operator review.
+        let integrated = previous.first().is_some_and(|row| {
+            matches!(
+                row["state"].as_str(),
+                Some("running" | "validation_failed" | "succeeded")
+            )
+        }) && run(&target, &["rev-parse", "HEAD^1"]).ok().as_deref()
+            == Some(expected)
+            && run(&target, &["rev-parse", "HEAD^2"]).ok().as_deref() == Some(commit.as_str());
+        if before != expected && !integrated {
+            bail!("Run head changed during recovery; revalidate the agent work");
+        }
+    }
     if !run(&target, &["status", "--porcelain"])?.is_empty() {
         bail!("integrated workspace is dirty; reconciliation required");
     }
@@ -492,12 +520,32 @@ pub fn integrate(
     .success();
     if !already {
         db.conn.execute("UPDATE integrations SET state='running',evidence=? WHERE task=? AND worker=? AND commit_id=?",rusqlite::params![json!({"before":before,"validation":validation}).to_string(),oid,wid,commit])?;
-        if let Err(e) = run(&target, &["merge", "--no-ff", "--no-edit", &commit]) {
+        let merge_args: Vec<&str> = if expected_run_head.is_some() {
+            vec![
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "user.name=Horde Recovery",
+                "-c",
+                "user.email=recovery@horde.sh",
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                &commit,
+            ]
+        } else {
+            vec!["merge", "--no-ff", "--no-edit", &commit]
+        };
+        if let Err(e) = run(&target, &merge_args) {
             let conflicts =
                 run(&target, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
             let evidence = json!({"error":e.to_string(),"conflicts":conflicts,"before":before,"integrated_head":before,"validation":validation,"revision":crate::decision::review::current_revision(db,oid)?});
             // Abort only the merge initiated above; preserves the integrated branch.
-            run(&target, &["merge", "--abort"])?;
+            if run(&target, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok() {
+                run(&target, &["merge", "--abort"])?;
+            }
             db.conn.execute("UPDATE integrations SET state='conflict',evidence=? WHERE task=? AND worker=? AND commit_id=?",rusqlite::params![evidence.to_string(),oid,wid,commit])?;
             db.event(oid, "integration.conflict", evidence.clone())?;
             let _=db.send(oid,wid,&id(),wid,&format!("Integration conflict: {evidence}. Merge the integrated branch into your worktree, resolve and verify."),&json!({"commit":commit}),true);
@@ -506,12 +554,25 @@ pub fn integrate(
     }
     if !validation.is_empty() {
         let values = crate::secrets::values(db, oid)?;
-        let out = crate::budget::command_output(
-            crate::executor::clean_command(&validation[0])
-                .args(&validation[1..])
-                .current_dir(&target)
-                .envs(&values),
-        )?;
+        let mut command = crate::executor::clean_command(&validation[0]);
+        command
+            .args(&validation[1..])
+            .current_dir(&target)
+            .envs(&values);
+        let out = if expected_run_head.is_some() {
+            if let Some(host) = std::env::var_os("DOCKER_HOST") {
+                command.env("DOCKER_HOST", host);
+            }
+            let task = db.task(oid)?;
+            let settings: crate::config::Settings =
+                serde_json::from_str(task["settings"].as_str().context("task settings")?)?;
+            crate::budget::command_output_with_timeout(
+                &mut command,
+                std::time::Duration::from_secs(settings.timeout_seconds.clamp(1, 1800)),
+            )?
+        } else {
+            crate::budget::command_output(&mut command)?
+        };
         if !out.status.success() {
             let evidence = crate::secrets::redact_json(
                 &json!({"stdout":String::from_utf8_lossy(&out.stdout),"stderr":String::from_utf8_lossy(&out.stderr),"before":before,"integrated_head":run(&target,&["rev-parse","HEAD"])? ,"validation":validation,"revision":crate::decision::review::current_revision(db,oid)?}),

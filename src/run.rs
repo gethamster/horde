@@ -10,6 +10,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+mod recover;
+pub use recover::recover_step;
+
 const RUN_CHECKPOINT_DOMAIN: &[u8] = b"horde-run-checkpoint-v1\0";
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -33,6 +36,24 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         FROM tasks t JOIN task_projects tp ON tp.task=t.id
         LEFT JOIN project_tenants pt ON pt.project=tp.project",
         [],
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS run_step_recoveries(
+            task TEXT NOT NULL REFERENCES tasks(id),
+            idempotency_key TEXT NOT NULL,
+            request TEXT NOT NULL,
+            step TEXT NOT NULL REFERENCES steps(id),
+            attempt TEXT NOT NULL REFERENCES attempts(id),
+            worker TEXT NOT NULL REFERENCES workers(id),
+            validated_tree TEXT NOT NULL,
+            commit_key TEXT NOT NULL,
+            commit_parent TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            worker_commit TEXT,
+            response TEXT,
+            created INTEGER NOT NULL,
+            PRIMARY KEY(task,idempotency_key)
+        );",
     )?;
     Ok(())
 }

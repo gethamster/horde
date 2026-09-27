@@ -1,5 +1,5 @@
 {
-  "count": 111,
+  "count": 112,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -2562,6 +2562,52 @@
           }
         },
         "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Validate and commit stranded agent work for a failed local step, then resume its Run",
+      "name": "run_recover_step",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_run_head": {
+            "type": "string"
+          },
+          "expected_worker_head": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "step": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "validation": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "task",
+          "step",
+          "expected_worker_head",
+          "expected_run_head",
+          "validation",
+          "idempotency_key"
+        ],
         "type": "object"
       },
       "scope": "admin"

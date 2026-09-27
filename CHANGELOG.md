@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.6.15 - 2026-09-27
+
+- Recover agent-authored edits left in a failed local Run step with explicit
+  operator validation. Horde commits the tested tree with worker and attempt
+  provenance, integrates it on the same branch, and resumes skipped dependent
+  work. Head changes and failed checks hold the recovery for renewed review.
+- Upgrade existing schema 7 stores with the recovery receipt table before a
+  failed-step recovery runs.
+
 ## 0.6.14 - 2026-09-27
 
 - Resume a failed Run through skipped dependent steps so repair continues on the

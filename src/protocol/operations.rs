@@ -262,6 +262,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Fast-forward a Run branch from authorized external commits",
     ),
     (
+        "run_recover_step",
+        "Validate and commit stranded agent work for a failed local step, then resume its Run",
+    ),
+    (
         "run_checkpoint",
         "Validate and record an exact Run branch checkpoint",
     ),
