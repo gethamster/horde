@@ -637,12 +637,7 @@ fn dispatch_authorized(
             }
             let retry = resume::steps(db, oid)?;
             db.atomic(|| {
-                for step in &retry {
-                    db.conn.execute(
-                        "UPDATE steps SET state='pending' WHERE task=? AND id=?",
-                        rusqlite::params![oid, step["id"].as_str().context("step id")?],
-                    )?;
-                }
+                resume::reset(db, oid, &retry)?;
                 db.conn.execute("UPDATE tasks SET status='running' WHERE id=?", [oid])?;
                 db.event(oid, "task.resumed", json!({"steps":retry.iter().map(|step| &step["name"]).collect::<Vec<_>>()}))?;
                 Ok(())
