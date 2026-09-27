@@ -64,6 +64,18 @@ constructs the new main merge commit, compares its tree, and deploys the same di
 The built commit remains the provenance source even when the release merge commit
 has a different identity. Existing callers may omit the new optional fields.
 
+An explicitly trusted local installation may enable `run_recover_step` for a
+stopped failed agent step. A project-scoped operator selects the failed step by
+name, pins the worker and Run heads, supplies a bounded validation argv, and
+uses an idempotency key. Horde checks the agent's existing dirty worktree against
+its claims, runs the check, commits the validated tree under a service identity
+with worker and attempt provenance, and integrates it only if the Run head still
+matches. The failed attempt remains in the audit record; the recovered step
+becomes successful and its skipped dependents become pending on the same branch.
+The operation is disabled unless `HORDE_TRUSTED_LOCAL_RECOVERY=1` and the task
+allows commands. A changed Run head requires a new request and renewed checks;
+neither a failed check nor a changed head silently accepts the agent's work.
+
 `containers/local/Dockerfile` builds Horde from a committed source archive during
 publication, then packages the executable with Rust, Git,
 Docker CLI/Compose, and agent harnesses. The local Compose installation runs the

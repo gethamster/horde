@@ -583,6 +583,32 @@ pub fn command_output(command: &mut std::process::Command) -> Result<std::proces
     })
 }
 
+/// Run a synchronous operator check with a firm deadline and process-group
+/// cleanup, even when it is called outside a supervised step attempt.
+pub fn command_output_with_timeout(
+    command: &mut std::process::Command,
+    timeout: Duration,
+) -> Result<std::process::Output> {
+    anyhow::ensure!(!timeout.is_zero(), "command timeout must be positive");
+    let previous = BLOCKING_CONTROL.with(|slot| {
+        slot.replace(Some(CommandControl {
+            deadline: std::sync::Arc::new(std::sync::Mutex::new(Some(
+                std::time::Instant::now() + timeout,
+            ))),
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pressure: pressure::current(),
+        }))
+    });
+    struct Restore(Option<CommandControl>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            BLOCKING_CONTROL.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(previous);
+    command_output(command)
+}
+
 #[cfg(test)]
 #[path = "budget/tests.rs"]
 mod pressure_tests;
