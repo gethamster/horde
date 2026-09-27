@@ -526,6 +526,10 @@ pub fn integrate_expected(
                 "core.hooksPath=/dev/null",
                 "-c",
                 "commit.gpgsign=false",
+                "-c",
+                "user.name=Horde Recovery",
+                "-c",
+                "user.email=recovery@horde.sh",
                 "merge",
                 "--no-ff",
                 "--no-edit",
@@ -539,7 +543,9 @@ pub fn integrate_expected(
                 run(&target, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
             let evidence = json!({"error":e.to_string(),"conflicts":conflicts,"before":before,"integrated_head":before,"validation":validation,"revision":crate::decision::review::current_revision(db,oid)?});
             // Abort only the merge initiated above; preserves the integrated branch.
-            run(&target, &["merge", "--abort"])?;
+            if run(&target, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok() {
+                run(&target, &["merge", "--abort"])?;
+            }
             db.conn.execute("UPDATE integrations SET state='conflict',evidence=? WHERE task=? AND worker=? AND commit_id=?",rusqlite::params![evidence.to_string(),oid,wid,commit])?;
             db.event(oid, "integration.conflict", evidence.clone())?;
             let _=db.send(oid,wid,&id(),wid,&format!("Integration conflict: {evidence}. Merge the integrated branch into your worktree, resolve and verify."),&json!({"commit":commit}),true);

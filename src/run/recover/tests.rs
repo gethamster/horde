@@ -170,6 +170,50 @@ fn failed_checks_do_not_accept_work_or_advance_run() {
 }
 
 #[test]
+fn committed_recovery_retries_merge_without_repository_author_identity() {
+    let f = Fixture::new();
+    let repo = PathBuf::from(f.db.task(&f.task).unwrap()["repo"].as_str().unwrap());
+    git::run(&repo, &["config", "user.name", ""]).unwrap();
+    git::run(&repo, &["config", "user.email", ""]).unwrap();
+    let sid =
+        f.db.steps(&f.task)
+            .unwrap()
+            .into_iter()
+            .find(|row| row["name"] == "left")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    git::run(&f.workspace, &["add", "--all"]).unwrap();
+    let staged = tree(&f.workspace).unwrap();
+    git::run(
+        &f.workspace,
+        &[
+            "-c",
+            "user.name=Horde Recovery",
+            "-c",
+            "user.email=recovery@horde.sh",
+            "commit",
+            "-m",
+            "Recovered\n\nHorde-Recovery-Id: missing-identity",
+        ],
+    )
+    .unwrap();
+    let committed = head(&f.workspace).unwrap();
+    let request = json!({"step":"left","expected_worker_head":f.base,
+        "expected_run_head":f.base,"validation":checks()});
+    f.db.conn.execute("INSERT INTO run_step_recoveries(task,idempotency_key,request,step,attempt,worker,validated_tree,commit_key,commit_parent,phase,worker_commit,created) VALUES(?,?,?,?,?,?,?,?,?,'committed',?,?)",
+        params![f.task,"missing-identity",request.to_string(),sid,"failed-agent",f.worker,staged,"missing-identity",f.base,committed,now()]).unwrap();
+    f.db.conn.execute("INSERT INTO integrations(id,task,worker,commit_id,state,evidence,created) VALUES(?,?,?,?, 'running', ?, ?)",
+        params![crate::store::id(),f.task,f.worker,committed,json!({"before":f.base,"validation":checks()}).to_string(),now()]).unwrap();
+
+    let result = f.recover("missing-identity", &checks()).unwrap();
+    assert_eq!(result["worker_commit_sha"], committed);
+    assert_ne!(result["run_head_sha"], f.base);
+    assert_eq!(f.recover("missing-identity", &checks()).unwrap(), result);
+}
+
+#[test]
 fn stale_run_head_and_out_of_scope_changes_are_rejected() {
     let f = Fixture::new();
     let integrated = git::task_workspace(&f.db, &f.task).unwrap();
