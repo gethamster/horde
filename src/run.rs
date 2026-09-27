@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 mod recover;
 pub use recover::recover_step;
+mod unpin;
+pub use unpin::unpin_account;
 
 const RUN_CHECKPOINT_DOMAIN: &[u8] = b"horde-run-checkpoint-v1\0";
 

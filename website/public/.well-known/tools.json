@@ -1,5 +1,5 @@
 {
-  "count": 112,
+  "count": 113,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -2606,6 +2606,35 @@
           "expected_worker_head",
           "expected_run_head",
           "validation",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Release a stopped Run's account pin to use its project's granted account pool",
+      "name": "run_unpin_account",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "account",
           "idempotency_key"
         ],
         "type": "object"

@@ -266,6 +266,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Validate and commit stranded agent work for a failed local step, then resume its Run",
     ),
     (
+        "run_unpin_account",
+        "Release a stopped Run's account pin to use its project's granted account pool",
+    ),
+    (
         "run_checkpoint",
         "Validate and record an exact Run branch checkpoint",
     ),
