@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+# The daemon clears worker environments: Cargo's user config carries the cache
+# path into every command without forwarding controller credentials.
+mkdir -p "$HOME/.cargo"
+if [ ! -e "$HOME/.cargo/config.toml" ]; then
+    printf '[build]\ntarget-dir = "/cache/target"\n' > "$HOME/.cargo/config.toml"
+fi
+exec /usr/local/bin/horde "$@"

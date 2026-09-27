@@ -384,11 +384,19 @@ pub fn admin_schema(name: &str) -> Value {
             ("validation", "array"),
         ],
         "run_reconcile" | "run_publish" => &[("task", "string"), ("expected_head", "string")],
+        "run_integrate_main" => &[
+            ("task", "string"),
+            ("expected_head", "string"),
+            ("expected_main_head", "string"),
+        ],
         "run_checkpoint" => &[
             ("task", "string"),
             ("expected_head", "string"),
             ("validation", "array"),
             ("idempotency_key", "string"),
+            ("expected_main_head", "string"),
+            ("artifact_digest", "string"),
+            ("build_id", "string"),
         ],
         "run_events" => &[
             ("task", "string"),

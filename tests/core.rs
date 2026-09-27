@@ -2460,3 +2460,115 @@ fn workflow_revisions_return_ignored_fields_without_persisting_them_as_instructi
         );
     }
 }
+
+#[test]
+fn run_integrates_main_and_binds_checkpoint_tree_without_rebuilding() {
+    let f = Fixture::new();
+    let main = bare_origin(f.dir.path(), &f.repo());
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    let initial = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    let merged = f
+        .call(
+            "run_integrate_main",
+            json!({"expected_head":initial,"expected_main_head":main}),
+        )
+        .unwrap();
+    let sha = merged["head_sha"].as_str().unwrap();
+    assert_eq!(merged["expected_main_head"], main);
+    assert_eq!(
+        merged["tree_sha"],
+        git::run(&path, &["rev-parse", "HEAD^{tree}"]).unwrap()
+    );
+    assert!(git::run(&path, &["merge-base", "--is-ancestor", &main, sha]).is_ok());
+    let checkpoint = f.call("run_checkpoint", json!({"expected_head":sha,"expected_main_head":main,"validation":["git","status","--porcelain"],"idempotency_key":"bound"})).unwrap();
+    assert_eq!(checkpoint["tree_sha"], merged["tree_sha"]);
+    assert_eq!(checkpoint["expected_main_head"], main);
+    let retry = f.call("run_checkpoint", json!({"expected_head":sha,"expected_main_head":main,"validation":["git","status","--porcelain"],"idempotency_key":"bound"})).unwrap();
+    assert_eq!(retry["validation_id"], checkpoint["validation_id"]);
+    let scratch = f.dir.path().join("scratch");
+    git::run(&scratch, &["commit", "--allow-empty", "-m", "moved main"]).unwrap();
+    git::run(&scratch, &["push", "origin", "main"]).unwrap();
+    assert!(f.call("run_checkpoint", json!({"expected_head":sha,"expected_main_head":main,"validation":["git","status","--porcelain"]})).is_err());
+}
+
+#[test]
+fn run_integrate_main_rejects_stale_expectation_without_changing_branch() {
+    let f = Fixture::new();
+    bare_origin(f.dir.path(), &f.repo());
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    let initial = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    assert!(
+        f.call(
+            "run_integrate_main",
+            json!({"expected_head":initial,"expected_main_head":"0000000000000000000000000000000000000000"})
+        )
+        .is_err()
+    );
+    assert_eq!(git::run(&path, &["rev-parse", "HEAD"]).unwrap(), initial);
+}
+
+#[test]
+fn run_main_conflict_preserves_branch_and_records_repair() {
+    let f = Fixture::with(Settings::default(), |repo| {
+        std::fs::write(repo.join("shared.txt"), "base\n").unwrap();
+        git::run(repo, &["add", "shared.txt"]).unwrap();
+        git::run(repo, &["commit", "-m", "base file"]).unwrap();
+    });
+    bare_origin(f.dir.path(), &f.repo());
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    std::fs::write(path.join("shared.txt"), "branch\n").unwrap();
+    git::run(&path, &["commit", "-am", "branch change"]).unwrap();
+    let initial = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    let scratch = f.dir.path().join("scratch");
+    std::fs::write(scratch.join("shared.txt"), "main\n").unwrap();
+    git::run(&scratch, &["commit", "-am", "main change"]).unwrap();
+    git::run(&scratch, &["push", "origin", "main"]).unwrap();
+    let main = git::run(&scratch, &["rev-parse", "HEAD"]).unwrap();
+    assert!(
+        f.call(
+            "run_integrate_main",
+            json!({"expected_head":initial,"expected_main_head":main})
+        )
+        .is_err()
+    );
+    assert_eq!(git::run(&path, &["rev-parse", "HEAD"]).unwrap(), initial);
+    assert!(
+        git::run(&path, &["status", "--porcelain"])
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        f.events("run.branch_conflict").last().unwrap()["reason"],
+        "main_merge_conflict"
+    );
+}
+
+#[test]
+fn run_checkpoint_rejects_unintegrated_main_and_incomplete_artifact_identity() {
+    let f = Fixture::new();
+    let main = bare_origin(f.dir.path(), &f.repo());
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    let sha = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    let digest = format!("localhost:5000/local/hello@sha256:{}", "a".repeat(64));
+    assert!(f.call("run_checkpoint", json!({"expected_head":sha,"expected_main_head":main,"artifact_digest":digest,"validation":["git","status","--porcelain"]})).is_err());
+    assert!(f.call("run_checkpoint", json!({"expected_head":sha,"expected_main_head":"bad","validation":["git","status","--porcelain"]})).is_err());
+    let result = f.call("run_checkpoint", json!({"expected_head":sha,"expected_main_head":main,"artifact_digest":digest,"build_id":"build-1","idempotency_key":"artifact","validation":["git","status","--porcelain"]})).unwrap();
+    assert_eq!(result["artifact_digest"], digest);
+    assert_eq!(result["build_id"], "build-1");
+    assert!(f.call("run_checkpoint", json!({"expected_head":sha,"expected_main_head":main,"idempotency_key":"artifact","validation":["git","status","--porcelain"]})).is_err());
+    assert!(f.call("run_checkpoint", json!({"expected_head":sha,"idempotency_key":"artifact","validation":["git","status","--porcelain"]})).is_err());
+}
+
+#[test]
+fn run_checkpoint_holds_if_main_moves_during_validation() {
+    let f = Fixture::new();
+    let main = bare_origin(f.dir.path(), &f.repo());
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    let sha = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    let script = f.dir.path().join("move-main.py");
+    std::fs::write(&script, "import subprocess,sys\nsubprocess.run(['git','-C',sys.argv[1],'commit','--allow-empty','-m','during validation'],check=True)\nsubprocess.run(['git','-C',sys.argv[1],'push','origin','main'],check=True)\n").unwrap();
+    let scratch = f.dir.path().join("scratch");
+    assert!(f.call("run_checkpoint", json!({"expected_head":sha,"expected_main_head":main,"validation":["python3",script.to_str().unwrap(),scratch.to_str().unwrap()]})).is_err());
+    assert!(f.events("run.checkpoint_verified").is_empty());
+    assert_eq!(git::run(&path, &["rev-parse", "HEAD"]).unwrap(), sha);
+}

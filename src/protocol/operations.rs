@@ -250,6 +250,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Terminal summary: status, step outcomes, integrated head, delivery outcome",
     ),
     (
+        "run_integrate_main",
+        "Merge the expected current main into a durable Run branch",
+    ),
+    (
         "run_main_head",
         "Read the current remote release base commit for a Run",
     ),

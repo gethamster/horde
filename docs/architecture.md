@@ -48,6 +48,31 @@ Each local Run keeps the existing `refs/heads/horde/<task-id>` branch and integr
 
 `run_checkpoint` executes a validation command against an exact expected commit and records a durable validation ID. A configured `HORDE_RUN_ATTESTATION_KEY` signs the project, tenant, Thread, Brief, branch, commit, validation ID, and passed command with HMAC-SHA256; signing requires both Thread and Brief IDs. The key is a base64-encoded 32-byte secret shared with the trusted release verifier. `run_publish` pushes only a currently verified commit with Git's ordinary non-force push. `run_events` pages through versioned Run events with authoritative project and tenant identity and stable event IDs. These operations do not require a PR; templates that include the older delivery step retain their existing GitHub behavior.
 
+### Local branch-first delivery
+
+`run_integrate_main` fetches the exact release base and merges it into the durable
+Run branch under the integration lock. Both the Run head and `main` head are
+explicit expectations. A conflict aborts the merge and records repair evidence,
+leaving the previous branch checkpoint intact. No push or artifact build occurs.
+
+Checkpoints always report `tree_sha`. Supplying `expected_main_head` additionally
+requires that base to be an ancestor of the Run and still be the remote base before
+and after validation. Optional paired `artifact_digest` and `build_id` bind an
+already-built artifact to the signed checkpoint; this requires the expected base.
+Horde validates identity and checks, while Release verifies publication/provenance,
+constructs the new main merge commit, compares its tree, and deploys the same digest.
+The built commit remains the provenance source even when the release merge commit
+has a different identity. Existing callers may omit the new optional fields.
+
+`containers/local/Dockerfile` packages a prebuilt Horde binary with Rust, Git,
+Docker CLI/Compose, and agent harnesses. The local Compose installation runs the
+controller and its native executor in that sandbox with concurrency one. Its
+Docker socket comes from a sandbox-owned daemon volume, never the host daemon.
+The HTTP bridge shares only the controller's Unix socket/state volume. Persistent
+Git clones preserve branch history; fleet source snapshots are not used for this
+local path. Cargo registry/git and target caches persist across attempts. These
+trusted local sandboxes do not claim VM or AX isolation.
+
 ## Scheduling and recovery
 
 A step becomes eligible after its dependencies reach terminal states and its condition is satisfied. Unhandled failed dependencies skip downstream work. Retry counts are bounded. Explicit failure branches can repair a failure and lead to another verification step. Role fallbacks are opt-in, cycle-checked TOML mappings and are recorded as escalation events.
