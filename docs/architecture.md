@@ -64,7 +64,8 @@ constructs the new main merge commit, compares its tree, and deploys the same di
 The built commit remains the provenance source even when the release merge commit
 has a different identity. Existing callers may omit the new optional fields.
 
-`containers/local/Dockerfile` packages a prebuilt Horde binary with Rust, Git,
+`containers/local/Dockerfile` builds Horde from a committed source archive during
+publication, then packages the executable with Rust, Git,
 Docker CLI/Compose, and agent harnesses. The local Compose installation runs the
 controller and its native executor in that sandbox with concurrency one. Its
 Docker socket comes from a sandbox-owned daemon volume, never the host daemon.
