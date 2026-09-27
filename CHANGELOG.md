@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.16 - 2026-09-27
+
+- Let an operator unpin an idle Run from an exhausted subscription after another
+  authenticated account is granted to its project. The existing Run branch and
+  steps remain intact; a durable receipt makes lost-response retries safe.
+
 ## 0.6.15 - 2026-09-27
 
 - Recover agent-authored edits left in a failed local Run step with explicit

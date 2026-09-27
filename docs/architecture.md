@@ -439,6 +439,13 @@ creating another quota identity. Remote reservations remain at the controller
 through disconnection or uncertain completion. Execution never infers ownership
 or releases reservations from worker conversation.
 
+An operator can call `run_unpin_account` on a quiescent Run when its saved
+executor settings pin an exhausted account and another authenticated account
+is granted to the project. The operation removes only the specified pin, keeps
+the Run branch and step identities, and records a durable idempotency receipt
+and audit event. Active or uncertain attempts and reservations block the
+change; the next dispatch chooses from the project's eligible account pool.
+
 New projects place workspaces, app resources, skills, and harness profiles under
 project-specific paths. The default project retains its legacy paths. Native
 execution provides logical separation within one OS user's authority; arbitrary

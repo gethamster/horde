@@ -490,6 +490,9 @@ fn dispatch_authorized(
             &strings(&args, "validation")?,
             string(&args, "idempotency_key")?,
         ),
+        "run_unpin_account" => crate::run::unpin_account(
+            db, oid, string(&args, "account")?, string(&args, "idempotency_key")?,
+        ),
         "run_checkpoint" => crate::run::checkpoint_run(
             db,
             oid,
