@@ -92,6 +92,15 @@ Git clones preserve branch history; fleet source snapshots are not used for this
 local path. Cargo registry/git and target caches persist across attempts. These
 trusted local sandboxes do not claim VM or AX isolation.
 
+Managed Codex normally runs with its workspace-write sandbox. A trusted Docker
+installation may set `HORDE_TRUSTED_DOCKER_CODEX=1` to let Codex write Git
+metadata inside the already isolated Deliver container. Horde applies that
+mode only when the executor permits network access and the container is
+connected to `sandbox-docker:2375`; other Docker hosts and the default
+installation retain workspace-write mode. The option
+does not change project grants, worker claims, or coordination tokens, and
+the Deliver container must not mount a host Docker socket.
+
 ## Scheduling and recovery
 
 A step becomes eligible after its dependencies reach terminal states and its condition is satisfied. Unhandled failed dependencies skip downstream work. Retry counts are bounded. Explicit failure branches can repair a failure and lead to another verification step. Role fallbacks are opt-in, cycle-checked TOML mappings and are recorded as escalation events.

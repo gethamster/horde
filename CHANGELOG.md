@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.18 - 2026-09-27
+
+- Let explicitly trusted local Docker installations run managed Codex with
+  full access inside the worker container so agents can commit Git worktrees.
+  The default sandbox and project account policies remain unchanged.
+
 ## 0.6.17 - 2026-09-27
 
 - Keep task-wide messages sent by feedback follow-up agents in the worker
