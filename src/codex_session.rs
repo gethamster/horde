@@ -305,20 +305,49 @@ async fn execute_inner(
     Ok(result)
 }
 
-/// The `thread/start` request: a workspace-write sandbox with the coordination
-/// MCP server, plus network access when the executor enables it.
+/// The `thread/start` request keeps the Codex sandbox enabled by default.
 pub(crate) fn thread_start(
     i: &crate::executor::Invocation<'_>,
     config: &crate::config::ExecutorConfig,
     executable: &std::path::Path,
 ) -> Value {
-    let mut request = json!({"cwd":i.workspace,"model":config.model,"approvalPolicy":"never","sandbox":"workspace-write","config":{
+    let docker_host = std::env::var("DOCKER_HOST").ok();
+    let trusted = trusted_docker_mode(
+        std::env::var("HORDE_TRUSTED_DOCKER_CODEX").as_deref() == Ok("1"),
+        std::path::Path::new("/.dockerenv").is_file(),
+        docker_host.as_deref(),
+        config.network,
+    );
+    thread_start_with_policy(i, config, executable, trusted)
+}
+
+fn trusted_docker_mode(
+    opt_in: bool,
+    in_container: bool,
+    docker_host: Option<&str>,
+    network_allowed: bool,
+) -> bool {
+    opt_in && in_container && network_allowed && docker_host == Some("tcp://sandbox-docker:2375")
+}
+
+fn thread_start_with_policy(
+    i: &crate::executor::Invocation<'_>,
+    config: &crate::config::ExecutorConfig,
+    executable: &std::path::Path,
+    trusted_docker: bool,
+) -> Value {
+    let sandbox = if trusted_docker {
+        "danger-full-access"
+    } else {
+        "workspace-write"
+    };
+    let mut request = json!({"cwd":i.workspace,"model":config.model,"approvalPolicy":"never","sandbox":sandbox,"config":{
         "mcp_servers.coordination.command":executable,
         "mcp_servers.coordination.args":["--data-dir",i.db.root,"mcp"],
         "mcp_servers.coordination.env.HORDE_WORKER_TOKEN":i.token,
         "mcp_servers.coordination.default_tools_approval_mode":"approve"
     }});
-    if config.network {
+    if config.network && !trusted_docker {
         request["config"]["sandbox_workspace_write.network_access"] = json!(true);
     }
     request
@@ -326,7 +355,7 @@ pub(crate) fn thread_start(
 
 #[cfg(test)]
 mod tests {
-    use super::thread_start;
+    use super::{thread_start, thread_start_with_policy, trusted_docker_mode};
     use serde_json::json;
 
     #[test]
@@ -365,6 +394,54 @@ mod tests {
         assert_eq!(
             online["config"]["mcp_servers.coordination.default_tools_approval_mode"],
             "approve"
+        );
+        assert!(!trusted_docker_mode(
+            true,
+            false,
+            Some("tcp://sandbox-docker:2375"),
+            true,
+        ));
+        assert!(!trusted_docker_mode(true, true, None, true));
+        assert!(!trusted_docker_mode(
+            false,
+            true,
+            Some("tcp://sandbox-docker:2375"),
+            true,
+        ));
+        assert!(!trusted_docker_mode(
+            true,
+            true,
+            Some("unix:///var/run/docker.sock"),
+            true,
+        ));
+        assert!(!trusted_docker_mode(
+            true,
+            true,
+            Some("tcp://host.docker.internal:2375"),
+            true,
+        ));
+        assert!(!trusted_docker_mode(
+            true,
+            true,
+            Some("tcp://sandbox-docker:2375"),
+            false,
+        ));
+        let trusted = thread_start_with_policy(
+            &invocation,
+            &config,
+            std::path::Path::new("/bin/horde"),
+            trusted_docker_mode(true, true, Some("tcp://sandbox-docker:2375"), true),
+        );
+        assert_eq!(trusted["sandbox"], "danger-full-access");
+        assert_eq!(trusted["approvalPolicy"], "never");
+        assert_eq!(
+            trusted["config"]["mcp_servers.coordination.env.HORDE_WORKER_TOKEN"],
+            "token"
+        );
+        assert!(
+            trusted["config"]
+                .get("sandbox_workspace_write.network_access")
+                .is_none()
         );
     }
 }
