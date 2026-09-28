@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.17 - 2026-09-27
+
+- Keep task-wide messages sent by feedback follow-up agents in the worker
+  mailbox without scheduling recursive follow-ups. Direct messages and later
+  operator feedback can still wake the targeted worker for another revision.
+
 ## 0.6.16 - 2026-09-27
 
 - Let an operator unpin an idle Run from an exhausted subscription after another

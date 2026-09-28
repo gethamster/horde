@@ -1230,6 +1230,168 @@ mod coordination_regressions {
         assert_ne!(db.worker(&worker).unwrap()["step"], step["id"]);
     }
     #[test]
+    fn feedback_followup_broadcast_does_not_spawn_recursive_followups() {
+        let (_dir, db, parent, _) = fixture();
+        let step = db.steps(&parent).unwrap()[0].clone();
+        let original_step = step["id"].as_str().unwrap().to_owned();
+        let (attempt, worker, _) = begin(&db, &step).unwrap();
+        db.finish(
+            step["id"].as_str().unwrap(),
+            &attempt,
+            &worker,
+            Ok(json!({"accepted":true})),
+        )
+        .unwrap();
+        let peer = db.register(&parent, Some(&original_step)).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        db.conn
+            .execute(
+                "INSERT INTO attempts(id,step,worker,state,started) VALUES(?,?,?,'succeeded',?)",
+                rusqlite::params![id(), original_step, peer, now()],
+            )
+            .unwrap();
+        db.steer(
+            &parent,
+            "feedback-1",
+            "revise",
+            &json!({}),
+            true,
+            Some(&worker),
+        )
+        .unwrap();
+        wake_notified(&db).unwrap();
+        let followup = db.worker(&worker).unwrap()["step"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(followup, step["id"]);
+        assert!(
+            db.rows("SELECT name FROM steps WHERE id=?", &[&followup])
+                .unwrap()[0]["name"]
+                .as_str()
+                .unwrap()
+                .contains(".followup-")
+        );
+        let step = db
+            .rows("SELECT * FROM steps WHERE id=?", &[&followup])
+            .unwrap()
+            .remove(0);
+        let (attempt, _, _) = begin(&db, &step).unwrap();
+        db.send(
+            &parent,
+            &worker,
+            "broadcast-1",
+            "task",
+            "coordination",
+            &json!({}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(db.worker(&peer).unwrap()["status"], "idle");
+        assert_eq!(
+            db.messages(&peer, 0, 100)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // A message arriving during an attempt must not re-notify the worker
+        // when it finishes, even though the mailbox entry remains actionable.
+        db.conn
+            .execute("UPDATE workers SET status='working' WHERE id=?", [&peer])
+            .unwrap();
+        let peer_attempt = id();
+        db.conn
+            .execute(
+                "INSERT INTO attempts(id,step,worker,state,started) VALUES(?,?,?,'running',?)",
+                rusqlite::params![peer_attempt, original_step, peer, now()],
+            )
+            .unwrap();
+        db.finish(
+            &original_step,
+            &peer_attempt,
+            &peer,
+            Ok(json!({"accepted":true})),
+        )
+        .unwrap();
+        assert_eq!(db.worker(&peer).unwrap()["status"], "idle");
+        assert_eq!(db.worker(&peer).unwrap()["step"], original_step);
+        db.finish(&followup, &attempt, &worker, Ok(json!({"accepted":true})))
+            .unwrap();
+        wake_notified(&db).unwrap();
+        assert_eq!(db.worker(&worker).unwrap()["step"], followup);
+        db.steer(
+            &parent,
+            "feedback-2",
+            "revise again",
+            &json!({}),
+            true,
+            Some(&worker),
+        )
+        .unwrap();
+        wake_notified(&db).unwrap();
+        assert_ne!(db.worker(&worker).unwrap()["step"], followup);
+    }
+    #[test]
+    fn earlier_top_level_message_stays_wakeable_after_sender_moves_to_followup() {
+        let (_dir, db, parent, _) = fixture();
+        let step = db.steps(&parent).unwrap()[0].clone();
+        let (attempt, worker, _) = begin(&db, &step).unwrap();
+        db.finish(
+            step["id"].as_str().unwrap(),
+            &attempt,
+            &worker,
+            Ok(json!({"accepted":true})),
+        )
+        .unwrap();
+        let peer = db
+            .register(&parent, Some(step["id"].as_str().unwrap()))
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        db.conn
+            .execute(
+                "INSERT INTO attempts(id,step,worker,state,started) VALUES(?,?,?,'succeeded',?)",
+                rusqlite::params![id(), step["id"].as_str(), peer, now()],
+            )
+            .unwrap();
+        db.send(
+            &parent,
+            &worker,
+            "original-broadcast",
+            "task",
+            "please inspect",
+            &json!({}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(db.actionable_notifications(&peer).unwrap(), (1, 1));
+        db.conn
+            .execute("UPDATE workers SET status='idle' WHERE id=?", [&peer])
+            .unwrap();
+        db.steer(
+            &parent,
+            "operator-followup",
+            "revise",
+            &json!({}),
+            true,
+            Some(&worker),
+        )
+        .unwrap();
+        wake_notified(&db).unwrap();
+        assert_ne!(db.worker(&worker).unwrap()["step"], step["id"]);
+        assert_eq!(db.actionable_notifications(&peer).unwrap(), (1, 1));
+        db.conn
+            .execute("UPDATE workers SET status='notified' WHERE id=?", [&peer])
+            .unwrap();
+        wake_notified(&db).unwrap();
+        assert_ne!(db.worker(&peer).unwrap()["step"], step["id"]);
+    }
+    #[test]
     fn remote_terminal_snapshot_notifies_original_local_worker() {
         let (_dir, db, parent, child) = fixture();
         let worker = db.register(&parent, None).unwrap()["id"]

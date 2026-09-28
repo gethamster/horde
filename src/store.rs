@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 /// Status of the per-task synthetic worker row that carries operator steering messages.
 /// Operator rows never receive mail, never wake, and are hidden from worker listings.
 pub const OPERATOR_STATUS: &str = "operator";
@@ -103,7 +103,7 @@ impl Store {
         }
         // Hold the daemon lock through migration so an older scheduler cannot
         // dispatch work while the new ownership schema is being installed.
-        let _migration_lock = if (5..=7).contains(&version) {
+        let _migration_lock = if (5..=8).contains(&version) {
             use fs2::FileExt;
             let lock = std::fs::OpenOptions::new()
                 .create(true)
@@ -178,6 +178,22 @@ CREATE TABLE IF NOT EXISTS external_ops(task TEXT NOT NULL REFERENCES tasks(id),
 CREATE TABLE IF NOT EXISTS workspace_bases(task TEXT PRIMARY KEY REFERENCES tasks(id), start TEXT NOT NULL, source TEXT NOT NULL, fetched INTEGER NOT NULL, created INTEGER NOT NULL);
 INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
 ")?;
+        if version < 9 {
+            // Keep historical actionable mail wakeable. New messages pin the
+            // scheduling decision when sent, so later worker step changes cannot
+            // reinterpret a previously delivered notification.
+            let has_wakeable: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='wakeable'",
+                [],
+                |row| row.get(0),
+            )?;
+            if has_wakeable == 0 {
+                conn.execute(
+                    "ALTER TABLE messages ADD COLUMN wakeable INTEGER NOT NULL DEFAULT 1",
+                    [],
+                )?;
+            }
+        }
         crate::delegation::migrate(&conn)?;
         crate::management::migrate(&conn)?;
         crate::skills::migrate(&conn)?;
@@ -533,10 +549,19 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
                 if old["sender"]!=sender || old["body"]!=body || old["destination"]!=destination || serde_json::from_str::<Value>(old["refs"].as_str().context("message refs")?)?!=*refs || old["actionable"]!=json!(i64::from(actionable)){bail!("message id reused with different payload");}return Ok(json!({"id":mid,"duplicate":true}));
             }
             let operator=w["status"]==OPERATOR_STATUS;
+            // Follow-up workers may coordinate with the task, but their task-wide
+            // broadcasts must not recursively schedule another generation of agents.
+            // A direct message or operator feedback remains actionable.
+            let recursive_broadcast = destination == "task"
+                && !operator
+                && self.rows("SELECT name FROM steps WHERE id=?", &[&w["step"].as_str()])?
+                    .first()
+                    .and_then(|step| step["name"].as_str())
+                    .is_some_and(|name| name.contains(".followup-"));
             let recipients=self.recipients(oid,sender,destination,operator)?;
             let self_delivery=recipients.iter().any(|r|r["id"]==sender);
-            self.conn.execute("INSERT INTO messages(id,task,sender,destination,body,refs,actionable,created) VALUES(?,?,?,?,?,?,?,?)",params![mid,oid,sender,destination,body,refs.to_string(),actionable,now()])?;
-            for r in &recipients {let wid=r["id"].as_str().context("recipient")?;self.conn.execute("INSERT INTO receipts(message,worker) VALUES(?,?)",params![mid,wid])?;if actionable{self.conn.execute("UPDATE workers SET status='notified',updated=? WHERE id=? AND status='idle'",params![now(),wid])?;}}
+            self.conn.execute("INSERT INTO messages(id,task,sender,destination,body,refs,actionable,created,wakeable) VALUES(?,?,?,?,?,?,?,?,?)",params![mid,oid,sender,destination,body,refs.to_string(),actionable,now(),actionable && !recursive_broadcast])?;
+            for r in &recipients {let wid=r["id"].as_str().context("recipient")?;self.conn.execute("INSERT INTO receipts(message,worker) VALUES(?,?)",params![mid,wid])?;if actionable && !recursive_broadcast{self.conn.execute("UPDATE workers SET status='notified',updated=? WHERE id=? AND status='idle'",params![now(),wid])?;}}
             self.event(oid,"message.sent",json!({"id":mid,"sender":sender,"destination":destination,"recipients":recipients.len(),"operator":operator,"self_delivery":self_delivery}))?;
             Ok(json!({"id":mid,"recipients":recipients.len(),"duplicate":false}))
         })
@@ -626,6 +651,20 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
     pub fn messages(&self, wid: &str, after: i64, limit: i64) -> Result<Value> {
         self.worker(wid)?;
         Ok(json!(self.rows("SELECT m.* FROM messages m JOIN receipts r ON r.message=m.id WHERE r.worker=? AND r.ack=0 AND m.seq>? ORDER BY m.seq LIMIT ?",&[&wid,&after,&limit.clamp(1,1000)])?))
+    }
+    /// Total and wakeable new actionable mail. Existing follow-up broadcasts remain
+    /// readable, including after an upgrade, but cannot drive a follow-up cascade.
+    pub fn actionable_notifications(&self, wid: &str) -> Result<(i64, i64)> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(m.wakeable),0) \
+             FROM messages m JOIN receipts r ON r.message=m.id \
+             WHERE r.worker=?1 AND r.ack=0 AND m.actionable=1 \
+             AND m.seq>COALESCE((SELECT dispatched_seq FROM notifications WHERE worker=?1),0)",
+                [wid],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
     }
     pub fn acknowledge(&self, wid: &str, ids: &[String]) -> Result<()> {
         self.atomic(||{for mid in ids {if self.conn.execute("UPDATE receipts SET ack=1 WHERE worker=? AND message=?",params![wid,mid])?!=1{bail!("message not in worker mailbox");}}
@@ -740,7 +779,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             self.conn.execute(
                 "UPDATE workers SET status=?,updated=? WHERE id=?",
                 params![if success {
-                    let unread:i64=self.conn.query_row("SELECT COUNT(*) FROM messages m JOIN receipts r ON r.message=m.id WHERE r.worker=? AND r.ack=0 AND m.actionable=1 AND m.seq>COALESCE((SELECT dispatched_seq FROM notifications WHERE worker=?),0)",params![worker,worker],|r|r.get(0))?;
+                    let (_, unread) = self.actionable_notifications(worker)?;
                     if unread>0 {"notified"} else {"idle"}
                 } else { "failed" }, now(), worker],
             )?;
@@ -770,5 +809,52 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         Ok(serde_json::from_str(
             row["spec"].as_str().context("step spec")?,
         )?)
+    }
+}
+
+#[cfg(test)]
+mod wakeable_migration_tests {
+    use super::*;
+
+    #[test]
+    fn schema_eight_messages_keep_their_original_actionability() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.sqlite3");
+        let legacy = Connection::open(&path).unwrap();
+        legacy.execute_batch("PRAGMA user_version=8;
+            CREATE TABLE messages(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,task TEXT NOT NULL,sender TEXT NOT NULL,destination TEXT NOT NULL,body TEXT NOT NULL,refs TEXT NOT NULL,actionable INTEGER NOT NULL,created INTEGER NOT NULL);
+            INSERT INTO messages(id,task,sender,destination,body,refs,actionable,created) VALUES('legacy','task','worker','task','hello','{}',1,1);").unwrap();
+        drop(legacy);
+        let db = Store::open(root.path()).unwrap();
+        let (actionable, wakeable): (i64, i64) = db
+            .conn
+            .query_row(
+                "SELECT actionable,wakeable FROM messages WHERE id='legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((actionable, wakeable), (1, 1));
+        assert_eq!(
+            db.conn
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            i64::from(SCHEMA_VERSION)
+        );
+        // An interrupted upgrade may have added the column before recording
+        // the new user_version. Reopening it must not try to add it again.
+        db.conn.pragma_update(None, "user_version", 8).unwrap();
+        drop(db);
+        let db = Store::open(root.path()).unwrap();
+        assert_eq!(
+            db.conn
+                .query_row(
+                    "SELECT wakeable FROM messages WHERE id='legacy'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
     }
 }

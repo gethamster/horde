@@ -36,6 +36,12 @@ for recovery when the installed updater cannot open this layout.
 
 Messages and recipient receipts commit together before returning a sender acknowledgement. Message identity is immutable: reusing an ID with a different envelope fails. Delivery is at-least-once until explicit recipient acknowledgement. Acknowledgement cursors stop before the first unread message. A separate notification watermark prevents repeated model calls for an already-delivered wakeup.
 
+Each message also pins whether it may wake an idle worker. A task-wide broadcast
+from an automatically generated follow-up remains in recipient mailboxes but
+cannot schedule another follow-up generation. Direct worker messages and operator
+feedback remain wakeable. Existing messages retain their prior wake behavior
+when a store upgrades to schema 9.
+
 Native file writes and patches check exclusive claims. An atomic prefix handoff also transfers nested claims. Worker status updates and messages cannot implicitly release ownership. Failed and uncertain attempts preserve claims. Workspace and branch registrations are unique. New integrated worktrees use the configured remote base, fetched before allocation; without a configured base, remote-tip and local-HEAD fallbacks record warnings. The operator checkout is left untouched. A per-task lock covers allocation and atomic start/event recording. Recovery preserves surviving task branches and repairs missing provenance with an explicit recovered source; a missing recorded worktree and branch requires reconciliation.
 
 Artifact bytes are addressed by SHA-256, synced before the database reference commits, and checked on retrieval. Each link records inputs and verification status. Knowledge has its own provenance and relationship tables. Execution state is never inferred from a knowledge claim or conversation.
