@@ -81,6 +81,7 @@ pub fn command(
     for child in ["codex", "claude", "config", "cache"] {
         private_directory(&profile.join(child))?;
     }
+    crate::execution_setup::ensure_account(db, project, account)?;
     if config.kind == "claude" && config.auth_mode == "login" {
         let credential = accounts::credential(db, project, account)?;
         ensure!(

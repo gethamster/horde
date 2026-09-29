@@ -20,6 +20,17 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Serve the private administrative setup API.
+    SetupServe {
+        #[arg(long, default_value = "127.0.0.1:7407")]
+        listen: std::net::SocketAddr,
+    },
+    /// Git credential protocol helper for component-owned execution profiles.
+    GitCredential {
+        #[arg(long)]
+        project_id: String,
+        operation: String,
+    },
     /// Install repo skills, MCP configuration, and an always-delegate policy.
     Init {
         #[arg(long, value_enum)]
@@ -676,6 +687,24 @@ async fn main() -> Result<()> {
     let root = root.canonicalize()?;
     let output = match cli.command {
         Commands::Init { .. } => unreachable!(),
+        Commands::SetupServe { listen } => {
+            horde::setup_admin::serve(root, listen).await?;
+            return Ok(());
+        }
+        Commands::GitCredential {
+            project_id,
+            operation,
+        } => {
+            use std::io::Read;
+            let mut input = String::new();
+            std::io::stdin().take(65537).read_to_string(&mut input)?;
+            anyhow::ensure!(input.len() <= 65536, "credential input too large");
+            print!(
+                "{}",
+                horde::execution_setup::credential_helper(&root, &project_id, &operation, &input)?
+            );
+            return Ok(());
+        }
         Commands::Network { config, command } => {
             match &command {
                 NetworkCommands::Key { command } => {

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.6.19 - 2026-09-29
+
+- Configure execution profiles, workspace placement, storage, and account pools
+  through a dedicated authenticated setup API. Durable operation receipts let
+  installers inspect interrupted requests without blindly repeating changes.
+- Restore component-owned execution profiles in native Rust, including scoped
+  Git credential handling, instead of requiring installation-side scripts to
+  edit runtime internals.
+
 ## 0.6.18 - 2026-09-27
 
 - Let explicitly trusted local Docker installations run managed Codex with

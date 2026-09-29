@@ -640,3 +640,58 @@ credentials remain in the controller's private account storage. Worker
 app-server sessions receive access tokens through the authenticated controller
 connection and use the external-token login mode. Claude subscription sessions
 use the selected setup token and an account-specific `CLAUDE_CONFIG_DIR`.
+
+### Private setup API
+
+Run `horde --data-dir /data/horde setup-serve --listen 127.0.0.1:7407` with
+`HORDE_SETUP_ADMIN_TOKEN_FILE` pointing to a private file containing a dedicated
+administrative bearer token (at least 32 characters). Keep this listener on a
+private management network; it is HTTP, so remote transport needs TLS termination.
+Project grants do not authorize this listener. Do not mount the administrative
+credential in worker containers.
+
+`GET /v1/setup/capabilities` advertises version 1, supported `operations`, and
+`idempotency: true`. `PUT /v1/setup/operations/{id}` accepts `{kind, config}`;
+`GET` on that URL inspects the durable receipt. IDs contain 1–128 ASCII letters,
+digits, hyphens, or underscores. Supported configurations are:
+
+- `execution-profile`: `{scope: "foundry" | "local", projects: [{id, slug,
+  git_proxy_token}]}`. This upserts profiles; omitted projects retain their
+  existing profiles. IDs and slugs must match registered projects. Credentials
+  remain in component-owned private storage, never in receipts.
+- `workspace`: `{projects: [{id}]}`. Creates the component-owned workspace link
+  at `projects/{id}/workspaces`, targeting
+  `${HORDE_EXECUTION_WORKSPACE_ROOT:-/workspace}/.horde-workspaces/{id}`.
+  Existing workspaces require quiescence, are copied with the original retained
+  as `workspaces.pre-api-migration`, and are never overwritten on collision.
+- `account-pool`: `{scope: "foundry" | "local", projects: [id]}`. Explicitly opts
+  in to granted-account selection after at least two compatible authenticated
+  accounts are ready. Local retains one slot; Foundry uses two. Running or
+  unsettled work blocks configuration. Existing drain state is retained, and
+  unexpected runtime concurrency overrides require reconciliation.
+- `storage`: the fields accepted by `runtime_storage_configure`.
+
+Receipts contain `id`, `kind`, `state`, and nonsecret `result` metadata. A claim is
+persisted before any effects. Repeating an identical ID and payload returns its
+receipt; changing the payload returns HTTP 409. A disconnected client must query
+its receipt before taking further action. `running` after an interrupted process
+is unresolved and is never replayed automatically. `failed` may include partial
+filesystem effects and also requires reconciliation. Any newer operation of the
+same kind makes an earlier receipt `superseded`, even if the newer operation
+failed: an older success does not prove current desired state. Submit an explicit
+new operation ID after reviewing component state. Concurrent mutations receive
+HTTP 429 and are not claimed.
+
+The setup service and execution daemon must share the same component data volume,
+execution layout, and binary image. Optional layout variables are
+`HORDE_EXECUTION_HOME` (default `/home/horde`),
+`HORDE_EXECUTION_WORKSPACE_ROOT` (`/workspace`), `HORDE_EXECUTION_RUSTUP_ROOT`
+(`/usr/local/rustup`), and `HORDE_EXECUTION_TARGET_ROOT` (`/cache/target`).
+
+Set `HORDE_EXECUTION_HOME` explicitly on the execution daemon to initialize its
+link to the shared managed Git configuration before the first setup request. A
+later setup request then becomes visible to an already-running daemon. Setup
+operations are not an atomic transaction across multiple files and SQL: an I/O
+failure can leave partial filesystem changes. Failed receipts preserve that
+uncertainty and prohibit automatic replay. All setup routes share a per-listener
+limit of 120 requests per second; authentication runs before JSON extraction.
