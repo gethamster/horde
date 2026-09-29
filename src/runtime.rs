@@ -920,6 +920,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
         .open(root.join("daemon.lock"))?;
     lock.try_lock_exclusive()
         .context("another daemon is already running")?;
+    crate::execution_setup::restore(&db)?;
     crate::provider_login::recover(root)?;
     crate::provider_wallet::recover(root)?;
     crate::enrollment::bootstrap(root)?;
