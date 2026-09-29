@@ -3,7 +3,7 @@ use crate::store::Store;
 use anyhow::{Context, Result, ensure};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::Path,
     http::{HeaderMap, StatusCode},
     routing::get,
 };
@@ -28,7 +28,7 @@ impl Admin {
     }
 }
 async fn guard(
-    State(state): State<Arc<Admin>>,
+    state: Arc<Admin>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -95,7 +95,7 @@ fn valid_id(id: &str) -> bool {
 fn receipt(db: &Store, id: &str) -> Result<Option<Value>> {
     Ok(db.conn.query_row("SELECT a.kind,CASE WHEN EXISTS(SELECT 1 FROM setup_receipts b WHERE b.kind=a.kind AND b.rowid>a.rowid) THEN 'superseded' ELSE a.state END,a.result FROM setup_receipts a WHERE a.id=?",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?))).optional()?.map(|(kind,state,result)|json!({"id":id,"kind":kind,"state":state,"result":result.and_then(|v|serde_json::from_str::<Value>(&v).ok())})))
 }
-async fn capabilities(State(s): State<Arc<Admin>>, h: HeaderMap) -> Reply {
+async fn capabilities(s: Arc<Admin>, h: HeaderMap) -> Reply {
     if !authorized(&s, &h) {
         return Err(error(
             StatusCode::UNAUTHORIZED,
@@ -106,7 +106,7 @@ async fn capabilities(State(s): State<Arc<Admin>>, h: HeaderMap) -> Reply {
         json!({"version":1,"operations":["execution-profile","workspace","account-pool","storage"],"idempotency":true}),
     ))
 }
-async fn status(State(s): State<Arc<Admin>>, h: HeaderMap, Path(id): Path<String>) -> Reply {
+async fn status(s: Arc<Admin>, h: HeaderMap, Path(id): Path<String>) -> Reply {
     if !authorized(&s, &h) {
         return Err(error(
             StatusCode::UNAUTHORIZED,
@@ -124,7 +124,7 @@ async fn status(State(s): State<Arc<Admin>>, h: HeaderMap, Path(id): Path<String
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "operation not found"))
 }
 async fn apply(
-    State(s): State<Arc<Admin>>,
+    s: Arc<Admin>,
     h: HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<Request>,
@@ -234,6 +234,33 @@ fn execute(db: &Store, r: &Request) -> Result<Value> {
         _ => anyhow::bail!("unsupported operation"),
     }
 }
+// Startup configuration is captured by the service, never extracted from a request.
+// Only headers, operation IDs, and JSON bodies cross the HTTP input boundary.
+fn router(admin: Arc<Admin>) -> Router {
+    let capabilities_admin = admin.clone();
+    let status_admin = admin.clone();
+    let apply_admin = admin.clone();
+    Router::new()
+        .route(
+            "/v1/setup/capabilities",
+            get(move |headers: HeaderMap| capabilities(capabilities_admin.clone(), headers)),
+        )
+        .route(
+            "/v1/setup/operations/{id}",
+            get(move |headers: HeaderMap, id: Path<String>| {
+                status(status_admin.clone(), headers, id)
+            })
+            .put(
+                move |headers: HeaderMap, id: Path<String>, body: Json<Request>| {
+                    apply(apply_admin.clone(), headers, id, body)
+                },
+            ),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
+        .layer(axum::middleware::from_fn(move |request, next| {
+            guard(admin.clone(), request, next)
+        }))
+}
 pub async fn serve(root: PathBuf, listen: std::net::SocketAddr) -> Result<()> {
     let path = std::env::var("HORDE_SETUP_ADMIN_TOKEN_FILE")
         .context("HORDE_SETUP_ADMIN_TOKEN_FILE required")?;
@@ -244,12 +271,7 @@ pub async fn serve(root: PathBuf, listen: std::net::SocketAddr) -> Result<()> {
         "admin credential must have at least 32 characters"
     );
     let state = Arc::new(Admin::new(root, token));
-    let app = Router::new()
-        .route("/v1/setup/capabilities", get(capabilities))
-        .route("/v1/setup/operations/{id}", get(status).put(apply))
-        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), guard))
-        .with_state(state.clone());
+    let app = router(state);
     axum::serve(tokio::net::TcpListener::bind(listen).await?, app).await?;
     Ok(())
 }
@@ -313,11 +335,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let token = "test-administrator-token-not-project";
         let state = Arc::new(Admin::new(dir.path().into(), token));
-        let app = Router::new()
-            .route("/v1/setup/capabilities", get(capabilities))
-            .route("/v1/setup/operations/{id}", get(status).put(apply))
-            .layer(axum::middleware::from_fn_with_state(state.clone(), guard))
-            .with_state(state.clone());
+        let app = router(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -342,6 +360,30 @@ mod tests {
                 .unwrap()
                 .status(),
             200
+        );
+        // A request cannot supply the startup data directory, even with admin auth.
+        let outside = tempfile::tempdir().unwrap();
+        assert_eq!(
+            client
+                .put(format!("{base}/operations/injected-root"))
+                .bearer_auth(token)
+                .json(&json!({"kind":"storage","config":{},"root":outside.path()}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            422
+        );
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+        assert_eq!(
+            client
+                .get(format!("{base}/operations/injected-root"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
         );
         let request = json!({"kind":"storage","config":{"automatic_cleanup":false}});
         let first: Value = client
@@ -420,32 +462,28 @@ mod tests {
             "Bearer administrator-token".parse().unwrap(),
         );
         assert_eq!(
-            status(
-                State(state.clone()),
-                headers.clone(),
-                Path("missing".into())
-            )
-            .await
-            .unwrap_err()
-            .0,
+            status(state.clone(), headers.clone(), Path("missing".into()))
+                .await
+                .unwrap_err()
+                .0,
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            status(State(state.clone()), headers.clone(), Path("../bad".into()))
+            status(state.clone(), headers.clone(), Path("../bad".into()))
                 .await
                 .unwrap_err()
                 .0,
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            status(State(state.clone()), HeaderMap::new(), Path("id".into()))
+            status(state.clone(), HeaderMap::new(), Path("id".into()))
                 .await
                 .unwrap_err()
                 .0,
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(
-            capabilities(State(state.clone()), HeaderMap::new())
+            capabilities(state.clone(), HeaderMap::new())
                 .await
                 .unwrap_err()
                 .0,
@@ -453,7 +491,7 @@ mod tests {
         );
         assert_eq!(
             apply(
-                State(state.clone()),
+                state.clone(),
                 headers.clone(),
                 Path("id".into()),
                 Json(Request {
@@ -468,7 +506,7 @@ mod tests {
         );
         assert_eq!(
             apply(
-                State(state.clone()),
+                state.clone(),
                 HeaderMap::new(),
                 Path("id".into()),
                 Json(Request {
