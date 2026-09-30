@@ -416,7 +416,7 @@ pub fn admin_schema(name: &str) -> Value {
             ("artifact_digest", "string"),
             ("build_id", "string"),
         ],
-        "run_events" => &[
+        "run_events" | "run_diagnostics" => &[
             ("task", "string"),
             ("after", "integer"),
             ("limit", "integer"),

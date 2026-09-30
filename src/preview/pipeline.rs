@@ -9,6 +9,8 @@ use tokio::task::JoinHandle;
 pub struct Queue {
     active: Option<JoinHandle<Result<()>>>,
     next_scan: Option<std::time::Instant>,
+    reservation_scan: Option<JoinHandle<Result<bool>>>,
+    next_reservation_scan: Option<std::time::Instant>,
 }
 impl Queue {
     /// Publication occupies controller capacity, while reap/cancel still run.
@@ -17,12 +19,15 @@ impl Queue {
         if self.active.as_ref().is_some_and(|h| h.is_finished()) {
             let h = self.active.take().unwrap();
             if !matches!(h.await, Ok(Ok(()))) {
-                db.conn.execute("UPDATE preview_jobs SET phase='held',error='publication interrupted; reconcile provenance before retry' WHERE phase NOT IN ('succeeded','held','superseded')",[])?;
+                for job in db.rows("SELECT id FROM preview_jobs WHERE phase NOT IN ('succeeded','held','superseded')",&[])? {
+                    phase(db,job["id"].as_str().context("preview job")?,"held",Some("publication interrupted; reconcile provenance before retry"))?;
+                }
             }
         }
         if self.active.is_some() {
             return Ok(true);
         }
+        self.reconcile_reservation(db).await?;
         let workers: i64 = db.conn.query_row(
             "SELECT COUNT(*) FROM attempts WHERE state IN ('running','uncertain')",
             [],
@@ -73,10 +78,56 @@ impl Queue {
         Ok(false)
     }
     pub async fn shutdown(self, db: &Store) -> Result<()> {
+        if let Some(h) = self.reservation_scan {
+            h.abort();
+            let _ = h.await;
+        }
         if let Some(h) = self.active {
             h.abort();
             let _ = h.await;
-            db.conn.execute("UPDATE preview_jobs SET error='controller stopped; external effects require reconciliation' WHERE phase NOT IN ('succeeded','held','superseded')",[])?;
+            db.atomic(|| {
+                let jobs=db.rows("SELECT id,task FROM preview_jobs WHERE phase NOT IN ('succeeded','held','superseded')",&[])?;
+                db.conn.execute("UPDATE preview_jobs SET error='controller stopped; external effects require reconciliation' WHERE phase NOT IN ('succeeded','held','superseded')",[])?;
+                for job in jobs {db.event(job["task"].as_str().context("preview task")?,"run.preview_interrupted",json!({"id":job["id"]}))?;}
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    async fn reconcile_reservation(&mut self, db: &Store) -> Result<()> {
+        if self
+            .reservation_scan
+            .as_ref()
+            .is_some_and(|h| h.is_finished())
+        {
+            // A failed/lost status leaves the durable lease and drain hold intact.
+            if !matches!(self.reservation_scan.take().unwrap().await, Ok(Ok(_))) {
+                eprintln!("preview reservation status unavailable; drain remains held");
+            }
+        }
+        if self.reservation_scan.is_some()
+            || self
+                .next_reservation_scan
+                .is_some_and(|t| std::time::Instant::now() < t)
+        {
+            return Ok(());
+        }
+        self.next_reservation_scan = Some(std::time::Instant::now() + Duration::from_secs(2));
+        let cursor = crate::management::value(db, "preview.reservation_cursor")?
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
+        let jobs=db.rows("SELECT j.rowid AS cursor,j.id FROM preview_jobs j WHERE (j.reservation IS NOT NULL OR EXISTS(SELECT 1 FROM preview_admissions a LEFT JOIN preview_admission_receipts r ON r.job=a.job AND r.ordinal=a.ordinal WHERE a.job=j.id AND (r.state IS NULL OR r.state NOT IN ('held','released','expired')))) AND j.phase IN ('held','superseded','succeeded','queued') ORDER BY j.rowid>? DESC,j.rowid LIMIT 1", &[&cursor])?;
+        if let Some(job) = jobs.first() {
+            crate::management::set(db, "preview.reservation_cursor", &job["cursor"].to_string())?;
+            let id = job["id"]
+                .as_str()
+                .context("preview reservation job")?
+                .to_owned();
+            let root = db.root.clone();
+            self.reservation_scan = Some(tokio::task::spawn_local(async move {
+                super::lease::reconcile(&Store::open(&root)?, &id, &super::lease::Native).await
+            }));
         }
         Ok(())
     }

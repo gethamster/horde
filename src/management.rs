@@ -135,11 +135,8 @@ pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
     Ok(Some(result))
 }
 pub fn status(db: &Store) -> Result<Value> {
-    let active: i64 = db.conn.query_row(
-        "SELECT (SELECT COUNT(*) FROM attempts WHERE state='running') + (SELECT COUNT(*) FROM preview_jobs WHERE phase IN ('preparing','validating','publishing','checkpointing','publishing_branch'))",
-        [],
-        |r| r.get(0),
-    )?;
+    let active = crate::project_runtime::host_active(db)?;
+    let pending_preview_reservations = crate::preview::pending_reservations(db)?;
     let catalog = crate::skill_catalog::load_for(&db.root)
         .and_then(|packet| crate::skill_catalog::summary(&packet));
     let (skill_pack, skill_pack_error) = match catalog {
@@ -147,7 +144,7 @@ pub fn status(db: &Store) -> Result<Value> {
         Err(error) => (Value::Null, Some(error.to_string())),
     };
     Ok(
-        json!({"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"concurrency":limit(db)?,"active":active,"storage":crate::storage::status(db)?,"draining":draining(db)?,"drained":draining(db)?&&active==0,"update_state":value(db,"update_state")?,"fleet_updates_paused":value(db,"fleet_updates_paused")?.as_deref()==Some("true"),"skill_pack":skill_pack,"skill_pack_error":skill_pack_error,"data_dir":db.root,"isolated":value(db,"worker_isolated")?.as_deref()==Some("true")}),
+        json!({"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"concurrency":limit(db)?,"active":active,"pending_preview_reservations":pending_preview_reservations,"storage":crate::storage::status(db)?,"operational_observations":crate::operational_observations::status(db,None)?,"draining":draining(db)?,"drained":draining(db)?&&active==0&&pending_preview_reservations==0,"update_state":value(db,"update_state")?,"fleet_updates_paused":value(db,"fleet_updates_paused")?.as_deref()==Some("true"),"skill_pack":skill_pack,"skill_pack_error":skill_pack_error,"data_dir":db.root,"isolated":value(db,"worker_isolated")?.as_deref()==Some("true")}),
     )
 }
 

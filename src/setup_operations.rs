@@ -3,6 +3,9 @@ use crate::{projects, store::Store};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::path::Path;
+pub fn operational_observations(db: &Store, args: &Value) -> Result<Value> {
+    crate::operational_observations::setup(db, args)
+}
 fn project(db: &Store, id: &str) -> Result<String> {
     uuid::Uuid::parse_str(id).context("project UUID required")?;
     let resolved = projects::resolve(db, id)?;

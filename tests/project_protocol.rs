@@ -332,6 +332,8 @@ fn positive_worker_reconciliation_releases_account_capacity_and_queues_remote_re
         )
         .unwrap();
     let args = json!({"task":task,"worker":worker});
+    let draining = protocol::dispatch(&db, "runtime_drain", json!({}), None).unwrap();
+    assert_eq!(draining["drained"], false);
     assert!(protocol::dispatch(&db, "reconcile_worker", args.clone(), None).is_err());
     assert!(
         horde::accounts::select_account(&db, "default", &config)
@@ -354,6 +356,23 @@ fn positive_worker_reconciliation_releases_account_capacity_and_queues_remote_re
         )
         .unwrap();
     protocol::dispatch(&db, "reconcile_worker", args, None).unwrap();
+    assert_eq!(horde::management::status(&db).unwrap()["drained"], true);
+    assert_eq!(
+        db.rows(
+            "SELECT state FROM account_reservations WHERE step=?",
+            &[&step]
+        )
+        .unwrap()[0]["state"],
+        "released"
+    );
+    assert_eq!(
+        db.rows(
+            "SELECT state FROM attempts WHERE id='reconcile-attempt'",
+            &[]
+        )
+        .unwrap()[0]["state"],
+        "interrupted"
+    );
     assert_eq!(
         horde::accounts::select_account(&db, "default", &config).unwrap(),
         Some(account)

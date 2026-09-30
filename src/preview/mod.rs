@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 mod lease;
+mod lease_receipts;
+pub(crate) use lease_receipts::pending as pending_reservations;
 mod pipeline;
 mod process;
 mod retry;
@@ -152,6 +154,7 @@ pub fn migrate(db: &Store) -> Result<()> {
 }
 pub fn migrate_connection(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS preview_policies(project TEXT PRIMARY KEY REFERENCES projects(id),scope TEXT NOT NULL,generation TEXT NOT NULL,policy TEXT NOT NULL,activation_seq INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS preview_review_execution(attempt TEXT PRIMARY KEY,step TEXT NOT NULL,head TEXT NOT NULL,tree TEXT NOT NULL,executor TEXT NOT NULL,workspace TEXT NOT NULL); CREATE TABLE IF NOT EXISTS preview_jobs(id TEXT PRIMARY KEY,task TEXT NOT NULL REFERENCES tasks(id),generation TEXT NOT NULL,head TEXT NOT NULL,tree TEXT NOT NULL,main_head TEXT NOT NULL,recipe TEXT NOT NULL,phase TEXT NOT NULL,receipt TEXT,reservation TEXT,error TEXT,created INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS preview_jobs_task ON preview_jobs(task,created); CREATE TABLE IF NOT EXISTS preview_retries(task TEXT NOT NULL,key TEXT NOT NULL,request TEXT NOT NULL,response TEXT NOT NULL,PRIMARY KEY(task,key)); CREATE TABLE IF NOT EXISTS preview_admissions(job TEXT NOT NULL,ordinal INTEGER NOT NULL,key TEXT NOT NULL,PRIMARY KEY(job,ordinal)); CREATE TABLE IF NOT EXISTS preview_reviews(step TEXT PRIMARY KEY REFERENCES steps(id),task TEXT NOT NULL,head TEXT NOT NULL,tree TEXT NOT NULL,main_head TEXT NOT NULL,generation TEXT NOT NULL,attempt TEXT);")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS preview_admission_receipts(job TEXT NOT NULL,ordinal INTEGER NOT NULL,reservation TEXT NOT NULL,request TEXT,state TEXT NOT NULL,generation INTEGER NOT NULL,PRIMARY KEY(job,ordinal),FOREIGN KEY(job,ordinal) REFERENCES preview_admissions(job,ordinal));")?;
     Ok(())
 }
 pub fn setup(db: &Store, v: &Value) -> Result<Value> {

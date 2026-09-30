@@ -1066,6 +1066,17 @@ pub async fn daemon(root: &Path) -> Result<()> {
             if let Err(error) = notify {
                 eprintln!("Notify maintenance: {error:#}");
             }
+            let observations = async {
+                let db = Store::open(&maintenance_root)?;
+                crate::operational_observations::tick(&db).await
+            }
+            .await;
+            if observations.is_err() {
+                // Fixed message: transport/configuration errors may contain credential paths.
+                eprintln!(
+                    "Operational observation maintenance unavailable; inspect redacted runtime status"
+                );
+            }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });

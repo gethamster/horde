@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 /// Status of the per-task synthetic worker row that carries operator steering messages.
 /// Operator rows never receive mail, never wake, and are hidden from worker listings.
 pub const OPERATOR_STATUS: &str = "operator";
@@ -103,7 +103,7 @@ impl Store {
         }
         // Hold the daemon lock through migration so an older scheduler cannot
         // dispatch work while the new ownership schema is being installed.
-        let _migration_lock = if (5..=9).contains(&version) {
+        let _migration_lock = if (5..=10).contains(&version) {
             use fs2::FileExt;
             let lock = std::fs::OpenOptions::new()
                 .create(true)
@@ -210,6 +210,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         crate::projects::migrate(&conn)?;
         crate::run::migrate(&conn)?;
         crate::preview::migrate_connection(&conn)?;
+        crate::operational_observations::migrate(&conn)?;
         crate::accounts::migrate(&conn)?;
         crate::project_runtime::migrate(&conn)?;
         if version != i64::from(SCHEMA_VERSION) {
@@ -735,6 +736,11 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             .err()
             .is_some_and(|e| e.is::<crate::native_protocol::RepeatedToolCall>());
         let success = result.is_ok();
+        let failure_code = result
+            .as_ref()
+            .err()
+            .filter(|e| e.is::<crate::account_auth::RefreshOwnerRequired>())
+            .map(|_| "credential_refresh_required");
         let value = match result {
             Ok(v) => v,
             Err(e) => e
@@ -801,7 +807,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             self.event(
                 oid,
                 "step.finished",
-                json!({"step":step,"attempt":attempt,"state":state,"result":value,"timing":crate::budget::status(self,attempt)?,"integrated_head":integrated_head,"revision":crate::decision::review::current_revision(self,oid)?}),
+                json!({"step":step,"attempt":attempt,"state":state,"failure_code":failure_code,"result":value,"timing":crate::budget::status(self,attempt)?,"integrated_head":integrated_head,"revision":crate::decision::review::current_revision(self,oid)?}),
             )?;
             Ok(())
         })

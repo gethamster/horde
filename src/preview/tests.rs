@@ -224,8 +224,9 @@ fn lost_publication_checkpoint_and_push_responses_reconcile_one_job() {
             .unwrap();
         assert!(
             out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stdout)
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
         );
         return;
     }
@@ -257,14 +258,24 @@ fn lost_publication_checkpoint_and_push_responses_reconcile_one_job() {
     rt.block_on(tokio::task::LocalSet::new().run_until(async {
         let mut queue = Queue::default();
         assert!(queue.tick(&db).await.unwrap());
-        for _ in 0..100 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            queue.tick(&db).await.unwrap();
-            if status(&db, &task).unwrap()["phase"] == "succeeded" {
-                break;
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                queue.tick(&db).await.unwrap();
+                let state = status(&db, &task).unwrap();
+                assert_ne!(state["phase"], "held", "{state}");
+                if state["phase"] == "succeeded" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-        }
-        assert_eq!(status(&db, &task).unwrap()["phase"], "succeeded");
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "preview reconciliation timed out: {}",
+                status(&db, &task).unwrap()
+            )
+        });
         queue.shutdown(&db).await.unwrap();
         pipeline::advance(&db, &job).await.unwrap();
     }));
@@ -359,6 +370,331 @@ fn active_publication_prevents_drain_quiescence() {
         .unwrap();
     assert_eq!(crate::management::status(&db).unwrap()["drained"], true);
 }
+
+#[tokio::test]
+async fn held_reservation_prevents_drain_until_confirmed_release() {
+    let (_d, db, task, _row, _c) = fixture();
+    let id = pipeline::enqueue(&db, &task).unwrap().unwrap();
+    db.conn
+        .execute(
+            "UPDATE preview_jobs SET phase='held',reservation='lease' WHERE id=?",
+            [&id],
+        )
+        .unwrap();
+    let status = crate::management::dispatch(&db, "runtime_drain", &json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(status["active"], 0);
+    assert_eq!(status["pending_preview_reservations"], 1);
+    assert_eq!(status["drained"], false);
+    assert_eq!(crate::project_runtime::host_active(&db).unwrap(), 0);
+    struct Release(&'static str);
+    impl lease::Client for Release {
+        async fn request(&self, _: &Policy, path: &str, _: &Value) -> Result<Value> {
+            assert_eq!(path, "/v1/reservations/lease/release");
+            Ok(json!({"state":self.0}))
+        }
+    }
+    let p = configure(&config()).unwrap().projects.remove(0);
+    assert!(
+        lease::release(&db, &id, &p, &Release("admitted"))
+            .await
+            .is_err()
+    );
+    assert_eq!(crate::management::status(&db).unwrap()["drained"], false);
+    lease::release(&db, &id, &p, &Release("expired"))
+        .await
+        .unwrap();
+    assert_eq!(crate::management::status(&db).unwrap()["drained"], true);
+}
+
+#[tokio::test]
+async fn reservation_status_reconciliation_preserves_uncertain_effects() {
+    struct Status(Value);
+    impl lease::StatusClient for Status {
+        async fn status(&self, _: &Policy, id: &str) -> Result<Value> {
+            assert_eq!(id, "a".repeat(64));
+            if self.0.is_null() {
+                anyhow::bail!("lost status response");
+            }
+            Ok(self.0.clone())
+        }
+    }
+    for phase in ["held", "superseded"] {
+        let (_d, db, task, _row, _c) = fixture();
+        let id = pipeline::enqueue(&db, &task).unwrap().unwrap();
+        db.conn.execute("UPDATE preview_jobs SET phase=?,reservation=?,error='retained failure',receipt='retained receipt' WHERE id=?", params![phase,"a".repeat(64),id]).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO preview_admissions VALUES(?,1,'original-key')",
+                [&id],
+            )
+            .unwrap();
+        let job = db
+            .rows("SELECT * FROM preview_jobs WHERE id=?", &[&id])
+            .unwrap()
+            .remove(0);
+        let (p, _, scope) = policy(&db, &crate::projects::task_project(&db, &task).unwrap())
+            .unwrap()
+            .unwrap();
+        let response = json!({"schema_version":1,"id":"a".repeat(64),"state":"admitted","identity":{"schema_version":1,"idempotency_key":"original-key","scope":scope,"project_id":p.project_id,"run_id":task,"built_commit":job["head"],"recipe_hash":job["recipe"]}});
+        for state in ["admitted", "unknown"] {
+            let mut r = response.clone();
+            r["state"] = json!(state);
+            assert!(!lease::reconcile(&db, &id, &Status(r)).await.unwrap());
+            assert_eq!(
+                crate::management::dispatch(&db, "runtime_drain", &json!({}))
+                    .unwrap()
+                    .unwrap()["drained"],
+                false
+            );
+        }
+        assert!(
+            lease::reconcile(&db, &id, &Status(Value::Null))
+                .await
+                .is_err()
+        );
+        for field in ["id", "run_id", "recipe_hash", "idempotency_key", "scope"] {
+            let mut r = response.clone();
+            r["state"] = json!("expired");
+            if field == "id" {
+                r[field] = json!("b".repeat(64));
+            } else {
+                r["identity"][field] = json!("changed");
+            }
+            assert!(
+                lease::reconcile(&db, &id, &Status(r)).await.is_err(),
+                "{field}"
+            );
+            assert_eq!(crate::management::status(&db).unwrap()["drained"], false);
+        }
+        let mut terminal = response;
+        terminal["state"] = json!(if phase == "held" {
+            "expired"
+        } else {
+            "released"
+        });
+        assert!(lease::reconcile(&db, &id, &Status(terminal)).await.unwrap());
+        let after = db
+            .rows("SELECT * FROM preview_jobs WHERE id=?", &[&id])
+            .unwrap()
+            .remove(0);
+        assert_eq!(after["phase"], job["phase"]);
+        assert_eq!(after["error"], job["error"]);
+        assert_eq!(after["receipt"], job["receipt"]);
+        assert!(after["reservation"].is_null());
+        assert_eq!(crate::management::status(&db).unwrap()["drained"], true);
+    }
+}
+
+#[tokio::test]
+async fn lost_reservation_post_and_legacy_intent_hold_drain_until_exact_status() {
+    struct Lost<'a>(&'a Store, std::cell::RefCell<Option<Value>>);
+    impl lease::Client for Lost<'_> {
+        async fn request(&self, _: &Policy, path: &str, body: &Value) -> Result<Value> {
+            assert_eq!(path, "/v1/reservations");
+            assert_eq!(
+                crate::management::status(self.0).unwrap()["pending_preview_reservations"],
+                1
+            );
+            assert_eq!(
+                self.0
+                    .rows("SELECT state FROM preview_admission_receipts", &[])
+                    .unwrap()[0]["state"],
+                "pending"
+            );
+            self.1.replace(Some(body.clone()));
+            anyhow::bail!("successful POST response lost");
+        }
+    }
+    struct Observed(Value);
+    impl lease::StatusClient for Observed {
+        async fn status(&self, _: &Policy, id: &str) -> Result<Value> {
+            assert_eq!(id, self.0["id"]);
+            Ok(self.0.clone())
+        }
+    }
+    for legacy in [false, true] {
+        let (_d, db, task, _row, _c) = fixture();
+        let id = pipeline::enqueue(&db, &task).unwrap().unwrap();
+        let job = db
+            .rows("SELECT * FROM preview_jobs WHERE id=?", &[&id])
+            .unwrap()
+            .remove(0);
+        let (p, _, scope) = policy(&db, &crate::projects::task_project(&db, &task).unwrap())
+            .unwrap()
+            .unwrap();
+        let request = json!({"schema_version":1,"idempotency_key":format!("{id}-reservation-1"),"scope":scope,"project_id":p.project_id,"run_id":task,"built_commit":job["head"],"recipe_hash":job["recipe"],"estimated_publish_bytes":p.estimated_publish_bytes});
+        if legacy {
+            db.conn
+                .execute(
+                    "INSERT INTO preview_admissions VALUES(?,1,?)",
+                    params![id, request["idempotency_key"].as_str().unwrap()],
+                )
+                .unwrap();
+        } else {
+            let lost = Lost(&db, Default::default());
+            assert!(lease::reserve(&db, &id, &p, &request, &lost).await.is_err());
+            assert_eq!(lost.1.borrow().as_ref().unwrap(), &request);
+        }
+        db.conn.execute("UPDATE preview_jobs SET phase='held',reservation=NULL,error='held after lost response' WHERE id=?",[&id]).unwrap();
+        assert_eq!(
+            crate::management::dispatch(&db, "runtime_drain", &json!({}))
+                .unwrap()
+                .unwrap()["drained"],
+            false
+        );
+        let rid = crate::store::hash(
+            format!("{}:{}", scope, request["idempotency_key"].as_str().unwrap()).as_bytes(),
+        );
+        let mut response =
+            json!({"schema_version":1,"id":rid,"state":"admitted","identity":request});
+        assert!(
+            !lease::reconcile(&db, &id, &Observed(response.clone()))
+                .await
+                .unwrap()
+        );
+        assert_eq!(crate::management::status(&db).unwrap()["drained"], false);
+        response["state"] = json!(if legacy { "held" } else { "expired" });
+        assert!(
+            lease::reconcile(&db, &id, &Observed(response))
+                .await
+                .unwrap()
+        );
+        assert_eq!(crate::management::status(&db).unwrap()["drained"], true);
+        assert_eq!(
+            db.rows("SELECT phase,error FROM preview_jobs WHERE id=?", &[&id])
+                .unwrap()[0],
+            json!({"phase":"held","error":"held after lost response"})
+        );
+        assert_eq!(
+            db.rows("SELECT * FROM preview_admissions WHERE job=?", &[&id])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn stale_admission_denial_cannot_clear_retried_intent_and_requests_are_frozen() {
+    let (_d, db, task, _row, _c) = fixture();
+    let id = pipeline::enqueue(&db, &task).unwrap().unwrap();
+    let job = db
+        .rows("SELECT * FROM preview_jobs WHERE id=?", &[&id])
+        .unwrap()
+        .remove(0);
+    let (p, _, scope) = policy(&db, &crate::projects::task_project(&db, &task).unwrap())
+        .unwrap()
+        .unwrap();
+    let request = json!({"schema_version":1,"idempotency_key":format!("{id}-reservation-1"),"scope":scope,"project_id":p.project_id,"run_id":task,"built_commit":job["head"],"recipe_hash":job["recipe"],"estimated_publish_bytes":p.estimated_publish_bytes});
+    let rid = lease_receipts::intent(&db, &id, 1, &request).unwrap();
+    let mut changed = request.clone();
+    changed["estimated_publish_bytes"] = json!(2);
+    assert!(lease_receipts::intent(&db, &id, 1, &changed).is_err());
+    changed = request.clone();
+    changed["idempotency_key"] = json!("another-key");
+    assert!(lease_receipts::intent(&db, &id, 1, &changed).is_err());
+    struct Status<'a>(&'a Store, String, Value, bool);
+    impl lease::StatusClient for Status<'_> {
+        async fn status(&self, _: &Policy, _: &str) -> Result<Value> {
+            if self.3 {
+                lease_receipts::intent(self.0, &self.1, 1, &self.2).unwrap();
+            }
+            Ok(
+                json!({"schema_version":1,"id":crate::store::hash(format!("{}:{}",self.2["scope"].as_str().unwrap(),self.2["idempotency_key"].as_str().unwrap()).as_bytes()),"state":"held","identity":self.2}),
+            )
+        }
+    }
+    db.conn
+        .execute("UPDATE preview_jobs SET phase='held' WHERE id=?", [&id])
+        .unwrap();
+    crate::management::dispatch(&db, "runtime_drain", &json!({})).unwrap();
+    assert!(
+        !lease::reconcile(&db, &id, &Status(&db, id.clone(), request.clone(), true))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        db.rows("SELECT reservation FROM preview_jobs WHERE id=?", &[&id])
+            .unwrap()[0]["reservation"],
+        rid
+    );
+    assert_eq!(crate::management::status(&db).unwrap()["drained"], false);
+    struct Missing;
+    impl lease::StatusClient for Missing {
+        async fn status(&self, _: &Policy, _: &str) -> Result<Value> {
+            anyhow::bail!("HTTP404 not found");
+        }
+    }
+    assert!(lease::reconcile(&db, &id, &Missing).await.is_err());
+    assert_eq!(crate::management::status(&db).unwrap()["drained"], false);
+    assert!(
+        lease::reconcile(&db, &id, &Status(&db, id.clone(), request, false))
+            .await
+            .unwrap()
+    );
+    assert_eq!(crate::management::status(&db).unwrap()["drained"], true);
+    assert_eq!(
+        db.rows(
+            "SELECT state,generation FROM preview_admission_receipts WHERE job=?",
+            &[&id]
+        )
+        .unwrap()[0],
+        json!({"state":"held","generation":2})
+    );
+}
+
+#[tokio::test]
+async fn draining_queue_observes_expiry_without_dispatching_publication() {
+    tokio::task::LocalSet::new().run_until(async {
+        let (_d, db, task, _row, _c)=fixture();
+        let id=pipeline::enqueue(&db,&task).unwrap().unwrap();
+        let rid="a".repeat(64);
+        db.conn.execute("UPDATE preview_jobs SET phase='superseded',reservation=?,error='retained' WHERE id=?",params![rid,id]).unwrap();
+        db.conn.execute("INSERT INTO preview_admissions VALUES(?,1,'original-key')",[&id]).unwrap();
+        let job=db.rows("SELECT * FROM preview_jobs WHERE id=?",&[&id]).unwrap().remove(0);
+        let effects_before=db.rows("SELECT * FROM events WHERE kind IN ('run.preview_phase','run.checkpoint_created','run.promoted')",&[]).unwrap();
+        let project=crate::projects::task_project(&db,&task).unwrap();
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let token=db.root.join("fixture-token");
+        std::fs::write(&token,"fixture-admission-token-0123456789abcdef").unwrap();
+        let (mut p,_,scope)=policy(&db,&project).unwrap().unwrap();
+        p.admission_url=format!("http://{}",listener.local_addr().unwrap()); p.admission_token_file=token;
+        db.conn.execute("UPDATE preview_policies SET policy=? WHERE project=?",params![serde_json::to_string(&p).unwrap(),project]).unwrap();
+        let body=json!({"schema_version":1,"id":rid,"state":"expired","identity":{"schema_version":1,"idempotency_key":"original-key","scope":scope,"project_id":project,"run_id":task,"built_commit":job["head"],"recipe_hash":job["recipe"]}}).to_string();
+        let (send,receive)=std::sync::mpsc::channel();
+        let server=std::thread::spawn(move||{
+            use std::io::{Read,Write};
+            let (mut stream,_)=listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut bytes=[0;4096]; let n=stream.read(&mut bytes).unwrap();
+            let request=String::from_utf8_lossy(&bytes[..n]);
+            assert!(request.starts_with(&format!("GET /v1/reservations/{} HTTP/1.1", "a".repeat(64))));
+            assert!(request.to_ascii_lowercase().contains("authorization: bearer fixture-admission-token-0123456789abcdef"));
+            receive.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+        });
+        crate::management::dispatch(&db,"runtime_drain",&json!({})).unwrap();
+        let mut queue=Queue::default();
+        assert!(!queue.tick(&db).await.unwrap());
+        assert!(!queue.tick(&db).await.unwrap());
+        assert_eq!(crate::management::status(&db).unwrap()["drained"],false);
+        send.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            while crate::management::status(&db).unwrap()["drained"]!=true {
+                assert!(!queue.tick(&db).await.unwrap());
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        assert!(!queue.tick(&db).await.unwrap());
+        queue.shutdown(&db).await.unwrap(); server.join().unwrap();
+        let after=db.rows("SELECT * FROM preview_jobs WHERE id=?",&[&id]).unwrap().remove(0);
+        assert_eq!(after["phase"],"superseded"); assert_eq!(after["error"],"retained");
+        assert_eq!(db.rows("SELECT * FROM attempts",&[]).unwrap().len(),1);
+        assert_eq!(db.rows("SELECT * FROM events WHERE kind IN ('run.preview_phase','run.checkpoint_created','run.promoted')",&[]).unwrap(),effects_before);
+    }).await;
+}
 struct AdmissionMock {
     states: std::cell::RefCell<Vec<String>>,
     keys: std::cell::RefCell<Vec<String>>,
@@ -372,7 +708,9 @@ impl lease::Client for AdmissionMock {
             .borrow_mut()
             .push(body["idempotency_key"].as_str().unwrap().into());
         let state = self.states.borrow_mut().remove(0);
-        Ok(json!({"state":state,"id":"reservation-1","identity":body}))
+        Ok(
+            json!({"schema_version":1,"state":state,"id":crate::store::hash(format!("{}:{}",body["scope"].as_str().unwrap(),body["idempotency_key"].as_str().unwrap()).as_bytes()),"identity":body}),
+        )
     }
 }
 #[test]
@@ -397,7 +735,7 @@ fn reservation_restart_reuses_key_and_expiry_persists_new_attempt() {
         .block_on(async {
             assert_eq!(
                 lease::reserve(&db, &id, &p, &body, &m).await.unwrap(),
-                "reservation-1"
+                crate::store::hash(format!("local:{id}-reservation-1").as_bytes())
             );
             lease::reserve(&db, &id, &p, &body, &m).await.unwrap();
             lease::reserve(&db, &id, &p, &body, &m).await.unwrap();
@@ -412,12 +750,24 @@ fn reservation_restart_reuses_key_and_expiry_persists_new_attempt() {
             .unwrap()[0]["reservation"]
             .is_null()
     );
+    assert_eq!(
+        db.rows(
+            "SELECT ordinal,state FROM preview_admission_receipts WHERE job=? ORDER BY ordinal",
+            &[&id]
+        )
+        .unwrap(),
+        vec![
+            json!({"ordinal":1,"state":"expired"}),
+            json!({"ordinal":2,"state":"released"})
+        ]
+    );
 }
 #[test]
 fn held_admission_cannot_invoke_publisher_and_retries_same_reservation_key() {
     let (_d, db, task, _row, c) = fixture();
     let id = pipeline::enqueue(&db, &task).unwrap().unwrap();
     let p = configure(&c).unwrap().projects.remove(0);
+    let body = json!({"schema_version":1,"scope":"local","project_id":p.project_id,"run_id":task,"built_commit":"head","recipe_hash":p.recipe_hash(),"estimated_publish_bytes":1});
     let m = AdmissionMock {
         states: std::cell::RefCell::new(vec!["held".into(), "admitted".into()]),
         keys: Default::default(),
@@ -427,8 +777,8 @@ fn held_admission_cannot_invoke_publisher_and_retries_same_reservation_key() {
         .build()
         .unwrap()
         .block_on(async {
-            assert!(lease::reserve(&db, &id, &p, &json!({}), &m).await.is_err());
-            assert!(lease::reserve(&db, &id, &p, &json!({}), &m).await.is_ok());
+            assert!(lease::reserve(&db, &id, &p, &body, &m).await.is_err());
+            assert!(lease::reserve(&db, &id, &p, &body, &m).await.is_ok());
         });
     assert_eq!(m.keys.borrow()[0], m.keys.borrow()[1]);
 }

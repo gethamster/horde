@@ -6,6 +6,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command};
 
+#[derive(Debug)]
+pub struct RefreshOwnerRequired;
+impl std::fmt::Display for RefreshOwnerRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("access token renewal requires the controller refresh owner")
+    }
+}
+impl std::error::Error for RefreshOwnerRequired {}
+
 #[derive(Serialize, Deserialize)]
 pub struct AccessTokens {
     pub access_token: String,
@@ -165,10 +174,9 @@ pub async fn access_tokens(
     // Recheck grant and credential after acquiring the cross-process refresh lock.
     let (credential, version) = accounts::credential_with_version(db, project, account)?;
     if credential.kind == "codex_access_token" {
-        ensure!(
-            !force,
-            "access token renewal requires the controller refresh owner"
-        );
+        if force {
+            return Err(RefreshOwnerRequired.into());
+        }
         return Ok(AccessTokens {
             access_token: credential.secret,
             chatgpt_account_id: credential.metadata["account_id"]

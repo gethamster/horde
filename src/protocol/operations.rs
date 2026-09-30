@@ -282,6 +282,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Reconcile and retry a held exact preview publication job",
     ),
     ("run_events", "Read versioned, project-scoped Run events"),
+    (
+        "run_diagnostics",
+        "Read bounded structural Run diagnostics without secret or transcript data",
+    ),
     ("list_tasks", "List submitted tasks and their status"),
     ("events", "Read ordered activity events"),
     ("cancel", "Cancel a task"),
