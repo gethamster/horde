@@ -6,6 +6,7 @@ pub mod delivery;
 pub mod delivery_policy;
 pub mod executor;
 pub mod git;
+mod github_sync;
 pub mod knowledge;
 pub mod metrics;
 pub mod native;

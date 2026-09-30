@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.6.24 - 2026-09-30
+
+### Added
+
+- Optional administrator-owned GitHub contribution synchronization through WALGIT. Runs combine current WALGIT main and imported GitHub base at preparation boundaries, hold missing imports and conflicts, and validate the resulting exact head before checkpoint publication.
+- Named WALGIT remote support for allocation, live base reads, reconciliation, and accepted Run publication. Legacy origin-only projects keep their existing behavior; GitHub credentials remain with Releases.
+
 ## 0.6.23 - 2026-09-30
 
 - Keep drain and replacement held for uncertain attempts and unreconciled preview

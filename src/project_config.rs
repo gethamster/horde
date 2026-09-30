@@ -50,6 +50,10 @@ fn validate_repository_settings(
     patch: &toml::Value,
 ) -> Result<()> {
     ensure!(
+        patch.get("github").is_none(),
+        "repository GitHub synchronization must be configured by the project administrator"
+    );
+    ensure!(
         patch.get("providers").is_none(),
         "repository provider connections must be configured by the project administrator"
     );

@@ -2615,3 +2615,359 @@ fn run_checkpoint_holds_if_main_moves_during_validation() {
     assert!(f.events("run.checkpoint_verified").is_empty());
     assert_eq!(git::run(&path, &["rev-parse", "HEAD"]).unwrap(), sha);
 }
+
+#[test]
+fn github_import_is_merged_at_run_start_and_checkpoint_invalidates_old_head() {
+    let mut settings = Settings::default();
+    settings.github.enabled = true;
+    settings.github.repository = "owner/repo".into();
+    let f = Fixture::with(settings, |repo| {
+        let dir = repo.parent().unwrap();
+        let imported = bare_origin(dir, repo);
+        git::run(repo, &["fetch", "origin", "main"]).unwrap();
+        git::run(
+            repo,
+            &[
+                "push",
+                "origin",
+                &format!("{imported}:refs/heads/upstreams/github/base/main"),
+            ],
+        )
+        .unwrap();
+    });
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    let initial = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    assert_eq!(f.events("run.github_integrated").len(), 1);
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":initial,"validation":["git","status","--porcelain"]}),
+    )
+    .unwrap();
+    let scratch = f.dir.path().join("scratch");
+    git::run(
+        &scratch,
+        &["commit", "--allow-empty", "-m", "new github work"],
+    )
+    .unwrap();
+    let next = git::run(&scratch, &["rev-parse", "HEAD"]).unwrap();
+    git::run(
+        &scratch,
+        &[
+            "push",
+            "origin",
+            &format!("{next}:refs/heads/upstreams/github/base/main"),
+        ],
+    )
+    .unwrap();
+    assert!(
+        f.call(
+            "run_checkpoint",
+            json!({"expected_head":initial,"validation":["git","status","--porcelain"]})
+        )
+        .is_err()
+    );
+    let combined = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    git::run(&path, &["merge-base", "--is-ancestor", &next, &combined]).unwrap();
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":combined,"validation":["git","status","--porcelain"]}),
+    )
+    .unwrap();
+}
+
+#[test]
+fn github_import_missing_base_holds_then_recovers_when_pointer_appears() {
+    let mut settings = Settings::default();
+    settings.github.enabled = true;
+    settings.github.repository = "owner/repo".into();
+    let f = Fixture::with(settings, |repo| {
+        bare_origin(repo.parent().unwrap(), repo);
+    });
+    assert!(git::task_workspace(&f.db, &f.oid).is_err());
+    let scratch = f.dir.path().join("scratch");
+    git::run(
+        &scratch,
+        &[
+            "push",
+            "origin",
+            "HEAD:refs/heads/upstreams/github/base/main",
+        ],
+    )
+    .unwrap();
+    assert!(git::task_workspace(&f.db, &f.oid).is_ok());
+    assert_eq!(f.events("run.github_integrated").len(), 1);
+}
+
+#[test]
+fn github_import_conflict_preserves_head_and_clean_workspace() {
+    let mut settings = Settings::default();
+    settings.github.enabled = true;
+    settings.github.repository = "owner/repo".into();
+    let f = Fixture::with(settings, |repo| {
+        std::fs::write(repo.join("shared"), "base").unwrap();
+        git::run(repo, &["add", "shared"]).unwrap();
+        git::run(repo, &["commit", "-m", "base"]).unwrap();
+        bare_origin(repo.parent().unwrap(), repo);
+        let scratch = repo.parent().unwrap().join("scratch");
+        git::run(
+            &scratch,
+            &[
+                "push",
+                "origin",
+                "HEAD:refs/heads/upstreams/github/base/main",
+            ],
+        )
+        .unwrap();
+    });
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    std::fs::write(path.join("shared"), "run").unwrap();
+    git::run(&path, &["commit", "-am", "run"]).unwrap();
+    let before = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    let scratch = f.dir.path().join("scratch");
+    std::fs::write(scratch.join("shared"), "github").unwrap();
+    git::run(&scratch, &["commit", "-am", "github"]).unwrap();
+    git::run(
+        &scratch,
+        &[
+            "push",
+            "origin",
+            "HEAD:refs/heads/upstreams/github/base/main",
+        ],
+    )
+    .unwrap();
+    assert!(
+        f.call(
+            "run_checkpoint",
+            json!({"expected_head":before,"validation":["true"]})
+        )
+        .is_err()
+    );
+    assert_eq!(git::run(&path, &["rev-parse", "HEAD"]).unwrap(), before);
+    assert!(
+        git::run(&path, &["status", "--porcelain"])
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        f.events("run.branch_conflict").last().unwrap()["reason"],
+        "github_merge_conflict"
+    );
+    let imported = git::run(&scratch, &["rev-parse", "HEAD"]).unwrap();
+    // Model an authorized person explicitly resolving this fixture in favor of the Run.
+    git::run(&path, &["merge", "--no-edit", "-s", "ours", &imported]).unwrap();
+    let repaired = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":repaired,"validation":["true"]}),
+    )
+    .unwrap();
+    assert_eq!(
+        horde::run::reconciliation_status(&f.db, &f.oid).unwrap()["state"],
+        "healthy"
+    );
+}
+
+#[test]
+fn github_import_reconciles_external_run_before_merging_both_upstreams() {
+    let mut settings = Settings::default();
+    settings.github.enabled = true;
+    settings.github.repository = "owner/repo".into();
+    let f = Fixture::with(settings, |repo| {
+        bare_origin(repo.parent().unwrap(), repo);
+        let scratch = repo.parent().unwrap().join("scratch");
+        git::run(
+            &scratch,
+            &[
+                "push",
+                "origin",
+                "HEAD:refs/heads/upstreams/github/base/main",
+            ],
+        )
+        .unwrap();
+        git::run(repo, &["remote", "rename", "origin", "walgit"]).unwrap();
+        // A GitHub origin must never receive Run publications or supply main.
+        let other = repo.parent().unwrap().join("github.git");
+        std::fs::create_dir(&other).unwrap();
+        git::run(&other, &["init", "--bare", "-b", "main"]).unwrap();
+        git::run(repo, &["remote", "add", "origin", other.to_str().unwrap()]).unwrap();
+    });
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    let initial = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":initial,"validation":["true"]}),
+    )
+    .unwrap();
+    let scratch = f.dir.path().join("scratch");
+    git::run(&scratch, &["fetch", "origin", &format!("horde/{}", f.oid)]).unwrap();
+    git::run(&scratch, &["checkout", "-b", "external", "FETCH_HEAD"]).unwrap();
+    git::run(
+        &scratch,
+        &["commit", "--allow-empty", "-m", "external run edit"],
+    )
+    .unwrap();
+    let external = git::run(&scratch, &["rev-parse", "HEAD"]).unwrap();
+    git::run(
+        &scratch,
+        &[
+            "push",
+            "origin",
+            &format!("HEAD:refs/heads/horde/{}", f.oid),
+        ],
+    )
+    .unwrap();
+    git::run(&scratch, &["checkout", "main"]).unwrap();
+    git::run(
+        &scratch,
+        &["commit", "--allow-empty", "-m", "github contribution"],
+    )
+    .unwrap();
+    let github = git::run(&scratch, &["rev-parse", "HEAD"]).unwrap();
+    git::run(
+        &scratch,
+        &[
+            "push",
+            "origin",
+            "HEAD:refs/heads/upstreams/github/base/main",
+        ],
+    )
+    .unwrap();
+    // First checkpoint acknowledges the remote Run edit; the next includes GitHub.
+    assert!(
+        f.call(
+            "run_checkpoint",
+            json!({"expected_head":initial,"validation":["true"]})
+        )
+        .is_err()
+    );
+    assert!(
+        f.call(
+            "run_checkpoint",
+            json!({"expected_head":external,"validation":["true"]})
+        )
+        .is_err()
+    );
+    let combined = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    git::run(
+        &path,
+        &["merge-base", "--is-ancestor", &external, &combined],
+    )
+    .unwrap();
+    git::run(&path, &["merge-base", "--is-ancestor", &github, &combined]).unwrap();
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":combined,"validation":["true"]}),
+    )
+    .unwrap();
+    assert!(
+        git::run(&path, &["ls-remote", "--heads", "origin"])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn github_import_disabled_keeps_single_remote_behavior() {
+    let f = Fixture::new();
+    bare_origin(f.dir.path(), &f.repo());
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    let sha = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    f.call(
+        "run_checkpoint",
+        json!({"expected_head":sha,"validation":["true"]}),
+    )
+    .unwrap();
+    assert!(f.events("run.github_integrated").is_empty());
+    assert!(f.events("run.branch_published").is_empty());
+}
+
+#[test]
+fn github_import_publishes_accepted_worker_and_denies_repository_override() {
+    let mut settings = Settings::default();
+    settings.github.enabled = true;
+    settings.github.repository = "owner/repo".into();
+    let f = Fixture::with(settings, |repo| {
+        bare_origin(repo.parent().unwrap(), repo);
+        let scratch = repo.parent().unwrap().join("scratch");
+        git::run(
+            &scratch,
+            &[
+                "push",
+                "origin",
+                "HEAD:refs/heads/upstreams/github/base/main",
+            ],
+        )
+        .unwrap();
+    });
+    let worker = f.coding_worker();
+    let workspace = f.db.worker(&worker).unwrap()["workspace"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    git::run(
+        Path::new(&workspace),
+        &["commit", "--allow-empty", "-m", "accepted work"],
+    )
+    .unwrap();
+    let result = git::integrate(&f.db, &f.oid, &worker, &["true".into()]).unwrap();
+    let listing = git::run(
+        &f.repo(),
+        &[
+            "ls-remote",
+            "--heads",
+            "origin",
+            &format!("refs/heads/horde/{}", f.oid),
+        ],
+    )
+    .unwrap();
+    assert!(listing.starts_with(result["integrated_head"].as_str().unwrap()));
+    std::fs::write(
+        f.repo().join(".horde.toml"),
+        "[github]\nenabled = true\nrepository = 'other/repo'\n",
+    )
+    .unwrap();
+    assert!(Settings::load_project(&f.db, "default", &f.repo()).is_err());
+}
+
+#[test]
+fn github_import_initial_conflict_allows_worker_repair_but_holds_checkpoint() {
+    let mut settings = Settings::default();
+    settings.github.enabled = true;
+    settings.github.repository = "owner/repo".into();
+    let f = Fixture::with(settings, |repo| {
+        std::fs::write(repo.join("shared"), "base").unwrap();
+        git::run(repo, &["add", "shared"]).unwrap();
+        git::run(repo, &["commit", "-m", "base"]).unwrap();
+        bare_origin(repo.parent().unwrap(), repo);
+        let scratch = repo.parent().unwrap().join("scratch");
+        let base = git::run(&scratch, &["rev-parse", "HEAD"]).unwrap();
+        std::fs::write(scratch.join("shared"), "github").unwrap();
+        git::run(&scratch, &["commit", "-am", "github"]).unwrap();
+        git::run(
+            &scratch,
+            &[
+                "push",
+                "origin",
+                "HEAD:refs/heads/upstreams/github/base/main",
+            ],
+        )
+        .unwrap();
+        git::run(&scratch, &["checkout", "-b", "walgit-main", &base]).unwrap();
+        std::fs::write(scratch.join("shared"), "walgit").unwrap();
+        git::run(&scratch, &["commit", "-am", "walgit"]).unwrap();
+        git::run(&scratch, &["push", "origin", "HEAD:refs/heads/main"]).unwrap();
+    });
+    assert!(git::task_workspace(&f.db, &f.oid).is_err());
+    let worker = f.coding_worker();
+    assert!(!f.db.worker(&worker).unwrap()["workspace"].is_null());
+    let path = git::task_workspace(&f.db, &f.oid).unwrap();
+    let head = git::run(&path, &["rev-parse", "HEAD"]).unwrap();
+    assert!(
+        f.call(
+            "run_checkpoint",
+            json!({"expected_head":head,"validation":["true"]})
+        )
+        .is_err()
+    );
+    assert!(f.events("run.checkpoint_verified").is_empty());
+}

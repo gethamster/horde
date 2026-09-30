@@ -42,28 +42,63 @@ fn remote_ref(repo: &Path, name: &str) -> Option<String> {
 /// Name of the branch `origin` advertises as its default, via a locally
 /// recorded `origin/HEAD` or, failing that, a live `ls-remote --symref`.
 fn remote_default(repo: &Path) -> Option<String> {
-    if let Ok(name) = run(repo, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]) {
+    if let Ok(name) = run(
+        repo,
+        &[
+            "symbolic-ref",
+            "-q",
+            &format!("refs/remotes/{}/HEAD", crate::github_sync::remote(repo)),
+        ],
+    ) {
         return Some(name);
     }
-    let listing = run(repo, &["ls-remote", "--symref", "origin", "HEAD"]).ok()?;
+    let listing = run(
+        repo,
+        &[
+            "ls-remote",
+            "--symref",
+            crate::github_sync::remote(repo),
+            "HEAD",
+        ],
+    )
+    .ok()?;
     listing
         .lines()
         .find_map(|line| line.strip_prefix("ref: ")?.split('\t').next())
         .and_then(|name| name.strip_prefix("refs/heads/"))
-        .map(|branch| format!("refs/remotes/origin/{branch}"))
+        .map(|branch| format!("refs/remotes/{}/{branch}", crate::github_sync::remote(repo)))
 }
 fn upstream(repo: &Path) -> Option<String> {
     run(repo, &["rev-parse", "--symbolic-full-name", "@{upstream}"])
         .ok()
-        .filter(|name| name.starts_with("refs/remotes/origin/"))
+        .filter(|name| {
+            name.starts_with(&format!(
+                "refs/remotes/{}/",
+                crate::github_sync::remote(repo)
+            ))
+        })
 }
 fn fetch_branch(repo: &Path, base: &str) -> Result<String> {
     run(repo, &["check-ref-format", &format!("refs/heads/{base}")])
         .with_context(|| format!("invalid remote branch {base:?}"))?;
-    let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
-    run(repo, &["fetch", "--no-tags", "origin", &refspec])?;
-    remote_ref(repo, &format!("refs/remotes/origin/{base}"))
-        .with_context(|| format!("origin/{base} did not resolve after fetch"))
+    let refspec = format!(
+        "+refs/heads/{base}:refs/remotes/{}/{base}",
+        crate::github_sync::remote(repo)
+    );
+    run(
+        repo,
+        &[
+            "fetch",
+            "--no-tags",
+            crate::github_sync::remote(repo),
+            &refspec,
+        ],
+    )?;
+    remote_ref(
+        repo,
+        &format!("refs/remotes/{}/{base}", crate::github_sync::remote(repo)),
+    )
+    .with_context(|| format!("origin/{base} did not resolve after fetch"))
 }
 /// Resolves the commit a new integrated worktree starts from. Only fetches and
 /// read-only ref lookups run in the operator repository; its checkout is never
@@ -87,7 +122,15 @@ fn resolve_start(db: &Store, oid: &str, repo: &Path) -> Result<StartPoint> {
     let settings: crate::config::Settings =
         serde_json::from_str(task["settings"].as_str().context("settings")?)?;
     let base = settings.delivery.base.trim();
-    let has_origin = run(repo, &["config", "--get", "remote.origin.url"]).is_ok();
+    let has_origin = run(
+        repo,
+        &[
+            "config",
+            "--get",
+            &format!("remote.{}.url", crate::github_sync::remote(repo)),
+        ],
+    )
+    .is_ok();
     if !base.is_empty() {
         if !has_origin {
             bail!(
@@ -100,7 +143,7 @@ fn resolve_start(db: &Store, oid: &str, repo: &Path) -> Result<StartPoint> {
         })?;
         return Ok(StartPoint {
             sha,
-            source: format!("origin/{base}"),
+            source: format!("{}/{base}", crate::github_sync::remote(repo)),
             fetched: true,
             warning: None,
         });
@@ -115,7 +158,11 @@ fn resolve_start(db: &Store, oid: &str, repo: &Path) -> Result<StartPoint> {
             ),
         });
     }
-    let fetch = run(repo, &["fetch", "--no-tags", "origin"]).map(|_| ());
+    let fetch = run(
+        repo,
+        &["fetch", "--no-tags", crate::github_sync::remote(repo)],
+    )
+    .map(|_| ());
     let fetched = fetch.is_ok();
     let fetch_note = match &fetch {
         Ok(()) => "ok".to_owned(),
@@ -129,7 +176,10 @@ fn resolve_start(db: &Store, oid: &str, repo: &Path) -> Result<StartPoint> {
         .into_iter()
         .chain(upstream(repo).map(|name| (format!("upstream ({name})"), name)));
     for (source, name) in candidates {
-        let Some(branch) = name.strip_prefix("refs/remotes/origin/") else {
+        let Some(branch) = name.strip_prefix(&format!(
+            "refs/remotes/{}/",
+            crate::github_sync::remote(repo)
+        )) else {
             continue;
         };
         // A single-branch clone may exclude the default/upstream branch from
@@ -250,6 +300,7 @@ pub fn task_workspace(db: &Store, oid: &str) -> Result<PathBuf> {
         .open(dir.join(".allocate.lock"))?;
     lock.lock_exclusive()?;
     let start = create_integrated(db, oid, repo, &path)?;
+    let created = start.is_some();
     if run(&path, &["branch", "--show-current"])? != format!("horde/{oid}") {
         bail!("integrated workspace is on an unexpected branch");
     }
@@ -269,6 +320,16 @@ pub fn task_workspace(db: &Store, oid: &str) -> Result<PathBuf> {
             },
         };
         record_start(db, oid, &path, &start)?;
+    }
+    if created
+        || db
+            .rows(
+                "SELECT seq FROM events WHERE task=? AND (kind='run.github_integrated' OR (kind='run.branch_conflict' AND json_extract(data,'$.reason') IN ('github_merge_conflict','main_merge_conflict'))) LIMIT 1",
+                &[&oid],
+            )?
+            .is_empty()
+    {
+        crate::github_sync::integrate(db, oid, &path)?;
     }
     // Dropping the file releases the lock on both success and error paths.
     Ok(path)
@@ -593,5 +654,6 @@ pub fn integrate_expected(
         "integration.succeeded",
         json!({"worker":wid,"commit":commit,"integrated_head":integrated_head,"revision":crate::decision::review::current_revision(db,oid)?}),
     )?;
+    crate::run::publish_if_github_enabled(db, oid, &integrated_head)?;
     Ok(json!({"commit":commit,"integrated_head":integrated_head}))
 }
