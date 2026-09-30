@@ -22,6 +22,14 @@ use tokio::{
 /// mistake a busy host for a dead daemon.
 pub const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
 
+pub(crate) fn exclusive_step(db: &Store, task: &str, row: &Value) -> Result<bool> {
+    let step = Store::step(row)?;
+    Ok(
+        ["command", "delivery", "environment"].contains(&step.kind.as_str())
+            || crate::preview::is_review(db, task, row)?,
+    )
+}
+
 pub fn recover(db: &Store) -> Result<usize> {
     let interrupted=db.rows("SELECT a.id,a.worker,a.step,t.task FROM attempts a JOIN steps t ON t.id=a.step WHERE a.state='running'",&[])?;
     db.atomic(|| {
@@ -193,7 +201,7 @@ async fn run_step(
             &attempt,
             &wid,
             seconds,
-            execute_step(&db, &row, &attempt, &wid, &token),
+            Box::pin(execute_step(&db, &row, &attempt, &wid, &token)),
         ),
     )
     .await;
@@ -319,6 +327,27 @@ async fn execute_step(
             .await?
         }
     };
+    if crate::preview::is_review(db, oid, row)? {
+        let root = db.root.clone();
+        let review_row = row.clone();
+        let review_attempt = attempt.to_owned();
+        let review_worker = wid.to_owned();
+        let review_settings = settings.clone();
+        let review_role = step.role.clone();
+        let review_workspace = workspace.clone();
+        crate::budget::blocking_timeout(Duration::from_secs(settings.timeout_seconds), move || {
+            crate::preview::verify_execution(
+                &Store::open(&root)?,
+                &review_row,
+                &review_attempt,
+                &review_worker,
+                &review_settings,
+                &review_role,
+                &review_workspace,
+            )
+        })
+        .await?;
+    }
     if step.kind == "command" {
         db.event(oid, "step.workspace", json!({"step":tid,"attempt":attempt,"mode":if checkout {"checkout"} else {"worktree"},"path":workspace}))?;
     }
@@ -574,7 +603,7 @@ fn wake_notified(db: &Store) -> Result<()> {
     }
     Ok(())
 }
-async fn handle(stream: tokio::net::UnixStream, root: PathBuf) -> Result<()> {
+pub(crate) async fn handle(stream: tokio::net::UnixStream, root: PathBuf) -> Result<()> {
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
     let mut line = String::new();
@@ -619,6 +648,7 @@ struct Scheduler {
     decisions: crate::decision::shadow::Queue,
     reviews: crate::decision::review::Queue,
     limit: usize,
+    previews: crate::preview::Queue,
 }
 impl Scheduler {
     async fn tick(&mut self, db: &Store, remote_ready: bool) -> Result<()> {
@@ -675,6 +705,9 @@ impl Scheduler {
             }
         }
         self.limit = crate::project_runtime::host_limit(db)?;
+        if self.previews.tick(db).await? {
+            return Ok(());
+        }
         if crate::management::draining(db)? {
             return Ok(());
         }
@@ -821,26 +854,44 @@ impl Scheduler {
                 }
                 let exclusive_active = db
                     .rows(
-                        "SELECT spec FROM steps WHERE task=? AND state='running'",
+                        "SELECT spec,name FROM steps WHERE task=? AND state='running'",
                         &[&oid],
                     )?
                     .iter()
-                    .any(|t| {
-                        Store::step(t).is_ok_and(|s| {
-                            ["command", "delivery", "environment"].contains(&s.kind.as_str())
-                        })
-                    });
+                    .any(|t| exclusive_step(db, oid, t).unwrap_or(true));
                 if exclusive_active {
                     continue;
                 }
-                let exclusive =
-                    ["command", "delivery", "environment"].contains(&step.kind.as_str());
+                let exclusive = exclusive_step(db, oid, &row)?;
                 if exclusive && active > 0 {
                     continue;
                 }
                 let tid = row["id"].as_str().context("step")?.to_owned();
                 if !crate::project_runtime::acquire_remote(db, &mut row).await? {
                     continue;
+                }
+                if crate::preview::is_review(db, oid, &row)? {
+                    let review_root = db.root.clone();
+                    let review_task = oid.to_owned();
+                    let review_row = row.clone();
+                    if let Err(error) = crate::budget::blocking_timeout(
+                        Duration::from_secs(settings.timeout_seconds.min(60)),
+                        move || {
+                            crate::preview::prepare_review(
+                                &Store::open(&review_root)?,
+                                &review_task,
+                                &review_row,
+                            )
+                        },
+                    )
+                    .await
+                    {
+                        db.event(oid, "run.preview_held", json!({"error":error.to_string()}))?;
+                        db.conn
+                            .execute("UPDATE tasks SET status='blocked' WHERE id=?", [oid])?;
+                        crate::project_runtime::release_remote(db, &tid).await?;
+                        continue;
+                    }
                 }
                 let (attempt, wid, token) = match begin(db, &row) {
                     Ok(started) => started,
@@ -852,6 +903,7 @@ impl Scheduler {
                         return Err(error);
                     }
                 };
+                crate::preview::bind_attempt(db, &tid, &attempt)?;
                 let decision_job = (step.kind == "agent"
                     && settings.decision.mode == crate::config::DecisionMode::Shadow)
                     .then(|| {
@@ -867,13 +919,15 @@ impl Scheduler {
                             settings.decision.clone(),
                         )
                     });
-                let handle = tokio::task::spawn_local(run_step(
+                // Executor state machines are large; keep nested supervision on
+                // the heap so dispatch also works on standard worker stacks.
+                let handle = tokio::task::spawn_local(Box::pin(run_step(
                     db.root.clone(),
                     row,
                     attempt.clone(),
                     wid.clone(),
                     token,
-                ));
+                )));
                 self.running
                     .insert(tid, (oid.to_owned(), attempt, wid, handle));
                 active += 1;
@@ -950,6 +1004,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
         running: HashMap::new(),
         decisions: crate::decision::shadow::Queue::default(),
         reviews: crate::decision::review::Queue::default(),
+        previews: crate::preview::Queue::default(),
         limit: crate::management::limit(&db)?,
     };
     let remote_ready = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -1159,6 +1214,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
     let _ = storage_maintenance.await;
     scheduler.decisions.shutdown(&db).await;
     scheduler.reviews.shutdown(&db).await;
+    scheduler.previews.shutdown(&db).await?;
     for (tid, (_, attempt, wid, h)) in scheduler.running {
         h.abort();
         let _ = h.await;
@@ -1515,6 +1571,7 @@ mod scheduling_limits {
                     running: HashMap::new(),
                     decisions: crate::decision::shadow::Queue::default(),
                     reviews: crate::decision::review::Queue::default(),
+                    previews: crate::preview::Queue::default(),
                     limit: 1,
                 };
                 scheduler.tick(&db, true).await.unwrap();
@@ -1610,6 +1667,7 @@ mod scheduling_limits {
                     running: HashMap::new(),
                     decisions: crate::decision::shadow::Queue::default(),
                     reviews: crate::decision::review::Queue::default(),
+                    previews: crate::preview::Queue::default(),
                     limit: 64,
                 };
                 scheduler.tick(&db, true).await.unwrap();

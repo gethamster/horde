@@ -1,5 +1,5 @@
 {
-  "count": 113,
+  "count": 114,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -2699,6 +2699,35 @@
           }
         },
         "required": [],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Reconcile and retry a held exact preview publication job",
+      "name": "run_preview_retry",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_head": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "expected_head",
+          "idempotency_key"
+        ],
         "type": "object"
       },
       "scope": "admin"

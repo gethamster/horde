@@ -103,7 +103,7 @@ async fn capabilities(s: Arc<Admin>, h: HeaderMap) -> Reply {
         ));
     }
     Ok(Json(
-        json!({"version":1,"operations":["execution-profile","workspace","account-pool","storage"],"idempotency":true}),
+        json!({"version":1,"operations":["execution-profile","workspace","account-pool","storage","preview-pipeline"],"idempotency":true}),
     ))
 }
 async fn status(s: Arc<Admin>, h: HeaderMap, Path(id): Path<String>) -> Reply {
@@ -136,8 +136,14 @@ async fn apply(
         ));
     }
     if !valid_id(&id)
-        || !["execution-profile", "workspace", "account-pool", "storage"]
-            .contains(&request.kind.as_str())
+        || ![
+            "execution-profile",
+            "workspace",
+            "account-pool",
+            "storage",
+            "preview-pipeline",
+        ]
+        .contains(&request.kind.as_str())
     {
         return Err(error(StatusCode::BAD_REQUEST, "invalid operation"));
     }
@@ -226,6 +232,7 @@ fn execute(db: &Store, r: &Request) -> Result<Value> {
         "execution-profile" => crate::execution_setup::configure(db, &r.config),
         "workspace" => crate::setup_operations::workspaces(db, &r.config),
         "account-pool" => crate::setup_operations::account_pool(db, &r.config),
+        "preview-pipeline" => crate::preview::setup(db, &r.config),
         "storage" => {
             crate::storage::dispatch(db, "runtime_storage_configure", &r.config)?
                 .context("storage operation missing")?;
@@ -419,7 +426,7 @@ mod tests {
                 .status(),
             409
         );
-        let _: Value = client
+        let second: Value = client
             .put(format!("{base}/operations/b"))
             .bearer_auth(token)
             .json(&request)
@@ -429,6 +436,10 @@ mod tests {
             .json()
             .await
             .unwrap();
+        assert_eq!(
+            second["state"], "succeeded",
+            "second setup response: {second}"
+        );
         let old: Value = client
             .get(format!("{base}/operations/a"))
             .bearer_auth(token)

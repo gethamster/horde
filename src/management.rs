@@ -136,7 +136,7 @@ pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
 }
 pub fn status(db: &Store) -> Result<Value> {
     let active: i64 = db.conn.query_row(
-        "SELECT COUNT(*) FROM attempts WHERE state='running'",
+        "SELECT (SELECT COUNT(*) FROM attempts WHERE state='running') + (SELECT COUNT(*) FROM preview_jobs WHERE phase IN ('preparing','validating','publishing','checkpointing','publishing_branch'))",
         [],
         |r| r.get(0),
     )?;

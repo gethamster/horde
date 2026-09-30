@@ -277,6 +277,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "run_publish",
         "Publish a verified Run checkpoint without force push",
     ),
+    (
+        "run_preview_retry",
+        "Reconcile and retry a held exact preview publication job",
+    ),
     ("run_events", "Read versioned, project-scoped Run events"),
     ("list_tasks", "List submitted tasks and their status"),
     ("events", "Read ordered activity events"),

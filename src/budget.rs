@@ -612,3 +612,23 @@ pub fn command_output_with_timeout(
 #[cfg(test)]
 #[path = "budget/tests.rs"]
 mod pressure_tests;
+
+/// Give controller-owned blocking stages a deadline and the existing drop-cancel
+/// process-group supervisor even outside a worker attempt.
+pub async fn blocking_timeout<T: Send + 'static>(
+    timeout: Duration,
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    anyhow::ensure!(
+        !timeout.is_zero(),
+        "blocking operation timeout must be positive"
+    );
+    let control = CommandControl {
+        deadline: std::sync::Arc::new(std::sync::Mutex::new(Some(
+            std::time::Instant::now() + timeout,
+        ))),
+        cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        pressure: pressure::current(),
+    };
+    COMMAND_CONTROL.scope(control, blocking(work)).await
+}

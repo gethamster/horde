@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.6.20 - 2026-09-29
+
+- Build verified previews automatically for projects with an enabled setup policy.
+  Delivery integrates current main before a real agent review, validates the exact
+  tree, reserves publication capacity, verifies the native publisher receipt, signs
+  the checkpoint, and publishes the Run branch. Acceptance and release remain user
+  decisions.
+- Preserve job, review-attempt, reservation, and retry identities through restart
+  and lost responses. Changed heads, policy, failed validation, or admission pressure
+  hold publication with an actionable status. Existing published digests can be
+  reused when new publication is denied.
+- Record the first enabled policy's activation cutoff so historical completed Runs
+  do not launch unsolicited reviews. Preview work counts toward drain capacity;
+  bounded subprocesses keep private APIs responsive during validation.
+
 ## 0.6.19 - 2026-09-29
 
 - Configure execution profiles, workspace placement, storage, and account pools

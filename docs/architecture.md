@@ -332,7 +332,7 @@ Schema version 4 records execution policies, submission receipts, and project
 skill revisions. The version advances only after all additive migrations finish;
 reopening never lowers it. Older runtimes reject this database instead of running
 tasks without their saved execution constraints. Release manifests advertise the schema range supported by their binary; the current
-database schema is 8.
+database schema is 10.
 
 Administrative runtime settings, capacity snapshots, enrollment fingerprints,
 management receipts, provider resources, and operation intents are stored separately
@@ -473,3 +473,55 @@ Before upgrading schema 5, Horde writes a private `pre-projects-<id>.sqlite3`
 backup. The migration assigns legacy tasks and repositories to `default`, keeps
 IDs and active paths, and preserves uncertain attempts. The schema version
 advances after all additive migrations complete; older binaries reject it.
+
+## Opt-in verified preview pipeline
+
+Schema 10 adds operator-owned project preview policies, review bindings, durable
+publication jobs, reservation attempts, and retry receipts. The private setup API
+accepts `preview-pipeline`; it is disabled until configured. Repository settings
+and worker credentials cannot enable or modify it. The policy pins the publisher
+executable, builder/runtime image digests, committed Dockerfile, validation argv,
+review agent step, timeout, and installation-private admission endpoint/token file.
+
+Before the configured agent review starts, the controller integrates the current
+release base and records the exact head/tree/base and policy generation. A
+successful `accepted:true` review on that tree is required. Feedback or a changed
+base schedules a new bounded review step on the same Run. Validation runs before
+publication, and checks cannot modify the reviewed tree. Jobs key the Run, reviewed
+commit/tree/base, recipe hash, and policy generation. No stage accepts a preview
+or authorizes a release; those remain explicit user operations in Discover.
+
+The publisher receives JSON stdin in the Run workspace with a cleared environment,
+only nonsecret execution paths, the fixed sandbox Docker host, and the scoped
+admission credential path. Controller signing keys never cross that boundary.
+Before each new build/push the controller obtains a reservation; lease renewals
+continue during publication. Reservation request identities commit before HTTP
+requests. Interrupted replies replay the same identity; an expired/released lease
+gets a new durable ordinal while retaining the original artifact/source identity.
+Reusing an already published exact digest requires no new reservation. Abandoned
+reservations are released after reuse/publication reconciliation.
+
+The controller verifies the publisher receipt's source commit, tree, recipe,
+project, Run, and immutable scoped image, then uses the existing idempotent signed
+checkpoint and non-force branch publication operations. Restart repeats exact
+provenance observations rather than inferring an interrupted write did nothing.
+`summary.run.preview_pipeline` exposes phase, receipt, signed checkpoint, policy
+and recipe identity, and successful review step/attempt IDs. Failed work remains
+held; project-scoped operator `run_preview_retry` takes the exact expected head
+and an immutable idempotency key to reconcile the same job. Active publication
+stages occupy host capacity and prevent a drained/quiescent report. Draining
+reaps/reconciles active intent but does not dispatch new queued publications.
+
+The first enabled policy records the current durable event sequence once, within
+the same configuration transaction. A policy initially saved as disabled has no
+activation cutoff until its first enable. Omission from a later setup request
+preserves its configuration; send `enabled:false` explicitly to disable it.
+Historical
+terminal Runs do not receive unsolicited review/model invocations. Newly
+submitted Runs and explicit post-activation feedback/work revisions are eligible;
+policy updates retain the original cutoff so ongoing work stays visible. The
+actual selected review executor must be real and use its registered worker
+worktree at the pinned integrated head/tree. Clean stale retry worktrees may
+only fast-forward; divergent or dirty work remains held. Checkpoint validation
+runs on the blocking executor with a firm deadline and drop-cancel process-group
+control so the scheduler, private APIs, and drain requests remain responsive.
