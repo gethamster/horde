@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.6.22 - 2026-09-29
+
+- Verify controller drain responsiveness during active preview validation with
+  explicit startup and phase checks. Scheduling delays in a busy CI runner no
+  longer fail the test before its bounded validation process finishes.
+- Wait for the bounded branch-push race fixture to reconcile its held result
+  before shutting down its queue. A delayed remote hook still preserves the
+  published checkpoint and detects the advanced protected main.
+
 ## 0.6.21 - 2026-09-29
 
 - Keep release privacy checks deterministic when a cooldown timestamp or public
