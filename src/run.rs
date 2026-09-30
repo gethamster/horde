@@ -159,13 +159,28 @@ pub fn run_context(db: &Store, oid: &str) -> Result<Value> {
 pub fn main_head(db: &Store, oid: &str) -> Result<Value> {
     let task = db.task(oid)?;
     let repo = Path::new(task["repo"].as_str().context("Run repository")?);
-    run(repo, &["config", "--get", "remote.origin.url"])
-        .context("Run repository has no origin remote")?;
+    run(
+        repo,
+        &[
+            "config",
+            "--get",
+            &format!("remote.{}.url", crate::github_sync::remote(repo)),
+        ],
+    )
+    .context("Run repository has no origin remote")?;
     let settings: crate::config::Settings =
         serde_json::from_str(task["settings"].as_str().context("Run settings")?)?;
     let configured = settings.delivery.base.trim();
     let branch = if configured.is_empty() {
-        let listing = run(repo, &["ls-remote", "--symref", "origin", "HEAD"])?;
+        let listing = run(
+            repo,
+            &[
+                "ls-remote",
+                "--symref",
+                crate::github_sync::remote(repo),
+                "HEAD",
+            ],
+        )?;
         listing
             .lines()
             .find_map(|line| line.strip_prefix("ref: refs/heads/")?.split('\t').next())
@@ -176,7 +191,15 @@ pub fn main_head(db: &Store, oid: &str) -> Result<Value> {
     };
     let branch_ref = format!("refs/heads/{branch}");
     run(repo, &["check-ref-format", &branch_ref]).context("invalid release base branch")?;
-    let listing = run(repo, &["ls-remote", "--heads", "origin", &branch_ref])?;
+    let listing = run(
+        repo,
+        &[
+            "ls-remote",
+            "--heads",
+            crate::github_sync::remote(repo),
+            &branch_ref,
+        ],
+    )?;
     let commit_sha = listing
         .lines()
         .filter_map(|line| line.split_once('\t'))
@@ -205,7 +228,15 @@ pub fn integrate_main(db: &Store, oid: &str, expected: &str, expected_main: &str
         "main head changed; integrate and validate again"
     );
     let base_ref = base["branch_ref"].as_str().context("main branch ref")?;
-    run(&path, &["fetch", "--no-tags", "origin", base_ref])?;
+    run(
+        &path,
+        &[
+            "fetch",
+            "--no-tags",
+            crate::github_sync::remote(&path),
+            base_ref,
+        ],
+    )?;
     let fetched = run(&path, &["rev-parse", "FETCH_HEAD^{commit}"])?;
     expected_head(&fetched, expected_main)?;
     if run(&path, &["merge", "--no-edit", expected_main]).is_err() {
@@ -487,14 +518,21 @@ pub fn events(db: &Store, oid: &str, after: i64, limit: i64) -> Result<Value> {
 /// Fetches one task-owned ref without using origin's configured wildcard refspec.
 /// A missing ref is allowed only before the Run has ever observed a remote head.
 fn fetch_run_head(db: &Store, oid: &str, path: &Path, branch: &str) -> Result<Option<String>> {
-    run(path, &["config", "--get", "remote.origin.url"])
-        .context("Run branch requires an origin remote")?;
+    run(
+        path,
+        &[
+            "config",
+            "--get",
+            &format!("remote.{}.url", crate::github_sync::remote(path)),
+        ],
+    )
+    .context("Run branch requires an origin remote")?;
     let remote = run(
         path,
         &[
             "ls-remote",
             "--heads",
-            "origin",
+            crate::github_sync::remote(path),
             &format!("refs/heads/{branch}"),
         ],
     )?;
@@ -506,10 +544,24 @@ fn fetch_run_head(db: &Store, oid: &str, path: &Path, branch: &str) -> Result<Op
         }
         return Ok(None);
     }
-    let refspec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
-    run(path, &["fetch", "--no-tags", "origin", &refspec])?;
-    let fetched = remote_ref(path, &format!("refs/remotes/origin/{branch}"))
-        .context("remote Run branch did not resolve after fetch")?;
+    let refspec = format!(
+        "+refs/heads/{branch}:refs/remotes/{}/{branch}",
+        crate::github_sync::remote(path)
+    );
+    run(
+        path,
+        &[
+            "fetch",
+            "--no-tags",
+            crate::github_sync::remote(path),
+            &refspec,
+        ],
+    )?;
+    let fetched = remote_ref(
+        path,
+        &format!("refs/remotes/{}/{branch}", crate::github_sync::remote(path)),
+    )
+    .context("remote Run branch did not resolve after fetch")?;
     if let Some(previous) = observed
         && run(path, &["merge-base", "--is-ancestor", &previous, &fetched]).is_err()
     {
@@ -550,10 +602,20 @@ pub fn reconcile_run(db: &Store, oid: &str, expected: &str) -> Result<Value> {
 /// The caller already holds the task integration lock. This is invoked before
 /// merging worker commits so external branch edits join combined validation.
 pub(crate) fn reconcile_at_integration_safe_point(db: &Store, oid: &str) -> Result<()> {
-    let (path, _, head) = run_branch(db, oid)?;
-    if run(&path, &["config", "--get", "remote.origin.url"]).is_ok() {
-        reconcile_locked(db, oid, &head)?;
+    let (path, _, _) = run_branch(db, oid)?;
+    if run(
+        &path,
+        &[
+            "config",
+            "--get",
+            &format!("remote.{}.url", crate::github_sync::remote(&path)),
+        ],
+    )
+    .is_ok()
+    {
+        reconcile_locked(db, oid, &self::head(&path)?)?;
     }
+    crate::github_sync::integrate(db, oid, &path)?;
     Ok(())
 }
 
@@ -632,10 +694,21 @@ pub fn checkpoint_run(
     }
     let (path, branch, sha) = run_branch(db, oid)?;
     expected_head(&sha, expected)?;
-    if run(&path, &["config", "--get", "remote.origin.url"]).is_ok() {
+    if run(
+        &path,
+        &[
+            "config",
+            "--get",
+            &format!("remote.{}.url", crate::github_sync::remote(&path)),
+        ],
+    )
+    .is_ok()
+    {
         reconcile_locked(db, oid, &sha)?;
         expected_head(&head(&path)?, expected)?;
     }
+    crate::github_sync::integrate(db, oid, &path)?;
+    expected_head(&head(&path)?, expected)?;
     let identity = checkpoint_identity(&path, db, oid, &options)?;
     if std::env::var_os("HORDE_RUN_ATTESTATION_KEY").is_some() {
         require_signed_identity(&run_context(db, oid)?)?;
@@ -707,18 +780,35 @@ pub fn checkpoint_run(
         result[key] = value.clone();
     }
     db.event(oid, "run.checkpoint_verified", result.clone())?;
+    publish_if_github_enabled(db, oid, &sha)?;
     Ok(result)
 }
 
 /// Publish only a verified exact head using Git's normal non-force push.
 pub fn publish_run(db: &Store, oid: &str, expected: &str) -> Result<Value> {
     let _lock = run_lock(db, oid)?;
-    let (path, branch, sha) = run_branch(db, oid)?;
+    let (_, _, sha) = run_branch(db, oid)?;
     expected_head(&sha, expected)?;
     ensure!(
         verified_checkpoint(db, oid, &sha)?,
         "Run head has no current verified checkpoint"
     );
+    publish_locked(db, oid, expected)
+}
+
+pub(crate) fn publish_if_github_enabled(db: &Store, oid: &str, expected: &str) -> Result<()> {
+    let task = db.task(oid)?;
+    let settings: crate::config::Settings =
+        serde_json::from_str(task["settings"].as_str().context("Run settings")?)?;
+    if settings.github.enabled {
+        publish_locked(db, oid, expected)?;
+    }
+    Ok(())
+}
+
+fn publish_locked(db: &Store, oid: &str, expected: &str) -> Result<Value> {
+    let (path, branch, sha) = run_branch(db, oid)?;
+    expected_head(&sha, expected)?;
     let remote = fetch_run_head(db, oid, &path, &branch)?;
     if let Some(remote) = &remote {
         ensure!(
@@ -728,7 +818,10 @@ pub fn publish_run(db: &Store, oid: &str, expected: &str) -> Result<Value> {
     }
     if remote.as_deref() != Some(&sha) {
         let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-        let push = run(&path, &["push", "origin", &refspec]);
+        let push = run(
+            &path,
+            &["push", crate::github_sync::remote(&path), &refspec],
+        );
         let observed = fetch_run_head(db, oid, &path, &branch)?;
         if observed.as_deref() != Some(&sha) {
             push?;
@@ -736,6 +829,15 @@ pub fn publish_run(db: &Store, oid: &str, expected: &str) -> Result<Value> {
         }
     }
     observe_remote(db, oid, &branch, &sha)?;
+    run(
+        &path,
+        &[
+            "branch",
+            "--set-upstream-to",
+            &format!("{}/{}", crate::github_sync::remote(&path), branch),
+            &branch,
+        ],
+    )?;
     let last = db.rows(
         "SELECT data FROM events WHERE task=? AND kind='run.branch_published' ORDER BY seq DESC LIMIT 1",
         &[&oid],
