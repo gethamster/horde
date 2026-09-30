@@ -24,6 +24,7 @@ pub use schemas::{admin_schema, schema};
 pub fn worker_allowed(name: &str) -> bool {
     [
         "runtime_capabilities",
+        "run_diagnostics",
         "plan_execution",
         "list_skills",
         "read_skill",
@@ -516,6 +517,7 @@ fn dispatch_authorized(
                 .unwrap_or(100);
             crate::run::events(db, oid, after, limit)
         }
+        "run_diagnostics" => crate::operational_observations::diagnostics(db, string(&args,"project")?, oid, args["after"].as_i64().unwrap_or(0), usize::try_from(args["limit"].as_i64().unwrap_or(50)).context("invalid diagnostics limit")?),
         "events" => {
             let cursor:i64=if let Some(consumer)=args["consumer"].as_str(){db.conn.query_row("SELECT COALESCE((SELECT seq FROM event_receipts WHERE task=? AND consumer=?),0)",rusqlite::params![oid,consumer],|r|r.get(0))?}else{0};
             Ok(json!(db.rows("SELECT * FROM events WHERE task=? AND seq>? ORDER BY seq LIMIT 1000",&[&oid,&args["after"].as_i64().unwrap_or(cursor)])?))

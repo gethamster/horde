@@ -17,7 +17,9 @@ impl Queue {
         if self.active.as_ref().is_some_and(|h| h.is_finished()) {
             let h = self.active.take().unwrap();
             if !matches!(h.await, Ok(Ok(()))) {
-                db.conn.execute("UPDATE preview_jobs SET phase='held',error='publication interrupted; reconcile provenance before retry' WHERE phase NOT IN ('succeeded','held','superseded')",[])?;
+                for job in db.rows("SELECT id FROM preview_jobs WHERE phase NOT IN ('succeeded','held','superseded')",&[])? {
+                    phase(db,job["id"].as_str().context("preview job")?,"held",Some("publication interrupted; reconcile provenance before retry"))?;
+                }
             }
         }
         if self.active.is_some() {
@@ -76,7 +78,12 @@ impl Queue {
         if let Some(h) = self.active {
             h.abort();
             let _ = h.await;
-            db.conn.execute("UPDATE preview_jobs SET error='controller stopped; external effects require reconciliation' WHERE phase NOT IN ('succeeded','held','superseded')",[])?;
+            db.atomic(|| {
+                let jobs=db.rows("SELECT id,task FROM preview_jobs WHERE phase NOT IN ('succeeded','held','superseded')",&[])?;
+                db.conn.execute("UPDATE preview_jobs SET error='controller stopped; external effects require reconciliation' WHERE phase NOT IN ('succeeded','held','superseded')",[])?;
+                for job in jobs {db.event(job["task"].as_str().context("preview task")?,"run.preview_interrupted",json!({"id":job["id"]}))?;}
+                Ok(())
+            })?;
         }
         Ok(())
     }

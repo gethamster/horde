@@ -1,5 +1,5 @@
 {
-  "count": 114,
+  "count": 115,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -2756,6 +2756,24 @@
         "type": "object"
       },
       "scope": "admin"
+    },
+    {
+      "description": "Read bounded structural Run diagnostics without secret or transcript data",
+      "name": "run_diagnostics",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "worker"
     },
     {
       "description": "List submitted tasks and their status",

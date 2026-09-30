@@ -525,3 +525,46 @@ worktree at the pinned integrated head/tree. Clean stale retry worktrees may
 only fast-forward; divergent or dirty work remains held. Checkpoint validation
 runs on the blocking executor with a firm deadline and drop-cancel process-group
 control so the scheduler, private APIs, and drain requests remain responsive.
+
+## Controller operational observations
+
+Schema 11 adds an opt-in, operator-owned operational observation policy and frozen
+SQLite outbox. Private setup operation `operational-observations` binds one source
+project to a granted Signals diagnostic tenant/project/Thread. The first explicit
+`start_cursor` selects historical backfill; later setup preserves that cursor and
+destination identity. Scans are bounded to 100 events per project per maintenance
+iteration and hold new capture at 1,000 unsettled observations. Configuration and
+credential paths are unavailable to worker setup tools.
+
+The existing daemon maintenance lane captures failed attempts, interrupted workers,
+and held/interrupted preview publications. The journal and authoritative Run
+binding supply the original project, tenant, Thread, Brief and Run identity, even
+before Discover materializes a Run association. The Signals envelope belongs to
+the diagnostic project; the original identity is structural evidence only.
+Raw event bodies, errors, objectives, transcripts, paths and signing credentials
+never enter an observation. Typed controller credential-refresh failures use the
+fixed `credential_refresh_required` code. Historical error text appears only as
+an explicitly nonauthoritative hint in bounded read-only diagnostics.
+
+Cursor advancement and observation payload/key persistence commit together before
+HTTP. A separate `horde observations-export --config /run/system/telemetry/exporter.json`
+service drains the outbox without starting a daemon, scheduler or worker. Its
+private token/config volume must be absent from the worker controller namespace.
+The immutable configuration pins installation-private Signals, diagnostic scope
+and source project IDs. Every database policy and frozen structural payload must
+match that configuration before the service reads its credential or sends HTTP.
+Changing database endpoints, paths, envelopes or keys holds export without network
+or secret access. A two-second request deadline, no redirects/proxies, bounded four-KiB receipt
+and exact returned key protect transport reconciliation. Uncertain responses
+retry the original body/key. Authorization failures, conflicts and invalid receipts
+remain held with fixed status codes; an operator repairs the cause and explicitly
+sets `retry_held:true` through setup to replay the original observation. Credential
+files must be controller-owned regular files without group/other permissions.
+
+`runtime_status` and Run summaries expose redacted cursor/outbox health.
+`run_diagnostics` returns at most 50 project-scoped attempt and event records,
+credential kind/version/expiry metadata, reservation counts and preview identities.
+It performs no model invocation, Git fetch, reservation, retry, claim or release
+mutation. Worker access remains restricted to the worker's own Run and project.
+This lane does not collect arbitrary component logs, probe service health, detect
+incidents itself, or grant automatic release permission.

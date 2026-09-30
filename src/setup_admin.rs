@@ -103,7 +103,7 @@ async fn capabilities(s: Arc<Admin>, h: HeaderMap) -> Reply {
         ));
     }
     Ok(Json(
-        json!({"version":1,"operations":["execution-profile","workspace","account-pool","storage","preview-pipeline"],"idempotency":true}),
+        json!({"version":1,"operations":["execution-profile","workspace","account-pool","storage","preview-pipeline","operational-observations"],"idempotency":true}),
     ))
 }
 async fn status(s: Arc<Admin>, h: HeaderMap, Path(id): Path<String>) -> Reply {
@@ -142,6 +142,7 @@ async fn apply(
             "account-pool",
             "storage",
             "preview-pipeline",
+            "operational-observations",
         ]
         .contains(&request.kind.as_str())
     {
@@ -233,6 +234,9 @@ fn execute(db: &Store, r: &Request) -> Result<Value> {
         "workspace" => crate::setup_operations::workspaces(db, &r.config),
         "account-pool" => crate::setup_operations::account_pool(db, &r.config),
         "preview-pipeline" => crate::preview::setup(db, &r.config),
+        "operational-observations" => {
+            crate::setup_operations::operational_observations(db, &r.config)
+        }
         "storage" => {
             crate::storage::dispatch(db, "runtime_storage_configure", &r.config)?
                 .context("storage operation missing")?;

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.6.23 - 2026-09-30
+
+- Export structural attempt failures, worker interruptions and held previews from
+  the controller's durable journal to an explicitly configured private Signals
+  scope. Frozen outbox identity survives lost responses and restart; rejected
+  observations remain held for operator reconciliation. A separate native
+  observation-exporter service holds the private transport credentials and checks
+  every database policy/payload against immutable installation scope. The worker
+  controller captures journal intent without reading credentials or sending HTTP.
+- Expose bounded, project-scoped Run diagnostics with safe failure categories,
+  credential metadata and reservation counts, without transcripts, objectives,
+  credential material, raw errors or checkpoint signatures.
+
 ## 0.6.22 - 2026-09-29
 
 - Verify controller drain responsiveness during active preview validation with

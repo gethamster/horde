@@ -53,6 +53,7 @@ pub fn build(db: &Store, task: &str) -> Result<Value> {
             "head_sha": head,
             "checkpoint": checkpoint,
             "preview_pipeline": crate::preview::status(db, task)?,
+            "operational_observations": crate::operational_observations::status(db, context["project"].as_str())?,
             "reconciliation": crate::run::reconciliation_status(db, task)?,
         },
         "questions_pending": questions_pending,

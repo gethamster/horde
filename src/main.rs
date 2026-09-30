@@ -20,6 +20,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Drain structural telemetry without starting a daemon or invoking workers.
+    ObservationsExport {
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Serve the private administrative setup API.
     SetupServe {
         #[arg(long, default_value = "127.0.0.1:7407")]
@@ -686,6 +691,10 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&root)?;
     let root = root.canonicalize()?;
     let output = match cli.command {
+        Commands::ObservationsExport { config } => {
+            horde::operational_observations::serve(&root, &config).await?;
+            return Ok(());
+        }
         Commands::Init { .. } => unreachable!(),
         Commands::SetupServe { listen } => {
             horde::setup_admin::serve(root, listen).await?;
