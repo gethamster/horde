@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 /// Status of the per-task synthetic worker row that carries operator steering messages.
 /// Operator rows never receive mail, never wake, and are hidden from worker listings.
 pub const OPERATOR_STATUS: &str = "operator";
@@ -103,7 +103,7 @@ impl Store {
         }
         // Hold the daemon lock through migration so an older scheduler cannot
         // dispatch work while the new ownership schema is being installed.
-        let _migration_lock = if (5..=8).contains(&version) {
+        let _migration_lock = if (5..=9).contains(&version) {
             use fs2::FileExt;
             let lock = std::fs::OpenOptions::new()
                 .create(true)
@@ -209,6 +209,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         }
         crate::projects::migrate(&conn)?;
         crate::run::migrate(&conn)?;
+        crate::preview::migrate_connection(&conn)?;
         crate::accounts::migrate(&conn)?;
         crate::project_runtime::migrate(&conn)?;
         if version != i64::from(SCHEMA_VERSION) {

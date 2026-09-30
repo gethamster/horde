@@ -493,6 +493,7 @@ fn dispatch_authorized(
         "run_unpin_account" => crate::run::unpin_account(
             db, oid, string(&args, "account")?, string(&args, "idempotency_key")?,
         ),
+        "run_preview_retry" => crate::preview::retry(db,oid,string(&args,"expected_head")?,string(&args,"idempotency_key")?),
         "run_checkpoint" => crate::run::checkpoint_run(
             db,
             oid,

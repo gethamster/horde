@@ -35,7 +35,7 @@ pub fn host_limit(db: &Store) -> Result<usize> {
 
 pub fn host_active(db: &Store) -> Result<usize> {
     Ok(db.conn.query_row(
-        "SELECT COUNT(*) FROM attempts WHERE state IN ('running','uncertain')",
+        "SELECT (SELECT COUNT(*) FROM attempts WHERE state IN ('running','uncertain')) + (SELECT COUNT(*) FROM preview_jobs WHERE phase IN ('preparing','validating','publishing','checkpointing','publishing_branch'))",
         [],
         |r| r.get(0),
     )?)

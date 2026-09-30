@@ -52,6 +52,7 @@ pub fn build(db: &Store, task: &str) -> Result<Value> {
             "head_commit_sha": head,
             "head_sha": head,
             "checkpoint": checkpoint,
+            "preview_pipeline": crate::preview::status(db, task)?,
             "reconciliation": crate::run::reconciliation_status(db, task)?,
         },
         "questions_pending": questions_pending,

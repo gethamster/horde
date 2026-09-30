@@ -392,6 +392,11 @@ pub fn admin_schema(name: &str) -> Value {
             ("validation", "array"),
             ("idempotency_key", "string"),
         ],
+        "run_preview_retry" => &[
+            ("task", "string"),
+            ("expected_head", "string"),
+            ("idempotency_key", "string"),
+        ],
         "run_unpin_account" => &[
             ("task", "string"),
             ("account", "string"),
@@ -590,6 +595,7 @@ pub fn admin_schema(name: &str) -> Value {
             "validation",
             "idempotency_key",
         ],
+        "run_preview_retry" => &["task", "expected_head", "idempotency_key"],
         "run_unpin_account" => &["task", "account", "idempotency_key"],
         "remote_result" => &["task"],
         "delegate_task" => &["id", "objective"],
