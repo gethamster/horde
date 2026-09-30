@@ -4,6 +4,9 @@
 
 ## 0.6.23 - 2026-09-30
 
+- Keep drain and replacement held for uncertain attempts and unreconciled preview
+  reservations. Match scheduler capacity accounting and confirm expired or
+  released admission leases without replaying publication or discarding history.
 - Export structural attempt failures, worker interruptions and held previews from
   the controller's durable journal to an explicitly configured private Signals
   scope. Frozen outbox identity survives lost responses and restart; rejected

@@ -511,6 +511,28 @@ held; project-scoped operator `run_preview_retry` takes the exact expected head
 and an immutable idempotency key to reconcile the same job. Active publication
 stages occupy host capacity and prevent a drained/quiescent report. Draining
 reaps/reconciles active intent but does not dispatch new queued publications.
+Uncertain attempts also count as active until explicit worker reconciliation;
+runtime resume does not discard their history or account reservations. Runtime
+restart and fleet replacement use this same admission counter. Unreleased preview
+reservations independently prevent drain completion without consuming worker
+capacity. The existing preview queue polls one exact admission reservation at a
+time, including held or superseded work. It clears the local reservation only
+after a matching authoritative `released`, `expired`, or denied `held` response;
+denial allocates zero registry capacity. The admission service persists expiry
+during that read. Frozen ordinal receipts record the expected reservation ID and
+request before POST. Legacy journal intent without a response also holds drain
+and derives that exact ID for GET reconciliation. Active, unknown, HTTP 404,
+failed or lost status responses preserve the hold. A receipt generation prevents
+an older denial response from clearing a concurrently retried reservation.
+Status polling never revokes an active reservation,
+rebuilds work, changes its held phase or concludes that publication failed.
+Explicit operator stop remains an interruption action rather than an upgrade
+quiescence assertion.
+If admission returns 404 for an uncertain request, its owner must reconcile the
+frozen original request and key through the admission API, then wait for bounded
+expiry and matching GET evidence. This allocates no new request identity and
+does not build, publish, accept or release an application. Stale or superseded
+preview work need not be retried. Direct database clearing is not reconciliation.
 
 The first enabled policy records the current durable event sequence once, within
 the same configuration transaction. A policy initially saved as disabled has no

@@ -23,6 +23,81 @@ fn live_limit_survives_restart_and_rejects_invalid_values() {
         2
     );
 }
+
+#[test]
+fn uncertain_attempt_blocks_drain_and_restart_until_worker_reconciliation() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(dir.path()).unwrap();
+    let plan = horde::template::compile(
+        "simulated",
+        &horde::template::load_templates(dir.path()).unwrap(),
+        std::collections::BTreeMap::from([("task".into(), "test".into())]),
+    )
+    .unwrap();
+    let task = db
+        .submit("test", dir.path(), &Settings::default(), &plan)
+        .unwrap();
+    let step = db.steps(&task).unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let worker = db.register(&task, Some(&step)).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    db.conn.execute("INSERT INTO attempts(id,step,worker,state,started) VALUES('interrupted',?,?,'uncertain',0)", rusqlite::params![step,worker]).unwrap();
+    management::set(&db, "service_installed", "true").unwrap();
+    let status = protocol::dispatch(&db, "runtime_drain", json!({}), None).unwrap();
+    assert_eq!(status["active"], 1);
+    assert_eq!(status["drained"], false);
+    assert_eq!(horde::project_runtime::host_active(&db).unwrap(), 1);
+    protocol::dispatch(&db, "runtime_resume", json!({}), None).unwrap();
+    assert!(protocol::dispatch(&db, "resume", json!({"task":task}), None).is_err());
+    management::remote_command(
+        &db,
+        "parent",
+        &json!({"action":"runtime_restart","request_id":"safe-restart"}),
+    )
+    .unwrap();
+    management::local_commands(&db).unwrap();
+    assert!(!dir.path().join("shutdown.request").exists());
+    assert_eq!(
+        db.rows("SELECT state FROM runtime_operations", &[])
+            .unwrap()[0]["state"],
+        "draining"
+    );
+    drop(db);
+    let db = Store::open(dir.path()).unwrap();
+    assert_eq!(management::status(&db).unwrap()["drained"], false);
+    management::local_commands(&db).unwrap();
+    assert!(!dir.path().join("shutdown.request").exists());
+    protocol::dispatch(
+        &db,
+        "reconcile_worker",
+        json!({"task":task,"worker":worker}),
+        None,
+    )
+    .unwrap();
+    assert_eq!(management::status(&db).unwrap()["drained"], true);
+    assert_eq!(
+        db.rows(
+            "SELECT state,finished FROM attempts WHERE id='interrupted'",
+            &[]
+        )
+        .unwrap()[0]["state"],
+        "interrupted"
+    );
+    management::local_commands(&db).unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("shutdown.request")).unwrap(),
+        b"restart"
+    );
+    assert_eq!(
+        db.rows("SELECT state FROM runtime_operations", &[])
+            .unwrap()[0]["state"],
+        "restarting"
+    );
+}
 #[test]
 fn worker_cannot_change_runtime_or_publish_capacity() {
     let dir = tempfile::tempdir().unwrap();

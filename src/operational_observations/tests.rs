@@ -536,7 +536,7 @@ async fn discarded_success_response_produces_one_durable_remote_effect() {
 fn schema_ten_upgrade_is_additive_and_requires_daemon_to_stop() {
     use fs2::FileExt;
     let (root, db, _config) = fixture();
-    db.conn.execute_batch("DROP TABLE operational_observation_outbox; DROP TABLE operational_observation_policies; PRAGMA user_version=10;").unwrap();
+    db.conn.execute_batch("INSERT INTO preview_jobs VALUES('legacy-job','run-1','generation','head','tree','main','recipe','held',NULL,NULL,'held after lost response',0); INSERT INTO preview_admissions VALUES('legacy-job',1,'original-key'); DROP TABLE preview_admission_receipts; DROP TABLE operational_observation_outbox; DROP TABLE operational_observation_policies; PRAGMA user_version=10;").unwrap();
     drop(db);
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -553,6 +553,20 @@ fn schema_ten_upgrade_is_additive_and_requires_daemon_to_stop() {
         "DO NOT EXPORT OBJECTIVE"
     );
     assert_eq!(status(&db, None).unwrap()["configured"], false);
+    assert_eq!(crate::preview::pending_reservations(&db).unwrap(), 1);
+    assert_eq!(
+        db.rows(
+            "SELECT key FROM preview_admissions WHERE job='legacy-job'",
+            &[]
+        )
+        .unwrap()[0]["key"],
+        "original-key"
+    );
+    assert!(
+        db.rows("SELECT * FROM preview_admission_receipts", &[])
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         db.conn
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
