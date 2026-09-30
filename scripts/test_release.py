@@ -31,7 +31,7 @@ class InstallerTest(unittest.TestCase):
         der = subprocess.check_output(['openssl','pkey','-in',str(key),'-pubout','-outform','DER'])
         for target in ['x86_64-unknown-linux-musl','aarch64-unknown-linux-musl','x86_64-apple-darwin','aarch64-apple-darwin']:
             (self.dist/f'horde-{target}.compatibility.json').write_text(json.dumps(dict(
-                version='0.6.24', protocol=1, schema_min=2, schema_max=SCHEMA_VERSION)))
+                version='0.6.25', protocol=1, schema_min=2, schema_max=SCHEMA_VERSION)))
             binary = self.fixture_binary(SCHEMA_VERSION)
             with tarfile.open(self.dist/f'horde-{target}.tar','w') as archive:
                 info = tarfile.TarInfo('horde')
@@ -40,7 +40,7 @@ class InstallerTest(unittest.TestCase):
                 archive.addfile(info,io.BytesIO(binary))
         self.env.update(HORDE_RELEASE_PRIVATE_KEY_FILE=str(key),HORDE_RELEASE_PUBLIC_KEY=der[-32:].hex(),
                         HORDE_RELEASE_IMAGE='ghcr.io/asomervell/horde@sha256:'+'0'*64)
-        signed = subprocess.run(['python3','scripts/release_manifest.py','0.6.24',str(self.dist)],cwd=REPO,env=self.env,capture_output=True,text=True)
+        signed = subprocess.run(['python3','scripts/release_manifest.py','0.6.25',str(self.dist)],cwd=REPO,env=self.env,capture_output=True,text=True)
         self.assertEqual(signed.returncode, 0, signed.stderr)
         tools = self.root/'tools'
         tools.mkdir()
@@ -53,9 +53,9 @@ class InstallerTest(unittest.TestCase):
         return subprocess.run(['sh',str(self.dist/'install.sh'),'--no-service'],env=self.env,capture_output=True,text=True)
 
     def fixture_binary(self, schema):
-        compatibility = json.dumps(dict(version='0.6.24', protocol=1, schema_min=2, schema_max=schema))
-        return ('#!/bin/sh\nif [ "$1" = update ]; then test "$2" = --version && test "$3" = 0.6.24 || exit 9; echo repair-update; exit 0; fi\n'
-                'if [ "$1" = release-compatibility ]; then echo \''+compatibility+'\'; exit 0; fi\necho "horde 0.6.24"\n').encode()
+        compatibility = json.dumps(dict(version='0.6.25', protocol=1, schema_min=2, schema_max=schema))
+        return ('#!/bin/sh\nif [ "$1" = update ]; then test "$2" = --version && test "$3" = 0.6.25 || exit 9; echo repair-update; exit 0; fi\n'
+                'if [ "$1" = release-compatibility ]; then echo \''+compatibility+'\'; exit 0; fi\necho "horde 0.6.25"\n').encode()
 
     def test_signed_manifest_must_match_extracted_binary_before_install_or_repair(self):
         for path in self.dist.glob('horde-*.tar'):
@@ -63,7 +63,7 @@ class InstallerTest(unittest.TestCase):
             with tarfile.open(path, 'w') as archive:
                 info = tarfile.TarInfo('horde'); info.size = len(binary); info.mode = 0o755
                 archive.addfile(info, io.BytesIO(binary))
-        signed = subprocess.run(['python3', 'scripts/release_manifest.py', '0.6.24', str(self.dist)],
+        signed = subprocess.run(['python3', 'scripts/release_manifest.py', '0.6.25', str(self.dist)],
                                 cwd=REPO, env=self.env, capture_output=True, text=True)
         self.assertEqual(signed.returncode, 0, signed.stderr)
         for arguments in [['--no-service'], ['--repair']]:
@@ -83,7 +83,7 @@ class InstallerTest(unittest.TestCase):
                 info = tarfile.TarInfo('horde'); info.size = len(binary); info.mode = 0o755
                 archive.addfile(info, io.BytesIO(binary))
             artifact.update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                            url=artifact['url'].replace('/v0.6.24/', f'/v{version}/'))
+                            url=artifact['url'].replace('/v0.6.25/', f'/v{version}/'))
         (self.dist/'manifest.json').write_text(json.dumps(manifest))
         subprocess.run(['openssl', 'pkeyutl', '-sign', '-inkey', self.env['HORDE_RELEASE_PRIVATE_KEY_FILE'],
                         '-rawin', '-in', str(self.dist/'manifest.json'), '-out', str(self.dist/'manifest.sig')], check=True)
@@ -95,11 +95,15 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_known_incompatible_release_cannot_bypass_metadata_check(self):
-        self.legacy_release('0.6.23')
-        result = subprocess.run(['sh', str(self.dist/'install.sh'), '--no-service', '--version', '0.6.23'],
-                                env=self.env, capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((self.home/'.local/bin/horde').exists())
+        original = (self.dist/'manifest.json').read_bytes()
+        for version in ['0.6.23', '0.6.24']:
+            with self.subTest(version=version):
+                (self.dist/'manifest.json').write_bytes(original)
+                self.legacy_release(version)
+                result = subprocess.run(['sh', str(self.dist/'install.sh'), '--no-service', '--version', version],
+                                        env=self.env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.home/'.local/bin/horde').exists())
 
     def test_signed_boolean_cannot_masquerade_as_native_protocol_integer(self):
         manifest = json.loads((self.dist/'manifest.json').read_text())
@@ -116,7 +120,7 @@ class InstallerTest(unittest.TestCase):
         result = self.install()
         self.assertEqual(result.returncode,0,result.stderr)
         launcher = self.home/'.local/bin/horde'
-        self.assertEqual(subprocess.check_output([str(launcher),'--version'],env=self.env,text=True).strip(),'horde 0.6.24')
+        self.assertEqual(subprocess.check_output([str(launcher),'--version'],env=self.env,text=True).strip(),'horde 0.6.25')
         current = self.home/'.local/share/horde-install/current'
         previous = current.resolve()
         self.assertNotEqual(self.install().returncode,0)
@@ -136,7 +140,7 @@ class InstallerTest(unittest.TestCase):
                     info.size = len(data) if kind == tarfile.REGTYPE else 0
                     if kind in (tarfile.SYMTYPE, tarfile.LNKTYPE): info.linkname = '../../outside'
                     archive.addfile(info, io.BytesIO(data))
-        result = subprocess.run(['python3', 'scripts/release_manifest.py', '0.6.24', str(self.dist)],
+        result = subprocess.run(['python3', 'scripts/release_manifest.py', '0.6.25', str(self.dist)],
                                 cwd=REPO, env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -251,22 +255,24 @@ class InstallerTest(unittest.TestCase):
         result = subprocess.run(['openssl', 'pkeyutl', '-verify', '-pubin', '-inkey', str(self.dist/'release-key.pem'), '-rawin', '-in', str(self.dist/'manifest.json'), '-sigfile', str(self.dist/'manifest.sig')], capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads((self.dist/'manifest.json').read_text())
+        current_version = re.search(r'^version = "([^"]+)"$', (REPO/'Cargo.toml').read_text(), re.MULTILINE).group(1)
+        self.assertEqual(manifest['version'], current_version)
         self.assertEqual((manifest['schema_min'], manifest['schema_max']), (2, SCHEMA_VERSION))
-        self.assertTrue(all(a['url'].startswith('https://horde.sh/releases/v0.6.24/') for a in manifest['artifacts']))
+        self.assertTrue(all(a['url'].startswith('https://horde.sh/releases/v0.6.25/') for a in manifest['artifacts']))
 
     def test_signing_rejects_missing_or_inconsistent_binary_metadata(self):
         metadata = next(self.dist.glob('*.compatibility.json'))
         original = metadata.read_text()
-        for changed in [None, '{', '{}', json.dumps(dict(version='0.6.25', protocol=1, schema_min=2, schema_max=SCHEMA_VERSION)),
-                        json.dumps(dict(version='0.6.24', protocol=1, schema_min=2, schema_max=SCHEMA_VERSION-1)),
-                        json.dumps(dict(version='0.6.24', protocol=1, schema_min=2, schema_max=SCHEMA_VERSION, extra=True))]:
+        for changed in [None, '{', '{}', json.dumps(dict(version='0.6.26', protocol=1, schema_min=2, schema_max=SCHEMA_VERSION)),
+                        json.dumps(dict(version='0.6.25', protocol=1, schema_min=2, schema_max=SCHEMA_VERSION-1)),
+                        json.dumps(dict(version='0.6.25', protocol=1, schema_min=2, schema_max=SCHEMA_VERSION, extra=True))]:
             with self.subTest(metadata=changed):
                 (self.dist/'manifest.json').unlink(missing_ok=True)
                 if changed is None:
                     metadata.unlink()
                 else:
                     metadata.write_text(changed)
-                result = subprocess.run(['python3', 'scripts/release_manifest.py', '0.6.24', str(self.dist)],
+                result = subprocess.run(['python3', 'scripts/release_manifest.py', '0.6.25', str(self.dist)],
                                         cwd=REPO, env=self.env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((self.dist/'manifest.json').exists())
@@ -278,7 +284,7 @@ class InstallerTest(unittest.TestCase):
             value['schema_max'] = SCHEMA_VERSION-1
             metadata.write_text(json.dumps(value))
         (self.dist/'manifest.json').unlink()
-        result = subprocess.run(['python3', 'scripts/release_manifest.py', '0.6.24', str(self.dist)],
+        result = subprocess.run(['python3', 'scripts/release_manifest.py', '0.6.25', str(self.dist)],
                                 cwd=REPO, env=self.env, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.dist/'manifest.json').exists())

@@ -2,13 +2,21 @@
 
 ## Unreleased
 
-## 0.6.24 - 2026-09-30
+## 0.6.25 - 2026-09-30
 
 - Derive signed release schema bounds from each compiled binary's state-free
   compatibility metadata. Check all platform records before signing, compare the
   extracted binary with the verified manifest before installation, and require
   the published binary to pass its own signed release compatibility check.
-  Correct the schema-10 manifest bound published with the schema-11 0.6.23 runtime.
+  Correct the schema-10 manifest bound published with the schema-11 0.6.23 and
+  0.6.24 runtimes.
+
+## 0.6.24 - 2026-09-30
+
+### Added
+
+- Optional administrator-owned GitHub contribution synchronization through WALGIT. Runs combine current WALGIT main and imported GitHub base at preparation boundaries, hold missing imports and conflicts, and validate the resulting exact head before checkpoint publication.
+- Named WALGIT remote support for allocation, live base reads, reconciliation, and accepted Run publication. Legacy origin-only projects keep their existing behavior; GitHub credentials remain with Releases.
 
 ## 0.6.23 - 2026-09-30
 

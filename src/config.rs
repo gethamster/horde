@@ -30,6 +30,8 @@ pub struct Settings {
     pub executors: BTreeMap<String, Executor>,
     pub fallbacks: BTreeMap<String, String>,
     pub delivery: Delivery,
+    /// Operator-owned GitHub contribution import through WALGIT.
+    pub github: GithubSync,
     /// Operator-owned authority for automatic merge and deployment.
     pub automatic_delivery: AutomaticDelivery,
     pub notify: Notify,
@@ -37,6 +39,24 @@ pub struct Settings {
     /// cannot set this section.
     pub decision: Decision,
     pub limits: crate::delegation::Limits,
+}
+
+/// GitHub identity only: credentials stay with Releases, never workers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GithubSync {
+    pub enabled: bool,
+    pub repository: String,
+    pub base_branch: String,
+}
+impl Default for GithubSync {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            repository: String::new(),
+            base_branch: "main".into(),
+        }
+    }
 }
 
 mod decision;
@@ -342,6 +362,7 @@ impl Default for Settings {
             executors,
             fallbacks: BTreeMap::new(),
             delivery: Delivery::default(),
+            github: GithubSync::default(),
             automatic_delivery: AutomaticDelivery::default(),
             notify: Notify::default(),
             decision: Decision::default(),
@@ -543,11 +564,13 @@ impl Settings {
                     .with_context(|| format!("parse {}", file.display()))?
                     .as_table()
                     .is_some_and(|table| {
-                        table.contains_key("decision") || table.contains_key("automatic_delivery")
+                        table.contains_key("decision")
+                            || table.contains_key("automatic_delivery")
+                            || table.contains_key("github")
                     })
             {
                 bail!(
-                    "decision and automatic_delivery configuration are operator-only and cannot be set in {}",
+                    "decision, automatic_delivery, and github configuration are operator-only and cannot be set in {}",
                     file.display()
                 );
             }
@@ -651,6 +674,27 @@ impl Settings {
         Ok(settings)
     }
     fn validate(&self) -> Result<()> {
+        if self.github.enabled {
+            let parts: Vec<_> = self.github.repository.split('/').collect();
+            if parts.len() != 2
+                || parts.iter().any(|p| {
+                    p.is_empty()
+                        || !p
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                })
+            {
+                bail!("github.repository must be owner/name");
+            }
+            crate::git::run(
+                Path::new("."),
+                &[
+                    "check-ref-format",
+                    &format!("refs/heads/{}", self.github.base_branch),
+                ],
+            )
+            .context("invalid github.base_branch")?;
+        }
         if self.concurrency == 0
             || self.concurrency > 64
             || self.timeout_seconds == 0

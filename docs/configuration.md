@@ -695,3 +695,34 @@ operations are not an atomic transaction across multiple files and SQL: an I/O
 failure can leave partial filesystem changes. Failed receipts preserve that
 uncertainty and prohibit automatic replay. All setup routes share a per-listener
 limit of 120 requests per second; authentication runs before JSON extraction.
+
+## GitHub contributions through WALGIT
+
+The project administrator can opt a project into dual-host contribution handling:
+
+```toml
+[github]
+enabled = false
+repository = "owner/name"
+base_branch = "main"
+```
+
+Enable this only after Releases has imported the configured GitHub base into
+WALGIT at `refs/heads/upstreams/github/base/<base_branch>`. Horde never contacts
+GitHub for synchronization and does not receive its credentials. Repository
+configuration cannot override this administrator-owned connection.
+
+Configure a `walgit` Git remote for the authoritative Run repository and a
+separate `github` remote for human contribution workflows. Horde prefers
+`walgit` for allocation, live main reads, reconciliation, and Run publication;
+existing repositories with only `origin` continue to work. Run refs are always
+pushed individually without force. Neither imported branches nor GitHub main
+are publication targets for Horde.
+
+When enabled, new Runs and integration/checkpoint preparation combine current
+WALGIT main with the imported GitHub base. Missing imports hold preparation;
+conflicts preserve a clean Run branch and emit `run.branch_conflict` for repair
+through a worker branch. A changed combined head invalidates an old expected
+checkpoint SHA, so request a new checkpoint against the resulting exact head.
+Successful worker integration and checkpoint validation publish the resulting
+Run branch to WALGIT. Importing contributions never starts or releases a Run.
