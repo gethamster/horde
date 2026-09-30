@@ -564,11 +564,13 @@ impl Settings {
                     .with_context(|| format!("parse {}", file.display()))?
                     .as_table()
                     .is_some_and(|table| {
-                        table.contains_key("decision") || table.contains_key("automatic_delivery")
+                        table.contains_key("decision")
+                            || table.contains_key("automatic_delivery")
+                            || table.contains_key("github")
                     })
             {
                 bail!(
-                    "decision and automatic_delivery configuration are operator-only and cannot be set in {}",
+                    "decision, automatic_delivery, and github configuration are operator-only and cannot be set in {}",
                     file.display()
                 );
             }

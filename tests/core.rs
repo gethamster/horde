@@ -2971,3 +2971,36 @@ fn github_import_initial_conflict_allows_worker_repair_but_holds_checkpoint() {
     );
     assert!(f.events("run.checkpoint_verified").is_empty());
 }
+
+#[test]
+fn github_import_operator_config_validates_identity_and_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    for (repository, branch, valid) in [
+        ("owner/repo", "main", true),
+        ("owner/repo", "feature/nested", true),
+        ("owner", "main", false),
+        ("owner/", "main", false),
+        ("owner/repo?token=secret", "main", false),
+        ("owner/repo", "main:other", false),
+    ] {
+        std::fs::write(
+            &config,
+            format!("[github]\nenabled=true\nrepository='{repository}'\nbase_branch='{branch}'\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            Settings::load_dir(dir.path()).is_ok(),
+            valid,
+            "{repository} {branch}"
+        );
+    }
+    let repo = dir.path().join("project");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::write(
+        repo.join(".horde.toml"),
+        "[github]\nenabled=true\nrepository='owner/repo'\n",
+    )
+    .unwrap();
+    assert!(Settings::load_with_user_dir(&repo, dir.path()).is_err());
+}
