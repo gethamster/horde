@@ -174,12 +174,31 @@ fn drain_during_validation(test: &str, handler_delay: Duration, handler_stall: D
 
 #[test]
 fn main_advancing_during_branch_push_holds_published_checkpoint() {
+    main_advancing_during_push(
+        "preview::tests::hardening::main_advancing_during_branch_push_holds_published_checkpoint",
+        Duration::ZERO,
+    );
+}
+
+#[test]
+fn main_advancing_during_delayed_branch_push_holds_published_checkpoint() {
+    main_advancing_during_push(
+        "preview::tests::hardening::main_advancing_during_delayed_branch_push_holds_published_checkpoint",
+        Duration::from_secs(8),
+    );
+}
+
+fn main_advancing_during_push(test: &str, hook_delay: Duration) {
     if std::env::var_os("HORDE_PREVIEW_PUSH_RACE_CHILD").is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "preview::tests::hardening::main_advancing_during_branch_push_holds_published_checkpoint", "--nocapture"])
+            .args(["--exact", test, "--nocapture"])
             .env("HORDE_PREVIEW_PUSH_RACE_CHILD", "1")
-            .env("HORDE_RUN_ATTESTATION_KEY", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [42; 32]))
-            .output().unwrap();
+            .env(
+                "HORDE_RUN_ATTESTATION_KEY",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [42; 32]),
+            )
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "{} {}",
@@ -197,6 +216,9 @@ fn main_advancing_during_branch_push_holds_published_checkpoint() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&publisher, std::fs::Permissions::from_mode(0o700)).unwrap();
     config["projects"][0]["publisher"] = json!(publisher);
+    // The delayed hook must fit within a real publication deadline, while
+    // remaining longer than the old fixed five-second polling window.
+    config["projects"][0]["timeout_seconds"] = json!(15);
     setup(&db, &config).unwrap();
     prepare_review(&db, &task, &review).unwrap();
     bind_attempt(&db, review["id"].as_str().unwrap(), "review-attempt").unwrap();
@@ -228,7 +250,10 @@ fn main_advancing_during_branch_push_holds_published_checkpoint() {
     let hook = Path::new(&remote).join("hooks/post-receive");
     std::fs::write(
         &hook,
-        format!("#!/bin/sh\ngit update-ref refs/heads/main {advanced}\n"),
+        format!(
+            "#!/bin/sh\ngit update-ref refs/heads/main {advanced}\nsleep {}\n",
+            hook_delay.as_secs()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -239,12 +264,22 @@ fn main_advancing_during_branch_push_holds_published_checkpoint() {
     runtime.block_on(tokio::task::LocalSet::new().run_until(async {
         let mut queue = Queue::default();
         assert!(queue.tick(&db).await.unwrap());
-        for _ in 0..100 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let progress = status(&db, &task).unwrap();
+            assert!(
+                std::time::Instant::now() <= deadline,
+                "preview did not settle before its fixture deadline: {progress}"
+            );
+            match progress["phase"].as_str() {
+                Some("held") => break,
+                Some("succeeded" | "superseded") => {
+                    panic!("preview reached an unexpected terminal phase: {progress}");
+                }
+                _ => {}
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
             queue.tick(&db).await.unwrap();
-            if status(&db, &task).unwrap()["phase"] == "held" {
-                break;
-            }
         }
         queue.shutdown(&db).await.unwrap();
     }));
@@ -253,6 +288,11 @@ fn main_advancing_during_branch_push_holds_published_checkpoint() {
     assert!(report["error"].as_str().unwrap().contains("main advanced"));
     assert_eq!(report["receipt"]["image"], receipt["image"]);
     assert_eq!(report["checkpoint"]["build_id"], job);
+    assert_eq!(
+        crate::git::run(Path::new(&remote), &["rev-parse", "refs/heads/main"]).unwrap(),
+        advanced,
+        "the controller must preserve the main advancement made by the fixture"
+    );
     assert_eq!(
         crate::git::run(
             Path::new(&remote),
