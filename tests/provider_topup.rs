@@ -229,10 +229,72 @@ fn bound_to_challenge(headers: &str, external_id: &str) -> bool {
 }
 
 fn public(value: &Value) {
-    for secret in [KEY, TOKEN, "4242"] {
+    for secret in [KEY, TOKEN] {
         assert!(
             !value.to_string().contains(secret),
             "public topup report leaked private data"
+        );
+    }
+    assert!(
+        !private_payment_metadata(value),
+        "public topup report leaked private payment metadata"
+    );
+}
+
+fn private_payment_metadata(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => fields.iter().any(|(name, value)| {
+            matches!(
+                name.as_str(),
+                "card"
+                    | "last4"
+                    | "shared_payment_token"
+                    | "payment_intent_id"
+                    | "provider_namespace"
+            ) || private_payment_metadata(value)
+        }),
+        Value::Array(values) => values.iter().any(private_payment_metadata),
+        // Match the fixture card suffix as a string value, while permitting
+        // unrelated timestamps, amounts, URLs, and UUIDs containing its digits.
+        Value::String(value) => value == "4242",
+        _ => false,
+    }
+}
+
+#[test]
+fn public_topup_reports_allow_card_fixture_digits_in_safe_fields() {
+    // The release finished at this instant; its five-minute cooldown was
+    // 1790744242, which contains the fixture's card suffix as decimal digits.
+    let completed_at = time::OffsetDateTime::parse(
+        "2026-09-30T04:52:22Z",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap()
+    .unix_timestamp();
+    assert_eq!(completed_at, 1_790_743_942);
+    public(&json!({
+        "next_check_at": completed_at + 300,
+        "pending": {"id": "dff04242-f79e-4000-8000-123456789abc"},
+        "approval_url": "https://app.link.com/approve/lsrq_4242"
+    }));
+}
+
+#[test]
+fn public_topup_reports_reject_credentials_and_structured_card_details() {
+    for leaked in [
+        json!({"error": format!("wrapped {KEY} credential")}),
+        json!({"pending": [{"message": format!("wrapped {TOKEN} token")}]}),
+        json!({"last_payment": {"payment": {"card": {"last4": "4242"}}}}),
+        json!({"last_payment": [{"card": {"last4": "1111"}}]}),
+        json!({"pending": [{"last4": 4242}]}),
+        json!({"last_payment": {"suffix": "4242"}}),
+        json!({"last_payment": [{"payment_intent_id": "pi_fixture"}]}),
+        json!({"last_payment": {"provider_namespace": "fixture_namespace"}}),
+        json!({"pending": {"shared_payment_token": "another_private_token"}}),
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| public(&leaked)).is_err(),
+            "public top-up assertion accepted private fixture data"
         );
     }
 }
