@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.21 - 2026-09-29
+
+- Keep release privacy checks deterministic when a cooldown timestamp or public
+  identifier happens to contain the fixture card suffix. Credential and nested
+  card metadata rejection remain covered by explicit regressions.
+
 ## 0.6.20 - 2026-09-29
 
 - Build verified previews automatically for projects with an enabled setup policy.
