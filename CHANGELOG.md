@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.24 - 2026-09-30
+
+- Derive signed release schema bounds from each compiled binary's state-free
+  compatibility metadata. Check all platform records before signing, compare the
+  extracted binary with the verified manifest before installation, and require
+  the published binary to pass its own signed release compatibility check.
+  Correct the schema-10 manifest bound published with the schema-11 0.6.23 runtime.
+
 ## 0.6.23 - 2026-09-30
 
 - Keep drain and replacement held for uncertain attempts and unreconciled preview

@@ -25,6 +25,11 @@ pub struct Manifest {
     #[serde(default)]
     pub image: Option<String>,
 }
+/// Metadata for this compiled artifact; reading it never opens runtime state.
+pub fn release_compatibility() -> Value {
+    json!({"version": env!("CARGO_PKG_VERSION"), "protocol": 1,
+        "schema_min": 2, "schema_max": crate::store::SCHEMA_VERSION})
+}
 pub fn verify(bytes: &[u8], signature: &[u8], key: &[u8]) -> Result<Manifest> {
     ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
         .verify(bytes, signature)

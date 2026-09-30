@@ -20,6 +20,8 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Print this binary's release compatibility without accessing runtime state.
+    ReleaseCompatibility,
     /// Drain structural telemetry without starting a daemon or invoking workers.
     ObservationsExport {
         #[arg(long)]
@@ -655,6 +657,10 @@ async fn main() -> Result<()> {
         .name(horde::branding::cli_name())
         .get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
+    if matches!(&cli.command, Commands::ReleaseCompatibility) {
+        println!("{}", horde::update::release_compatibility());
+        return Ok(());
+    }
     anyhow::ensure!(
         cli.selected_project.is_none()
             || !matches!(
@@ -691,6 +697,7 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&root)?;
     let root = root.canonicalize()?;
     let output = match cli.command {
+        Commands::ReleaseCompatibility => unreachable!(),
         Commands::ObservationsExport { config } => {
             horde::operational_observations::serve(&root, &config).await?;
             return Ok(());

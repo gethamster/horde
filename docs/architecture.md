@@ -332,7 +332,13 @@ Schema version 4 records execution policies, submission receipts, and project
 skill revisions. The version advances only after all additive migrations finish;
 reopening never lowers it. Older runtimes reject this database instead of running
 tasks without their saved execution constraints. Release manifests advertise the schema range supported by their binary; the current
-database schema is 10.
+database schema is 11. The state-free `horde release-compatibility` command reports
+the compiled version, protocol and schema bounds before accessing a data directory.
+Release signing requires matching metadata from all four built binaries; the
+installer compares the verified manifest with the extracted binary before install
+or repair for releases from 0.6.23 onward, and publication checks the installed
+binary against its signed release. Explicit older-version installs preserve their
+historical signature, archive hash and binary version checks.
 
 Administrative runtime settings, capacity snapshots, enrollment fingerprints,
 management receipts, provider resources, and operation intents are stored separately

@@ -82,6 +82,7 @@ jobs:
           reported=$(target/${{ matrix.target }}/release/horde --version)
           echo "$reported"
           test "$reported" = "horde ${GITHUB_REF_NAME#v}"
+          target/${{ matrix.target }}/release/horde release-compatibility > horde-${{ matrix.target }}.compatibility.json
       # Keep platform archives binary-only so older updaters can install them.
       - name: Package binary
         run: |
@@ -91,7 +92,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: horde-${{ matrix.target }}
-          path: horde-${{ matrix.target }}.tar
+          path: |
+            horde-${{ matrix.target }}.tar
+            horde-${{ matrix.target }}.compatibility.json
           overwrite: true
       # Build each image natively as soon as its binary is ready. Only immutable
       # digest references are pushed here; the version tag waits for all checks.
@@ -247,6 +250,8 @@ jobs:
           reported=$(horde --version)
           echo "$reported"
           test "$reported" = "horde ${GITHUB_REF_NAME#v}"
+          "$HOME/.local/bin/horde" --data-dir "$RUNNER_TEMP/release-compatibility" \
+            update --check --version "${GITHUB_REF_NAME#v}"
       - name: Confirm the published binary needs no loader
         run: |
           binary=$(command -v horde || echo "$HOME/.local/bin/horde")
