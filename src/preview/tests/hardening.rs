@@ -29,18 +29,59 @@ fn first_enable_excludes_runs_completed_while_policy_was_disabled() {
 
 #[test]
 fn controller_drain_api_responds_during_bounded_preview_validation() {
+    drain_during_validation(
+        "preview::tests::hardening::controller_drain_api_responds_during_bounded_preview_validation",
+        Duration::ZERO,
+        Duration::ZERO,
+    );
+}
+
+#[test]
+fn controller_drain_api_responds_with_delayed_handler_start() {
+    drain_during_validation(
+        "preview::tests::hardening::controller_drain_api_responds_with_delayed_handler_start",
+        Duration::from_millis(750),
+        Duration::ZERO,
+    );
+}
+
+#[test]
+fn controller_drain_wall_clock_guard_rejects_blocked_event_loop() {
+    drain_during_validation(
+        "preview::tests::hardening::controller_drain_wall_clock_guard_rejects_blocked_event_loop",
+        Duration::ZERO,
+        Duration::from_secs(3),
+    );
+}
+
+fn drain_during_validation(test: &str, handler_delay: Duration, handler_stall: Duration) {
+    const VALIDATION_TIMEOUT_SECONDS: u64 = 5;
+    const DRAIN_RESPONSE_SECONDS: u64 = 2;
     if std::env::var_os("HORDE_PREVIEW_DRAIN_CHILD").is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "preview::tests::hardening::controller_drain_api_responds_during_bounded_preview_validation", "--nocapture"])
+            .args(["--exact", test, "--nocapture"])
             .env("HORDE_PREVIEW_DRAIN_CHILD", "1")
-            .env("HORDE_RUN_ATTESTATION_KEY", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [42; 32]))
-            .output().unwrap();
-        assert!(
-            output.status.success(),
-            "{} {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+            .env(
+                "HORDE_RUN_ATTESTATION_KEY",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [42; 32]),
+            )
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if handler_stall.is_zero() {
+            assert!(
+                output.status.success(),
+                "{} {stderr}",
+                String::from_utf8_lossy(&output.stdout),
+            );
+        } else {
+            assert!(
+                !output.status.success()
+                    && stderr.contains("drain response exceeded wall-clock limit"),
+                "blocked event loop escaped the wall-clock guard: {} {stderr}",
+                String::from_utf8_lossy(&output.stdout),
+            );
+        }
         return;
     }
     let (dir, db, task, review, mut config) = fixture();
@@ -48,11 +89,11 @@ fn controller_drain_api_responds_during_bounded_preview_validation() {
     let started = dir.path().join("validation-started");
     std::fs::write(
         &script,
-        format!("#!/bin/sh\ntouch '{}'\nsleep 10\n", started.display()),
+        format!("#!/bin/sh\ntouch '{}'\nsleep 30\n", started.display()),
     )
     .unwrap();
     config["projects"][0]["validation"] = json!(["sh", script]);
-    config["projects"][0]["timeout_seconds"] = json!(1);
+    config["projects"][0]["timeout_seconds"] = json!(VALIDATION_TIMEOUT_SECONDS);
     setup(&db, &config).unwrap();
     prepare_review(&db, &task, &review).unwrap();
     bind_attempt(&db, review["id"].as_str().unwrap(), "review-attempt").unwrap();
@@ -66,33 +107,52 @@ fn controller_drain_api_responds_during_bounded_preview_validation() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
         let mut queue = Queue::default();
         assert!(queue.tick(&db).await.unwrap());
-        tokio::time::timeout(Duration::from_secs(2), async {
+        // Git freshness checks happen before the validation process starts.
+        // Synchronize on its marker rather than assuming fast runner startup.
+        tokio::time::timeout(Duration::from_secs(10), async {
             while !started.exists() {
+                let progress = status(&db, &task).unwrap();
+                assert_ne!(progress["phase"], "held", "{progress}");
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
         .unwrap();
         let (server, mut client) = tokio::net::UnixStream::pair().unwrap();
-        let handler = tokio::task::spawn_local(crate::runtime::handle(server, db.root.clone()));
+        let root = db.root.clone();
+        let handler = tokio::task::spawn_local(async move {
+            // Model a loaded runner scheduling the handler after the client.
+            tokio::time::sleep(handler_delay).await;
+            let result = crate::runtime::handle(server, root).await;
+            // Negative control: the response is ready, but the single-thread
+            // event loop cannot poll its reader or deadline during this stall.
+            std::thread::sleep(handler_stall);
+            result
+        });
+        let requested_at = std::time::Instant::now();
         client
             .write_all(b"{\"method\":\"runtime_drain\",\"args\":{}}\n")
             .await
             .unwrap();
         let mut line = String::new();
         tokio::time::timeout(
-            Duration::from_millis(500),
+            Duration::from_secs(DRAIN_RESPONSE_SECONDS),
             tokio::io::BufReader::new(client).read_line(&mut line),
         )
         .await
         .unwrap()
         .unwrap();
+        assert!(
+            requested_at.elapsed() <= Duration::from_secs(DRAIN_RESPONSE_SECONDS),
+            "drain response exceeded wall-clock limit"
+        );
         let response: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(response["result"]["draining"], true);
         assert_eq!(response["result"]["active"], 1);
+        assert_eq!(status(&db, &task).unwrap()["phase"], "validating");
         handler.await.unwrap().unwrap();
         assert!(queue.tick(&db).await.unwrap());
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(Duration::from_secs(8), async {
             while status(&db, &task).unwrap()["phase"] != "held" {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 queue.tick(&db).await.unwrap();
@@ -103,7 +163,9 @@ fn controller_drain_api_responds_during_bounded_preview_validation() {
         let held = status(&db, &task).unwrap();
         assert_eq!(
             held["error"],
-            "executor timed out after 1s; process group stopped"
+            format!(
+                "executor timed out after {VALIDATION_TIMEOUT_SECONDS}s; process group stopped"
+            )
         );
         assert_eq!(crate::management::status(&db).unwrap()["active"], 0);
         queue.shutdown(&db).await.unwrap();

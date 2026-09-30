@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.22 - 2026-09-29
+
+- Verify controller drain responsiveness during active preview validation with
+  explicit startup and phase checks. Scheduling delays in a busy CI runner no
+  longer fail the test before its bounded validation process finishes.
+
 ## 0.6.21 - 2026-09-29
 
 - Keep release privacy checks deterministic when a cooldown timestamp or public
