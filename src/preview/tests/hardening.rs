@@ -2,6 +2,206 @@ use super::*;
 use std::time::Duration;
 
 #[test]
+fn first_enable_excludes_runs_completed_while_policy_was_disabled() {
+    let (_dir, db, task, _review, mut config) = fixture();
+    db.conn.execute("DELETE FROM preview_policies", []).unwrap();
+    config["projects"][0]["enabled"] = json!(false);
+    setup(&db, &config).unwrap();
+    db.event(
+        &task,
+        "workflow.revised",
+        json!({"source":"work while disabled"}),
+    )
+    .unwrap();
+    config["projects"][0]["enabled"] = json!(true);
+    setup(&db, &config).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+        let mut queue = Queue::default();
+        assert!(!queue.tick(&db).await.unwrap());
+        assert_eq!(db.steps(&task).unwrap().len(), 2);
+        queue.shutdown(&db).await.unwrap();
+    }));
+}
+
+#[test]
+fn controller_drain_api_responds_during_bounded_preview_validation() {
+    if std::env::var_os("HORDE_PREVIEW_DRAIN_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "preview::tests::hardening::controller_drain_api_responds_during_bounded_preview_validation", "--nocapture"])
+            .env("HORDE_PREVIEW_DRAIN_CHILD", "1")
+            .env("HORDE_RUN_ATTESTATION_KEY", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [42; 32]))
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let (dir, db, task, review, mut config) = fixture();
+    let script = dir.path().join("validation");
+    let started = dir.path().join("validation-started");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\nsleep 10\n", started.display()),
+    )
+    .unwrap();
+    config["projects"][0]["validation"] = json!(["sh", script]);
+    config["projects"][0]["timeout_seconds"] = json!(1);
+    setup(&db, &config).unwrap();
+    prepare_review(&db, &task, &review).unwrap();
+    bind_attempt(&db, review["id"].as_str().unwrap(), "review-attempt").unwrap();
+    fixture_execution(&db, &task, &review);
+    pipeline::enqueue(&db, &task).unwrap().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let mut queue = Queue::default();
+        assert!(queue.tick(&db).await.unwrap());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let (server, mut client) = tokio::net::UnixStream::pair().unwrap();
+        let handler = tokio::task::spawn_local(crate::runtime::handle(server, db.root.clone()));
+        client
+            .write_all(b"{\"method\":\"runtime_drain\",\"args\":{}}\n")
+            .await
+            .unwrap();
+        let mut line = String::new();
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            tokio::io::BufReader::new(client).read_line(&mut line),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["result"]["draining"], true);
+        assert_eq!(response["result"]["active"], 1);
+        handler.await.unwrap().unwrap();
+        assert!(queue.tick(&db).await.unwrap());
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while status(&db, &task).unwrap()["phase"] != "held" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                queue.tick(&db).await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let held = status(&db, &task).unwrap();
+        assert_eq!(
+            held["error"],
+            "executor timed out after 1s; process group stopped"
+        );
+        assert_eq!(crate::management::status(&db).unwrap()["active"], 0);
+        queue.shutdown(&db).await.unwrap();
+    }));
+}
+
+#[test]
+fn main_advancing_during_branch_push_holds_published_checkpoint() {
+    if std::env::var_os("HORDE_PREVIEW_PUSH_RACE_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "preview::tests::hardening::main_advancing_during_branch_push_holds_published_checkpoint", "--nocapture"])
+            .env("HORDE_PREVIEW_PUSH_RACE_CHILD", "1")
+            .env("HORDE_RUN_ATTESTATION_KEY", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [42; 32]))
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let (dir, db, task, review, mut config) = fixture();
+    let (head, tree) = pipeline::identity(&db, &task).unwrap();
+    let policy = configure(&config).unwrap().projects.remove(0);
+    let receipt = json!({"schema_version":1,"scope":"local","project_id":policy.project_id,"project_slug":"hello","run_id":task,"built_commit":head,"tree_sha":tree,"recipe_hash":policy.recipe_hash(),"component":null,"artifact_digest":format!("sha256:{}","c".repeat(64)),"image":format!("registry:5000/local/hello@sha256:{}","c".repeat(64))});
+    let publisher = dir.path().join("publisher");
+    std::fs::write(&publisher, format!("#!/bin/sh\nrequest=$(cat)\ncase \"$request\" in *'\"mode\":\"probe\"'*) printf '%s' '{{\"reused\":true}}';; *) printf '%s' '{}' ;; esac\n", receipt)).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&publisher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    config["projects"][0]["publisher"] = json!(publisher);
+    setup(&db, &config).unwrap();
+    prepare_review(&db, &task, &review).unwrap();
+    bind_attempt(&db, review["id"].as_str().unwrap(), "review-attempt").unwrap();
+    fixture_execution(&db, &task, &review);
+    let job = pipeline::enqueue(&db, &task).unwrap().unwrap();
+    let task_row = db.task(&task).unwrap();
+    let repo = Path::new(task_row["repo"].as_str().unwrap());
+    crate::git::run(
+        repo,
+        &[
+            "commit",
+            "--allow-empty",
+            "-m",
+            "advance during publication",
+        ],
+    )
+    .unwrap();
+    let advanced = crate::git::run(repo, &["rev-parse", "HEAD"]).unwrap();
+    let remote = crate::git::run(repo, &["remote", "get-url", "origin"]).unwrap();
+    crate::git::run(
+        Path::new(&remote),
+        &[
+            "fetch",
+            repo.to_str().unwrap(),
+            "HEAD:refs/fixture/advanced",
+        ],
+    )
+    .unwrap();
+    let hook = Path::new(&remote).join("hooks/post-receive");
+    std::fs::write(
+        &hook,
+        format!("#!/bin/sh\ngit update-ref refs/heads/main {advanced}\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(tokio::task::LocalSet::new().run_until(async {
+        let mut queue = Queue::default();
+        assert!(queue.tick(&db).await.unwrap());
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            queue.tick(&db).await.unwrap();
+            if status(&db, &task).unwrap()["phase"] == "held" {
+                break;
+            }
+        }
+        queue.shutdown(&db).await.unwrap();
+    }));
+    let report = status(&db, &task).unwrap();
+    assert_eq!(report["phase"], "held");
+    assert!(report["error"].as_str().unwrap().contains("main advanced"));
+    assert_eq!(report["receipt"]["image"], receipt["image"]);
+    assert_eq!(report["checkpoint"]["build_id"], job);
+    assert_eq!(
+        crate::git::run(
+            Path::new(&remote),
+            &["rev-parse", &format!("refs/heads/horde/{task}")]
+        )
+        .unwrap(),
+        head
+    );
+}
+
+#[test]
 fn activation_excludes_history_but_admits_explicit_new_work_and_preserves_cutoff() {
     let (_d, db, task, _row, mut c) = fixture();
     db.conn.execute("DELETE FROM preview_policies", []).unwrap();
@@ -148,7 +348,8 @@ fn chunked_admission_response_is_bounded_before_full_buffering() {
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        stream.read(&mut [0; 4096]).unwrap();
+        let received = stream.read(&mut [0; 4096]).unwrap();
+        assert!(received > 0);
         write!(
             stream,
             "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"

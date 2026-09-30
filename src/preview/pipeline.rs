@@ -297,6 +297,7 @@ pub(super) async fn advance(db: &Store, id: &str) -> Result<()> {
         crate::run::publish_run(&Store::open(&publish_root)?, &publish_task, &publish_head)
     })
     .await?;
+    check_fresh(db, j, &p, &generation).await?;
     phase(db, id, "succeeded", None)?;
     Ok(())
 }

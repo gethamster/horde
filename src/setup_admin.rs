@@ -426,7 +426,7 @@ mod tests {
                 .status(),
             409
         );
-        let _: Value = client
+        let second: Value = client
             .put(format!("{base}/operations/b"))
             .bearer_auth(token)
             .json(&request)
@@ -436,6 +436,10 @@ mod tests {
             .json()
             .await
             .unwrap();
+        assert_eq!(
+            second["state"], "succeeded",
+            "second setup response: {second}"
+        );
         let old: Value = client
             .get(format!("{base}/operations/a"))
             .bearer_auth(token)

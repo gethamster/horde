@@ -158,10 +158,19 @@ pub fn setup(db: &Store, v: &Value) -> Result<Value> {
     let c = configure(v)?;
     migrate(db)?;
     let generation = crate::store::hash(&serde_json::to_vec(&c)?);
-    let activation: i64 =
-        db.conn
-            .query_row("SELECT COALESCE(MAX(seq),0) FROM events", [], |r| r.get(0))?;
-    db.atomic(||{for p in &c.projects {crate::projects::resolve(db,&p.project_id)?;db.conn.execute("INSERT INTO preview_policies VALUES(?,?,?,?,?) ON CONFLICT(project) DO UPDATE SET scope=excluded.scope,generation=excluded.generation,policy=excluded.policy",params![p.project_id,c.scope,generation,serde_json::to_string(p)?,activation])?;}Ok(())})?;
+    db.atomic(|| {
+        let activation: i64 = db.conn.query_row(
+            "SELECT COALESCE(MAX(seq),0) FROM events", [], |row| row.get(0),
+        )?;
+        for p in &c.projects {
+            crate::projects::resolve(db, &p.project_id)?;
+            db.conn.execute(
+                "INSERT INTO preview_policies VALUES(?,?,?,?,?) ON CONFLICT(project) DO UPDATE SET scope=excluded.scope,generation=excluded.generation,policy=excluded.policy,activation_seq=CASE WHEN preview_policies.activation_seq<0 AND json_extract(excluded.policy,'$.enabled')=1 THEN excluded.activation_seq ELSE preview_policies.activation_seq END",
+                params![p.project_id, c.scope, generation, serde_json::to_string(p)?, if p.enabled { activation } else { -1 }],
+            )?;
+        }
+        Ok(())
+    })?;
     Ok(
         json!({"configured":true,"generation":generation,"projects":c.projects.iter().map(|p|json!({"project_id":p.project_id,"enabled":p.enabled})).collect::<Vec<_>>() }),
     )

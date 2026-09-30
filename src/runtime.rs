@@ -201,7 +201,7 @@ async fn run_step(
             &attempt,
             &wid,
             seconds,
-            execute_step(&db, &row, &attempt, &wid, &token),
+            Box::pin(execute_step(&db, &row, &attempt, &wid, &token)),
         ),
     )
     .await;
@@ -603,7 +603,7 @@ fn wake_notified(db: &Store) -> Result<()> {
     }
     Ok(())
 }
-async fn handle(stream: tokio::net::UnixStream, root: PathBuf) -> Result<()> {
+pub(crate) async fn handle(stream: tokio::net::UnixStream, root: PathBuf) -> Result<()> {
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
     let mut line = String::new();
@@ -870,26 +870,28 @@ impl Scheduler {
                 if !crate::project_runtime::acquire_remote(db, &mut row).await? {
                     continue;
                 }
-                let review_root = db.root.clone();
-                let review_task = oid.to_owned();
-                let review_row = row.clone();
-                if let Err(error) = crate::budget::blocking_timeout(
-                    Duration::from_secs(settings.timeout_seconds.min(60)),
-                    move || {
-                        crate::preview::prepare_review(
-                            &Store::open(&review_root)?,
-                            &review_task,
-                            &review_row,
-                        )
-                    },
-                )
-                .await
-                {
-                    db.event(oid, "run.preview_held", json!({"error":error.to_string()}))?;
-                    db.conn
-                        .execute("UPDATE tasks SET status='blocked' WHERE id=?", [oid])?;
-                    crate::project_runtime::release_remote(db, &tid).await?;
-                    continue;
+                if crate::preview::is_review(db, oid, &row)? {
+                    let review_root = db.root.clone();
+                    let review_task = oid.to_owned();
+                    let review_row = row.clone();
+                    if let Err(error) = crate::budget::blocking_timeout(
+                        Duration::from_secs(settings.timeout_seconds.min(60)),
+                        move || {
+                            crate::preview::prepare_review(
+                                &Store::open(&review_root)?,
+                                &review_task,
+                                &review_row,
+                            )
+                        },
+                    )
+                    .await
+                    {
+                        db.event(oid, "run.preview_held", json!({"error":error.to_string()}))?;
+                        db.conn
+                            .execute("UPDATE tasks SET status='blocked' WHERE id=?", [oid])?;
+                        crate::project_runtime::release_remote(db, &tid).await?;
+                        continue;
+                    }
                 }
                 let (attempt, wid, token) = match begin(db, &row) {
                     Ok(started) => started,
@@ -917,13 +919,15 @@ impl Scheduler {
                             settings.decision.clone(),
                         )
                     });
-                let handle = tokio::task::spawn_local(run_step(
+                // Executor state machines are large; keep nested supervision on
+                // the heap so dispatch also works on standard worker stacks.
+                let handle = tokio::task::spawn_local(Box::pin(run_step(
                     db.root.clone(),
                     row,
                     attempt.clone(),
                     wid.clone(),
                     token,
-                ));
+                )));
                 self.running
                     .insert(tid, (oid.to_owned(), attempt, wid, handle));
                 active += 1;

@@ -332,7 +332,7 @@ Schema version 4 records execution policies, submission receipts, and project
 skill revisions. The version advances only after all additive migrations finish;
 reopening never lowers it. Older runtimes reject this database instead of running
 tasks without their saved execution constraints. Release manifests advertise the schema range supported by their binary; the current
-database schema is 8.
+database schema is 10.
 
 Administrative runtime settings, capacity snapshots, enrollment fingerprints,
 management receipts, provider resources, and operation intents are stored separately
@@ -512,7 +512,11 @@ and an immutable idempotency key to reconcile the same job. Active publication
 stages occupy host capacity and prevent a drained/quiescent report. Draining
 reaps/reconciles active intent but does not dispatch new queued publications.
 
-Policy activation records the current durable event sequence once. Historical
+The first enabled policy records the current durable event sequence once, within
+the same configuration transaction. A policy initially saved as disabled has no
+activation cutoff until its first enable. Omission from a later setup request
+preserves its configuration; send `enabled:false` explicitly to disable it.
+Historical
 terminal Runs do not receive unsolicited review/model invocations. Newly
 submitted Runs and explicit post-activation feedback/work revisions are eligible;
 policy updates retain the original cutoff so ongoing work stays visible. The
