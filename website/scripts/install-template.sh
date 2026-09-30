@@ -136,6 +136,22 @@ PY
 chmod 755 "$scratch/horde"
 version=$(cat "$scratch/version")
 [ "$("$scratch/horde" --version)" = "horde $version" ]
+python3 -I - "$scratch/horde" "$scratch/manifest.json" <<'PY'
+import json, re, subprocess, sys
+manifest = json.load(open(sys.argv[2]))
+expected = {k: manifest[k] for k in ('version', 'protocol', 'schema_min', 'schema_max')}
+if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', expected['version']):
+    raise SystemExit('Invalid release version')
+# Older published binaries predate this command. The first schema-11 release
+# (0.6.23) must pass it too: its incorrect signed schema bound is unsafe.
+if tuple(map(int, expected['version'].split('-')[0].split('.'))) < (0, 6, 23):
+    sys.exit(0)
+actual = json.loads(subprocess.check_output([sys.argv[1], 'release-compatibility'], timeout=30))
+if (actual != expected or set(actual) != set(expected)
+        or any(type(actual[k]) is not int or type(expected[k]) is not int
+               for k in ('protocol', 'schema_min', 'schema_max'))):
+    raise SystemExit('Signed release compatibility does not match the binary')
+PY
 install_root="$HOME/.local/share/horde-install"
 if [ "$repair" = yes ]; then
   [ -e "$install_root/current/horde" ] || { echo 'Repair requires an existing managed installation.' >&2; exit 1; }
