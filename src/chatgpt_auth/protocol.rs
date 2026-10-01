@@ -9,12 +9,18 @@ use sha2::{Digest, Sha256};
 pub(super) const ISSUER: &str = "https://auth.openai.com";
 pub(super) const RESOURCE: &str = "https://api.openai.com/v1";
 pub(super) const TOKEN: &str = "https://auth.openai.com/api/accounts/oauth/token";
-pub(super) fn client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+fn identity_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .timeout(std::time::Duration::from_secs(20))
-        .build()?)
+}
+pub(super) fn client() -> Result<reqwest::Client> {
+    let builder = identity_client_builder();
+    #[cfg(test)]
+    let builder = builder.https_only(false);
+    Ok(builder.build()?)
 }
 pub(super) fn random() -> Result<String> {
     let mut bytes = [0u8; 32];
@@ -96,7 +102,9 @@ pub(super) fn trusted_endpoint(value: &Value, key: &str) -> Result<String> {
             && url.fragment().is_none(),
         "untrusted identity service endpoint"
     );
-    Ok(url.into())
+    // Only the path comes from discovery. Preserve the fixed HTTPS authority
+    // in the request itself as well as enforcing it on the HTTP client.
+    Ok(format!("https://auth.openai.com{}", url.path()))
 }
 pub(super) async fn token(http: &reqwest::Client, form: &[(&str, &str)]) -> Result<Value> {
     let response = http
@@ -239,10 +247,32 @@ pub(super) async fn identity(
 
 #[cfg(test)]
 thread_local! {pub(super) static TEST_SERVICE:std::cell::RefCell<Option<String>>=const {std::cell::RefCell::new(None)};}
+#[cfg(test)]
 pub(super) fn service_url(url: &str) -> String {
-    #[cfg(test)]
     if let Some(base) = TEST_SERVICE.with(|value| value.borrow().clone()) {
         return url.replacen(ISSUER, &base, 1);
     }
     url.to_owned()
+}
+
+#[cfg(not(test))]
+pub(super) fn service_url(url: &str) -> String {
+    url.to_owned()
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn identity_transport_rejects_cleartext_before_connecting() {
+        let error = identity_client_builder()
+            .build()
+            .unwrap()
+            .get("http://127.0.0.1:1/private-session")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.is_builder(), "cleartext must fail before networking");
+    }
 }
