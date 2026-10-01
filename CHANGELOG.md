@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.6.26 - 2026-09-30
+## 0.6.27 - 2026-09-30
 
 - Add Sign in with ChatGPT for native Horde workers. Account owners receive a
   browser consent URL, and Horde stores and renews the resulting credentials
@@ -13,6 +13,15 @@
 - Transfer a protected login to a remote daemon over SSH, giving the destination
   sole refresh ownership. Sign-out stops local tool execution and reports whether
   remote revocation was confirmed.
+
+## 0.6.26 - 2026-09-30
+
+- Register existing Foundry project repositories through the private setup API.
+  Validate strict typed requests and immutable project bindings, atomically
+  persist repository/runtime grants with their success receipt, and reconcile
+  the original operation after interruption. Registration preserves revoked
+  grants and task-bearing projects, requires quiescent execution, and grants no
+  accounts, preview publication, browser acceptance or release authority.
 
 ## 0.6.25 - 2026-09-30
 

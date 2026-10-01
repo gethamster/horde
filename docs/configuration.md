@@ -756,14 +756,18 @@ digits, hyphens, or underscores. Supported configurations are:
   unsettled work blocks configuration. Existing drain state is retained, and
   unexpected runtime concurrency overrides require reconciliation.
 - `storage`: the fields accepted by `runtime_storage_configure`.
+- `project-registration`: registers existing local checkouts for Foundry projects.
+  Its version 1 contract and recovery behavior are described below.
 
 Receipts contain `id`, `kind`, `state`, and nonsecret `result` metadata. A claim is
 persisted before any effects. Repeating an identical ID and payload returns its
 receipt; changing the payload returns HTTP 409. A disconnected client must query
 its receipt before taking further action. `running` after an interrupted process
-is unresolved and is never replayed automatically. `failed` may include partial
-filesystem effects and also requires reconciliation. Any newer operation of the
-same kind makes an earlier receipt `superseded`, even if the newer operation
+is unresolved and is never replayed automatically. Registration permits explicit
+PUT reconciliation with the original payload and unchanged context. `failed` may
+include partial filesystem effects and also requires reconciliation. For kinds
+other than `project-registration`, any newer operation of the same kind makes an
+earlier receipt `superseded`, even if the newer operation
 failed: an older success does not prove current desired state. Submit an explicit
 new operation ID after reviewing component state. Concurrent mutations receive
 HTTP 429 and are not claimed.
@@ -777,10 +781,67 @@ execution layout, and binary image. Optional layout variables are
 Set `HORDE_EXECUTION_HOME` explicitly on the execution daemon to initialize its
 link to the shared managed Git configuration before the first setup request. A
 later setup request then becomes visible to an already-running daemon. Setup
-operations are not an atomic transaction across multiple files and SQL: an I/O
-failure can leave partial filesystem changes. Failed receipts preserve that
+operations that change files are not an atomic transaction across files and SQL.
+An I/O failure can leave partial filesystem changes. Failed receipts preserve that
 uncertainty and prohibit automatic replay. All setup routes share a per-listener
 limit of 120 requests per second; authentication runs before JSON extraction.
+
+#### Registering Foundry projects
+
+Send `kind: "project-registration"` with this required configuration:
+
+```json
+{"schema_version":1,"scope":"foundry","projects":[{"id":"11111111-1111-4111-8111-111111111111","slug":"deliver","name":"Deliver","tenant_id":"foundry","concurrency":1,"isolation":"native","repository_slug":"deliver","runtime":"local"}]}
+```
+
+The example UUID is illustrative. Supply the installation's agreed project UUID.
+Every field is required; unknown fields, duplicate JSON keys and nulls are rejected.
+A batch contains 1 to 100 projects with unique canonical lowercase UUIDs, project
+slugs and repository slugs. Slugs contain 1 to 64 lowercase ASCII letters, digits,
+hyphens or underscores and cannot be UUID aliases. Names must be nonblank, at most
+256 UTF-8 bytes, and contain no control characters. Concurrency is an integer from
+1 to 64. Isolation accepts `native` or `vm` without provisioning a VM. Version 1
+requires scope and tenant `foundry` and runtime `local`.
+
+The service captures the absolute `HORDE_EXECUTION_WORKSPACE_ROOT` at startup
+(default `/workspace`). Each repository must already exist at that root plus its
+repository slug. Registration rejects symlink ancestors, linked metadata, bare
+repositories, gitfile worktrees and Git roots that differ from the derived path.
+Git inspection has a deadline and a cleared environment. Registration never clones
+or fetches a repository. The operator must retain control of the filesystem during
+registration; this boundary does not isolate processes running as the daemon user.
+
+Existing project identity, tenant, name, concurrency and isolation must match.
+An empty native project may acquire missing bindings. A project with task history
+must already have the requested repository and runtime grant. Registration never
+restores revoked grants or changes accounts, global limits, pipelines or tasks.
+New and unfinished operations require no active or uncertain attempts and no
+unsettled account allocations. Operators must arrange quiescence separately;
+registration does not drain or resume execution.
+
+Successful results contain `schema_version`, `scope` and ordered `projects`.
+Each project repeats its scalar fields, returns `repository: {id, slug}` and
+`runtime: "local"`, and reports `disposition: "created"` or `"reconciled"`.
+Deliver assigns repository UUIDs and retains matching native UUIDs. The authenticated
+receipt establishes the first repository UUID; later replay returns that exact ID.
+
+Registration commits all bindings and the success receipt in one SQLite transaction.
+Its receipts never supersede one another. Terminal replay checks the original
+content digest before probing the current filesystem or grants. A running receipt
+contains only an opaque `context_hash`; GET observes it without applying bindings.
+PUT with the original payload can reconcile it only if the operator root,
+physical repository identities and local runtime identity still match. HTTP 500
+requires receipt lookup and reconciliation under the original operation ID.
+
+Registration returns 200 for success and existing-receipt GET, 400 for malformed
+JSON or envelope, 422 for invalid typed configuration, and 409 for conflicting
+content, bindings or context. Claimed terminal conflicts retain a failed receipt:
+PUT returns 409 and GET returns 200. Errors use fixed codes such as
+`repository_invalid`, `repository_conflict`, `project_conflict`,
+`project_has_history`, `runtime_conflict`, `context_conflict` and
+`runtime_not_quiescent`. Responses contain no filesystem paths or raw Git/SQL errors.
+The existing 1 MiB body limit, content-type check, authentication and rate/lock
+limits still apply (413, 415, 401 and 429 respectively). Missing receipts return 404.
 
 ## GitHub contributions through WALGIT
 

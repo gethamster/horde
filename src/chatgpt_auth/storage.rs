@@ -105,7 +105,31 @@ pub(super) fn root(db: &Store, account: &str) -> Result<PathBuf> {
     directory(&root)?;
     Ok(root)
 }
-pub(super) fn lock(db: &Store, account: &str) -> Result<File> {
+/// Release the advisory lock explicitly, rather than waiting for every dup/fork
+/// copy of its open file description to close. Rust opens descriptors CLOEXEC,
+/// but concurrent subprocess forks can inherit them briefly before exec.
+pub(super) struct AccountLock {
+    file: File,
+    owner_pid: u32,
+}
+impl AccountLock {
+    fn acquired(file: File) -> Self {
+        Self {
+            file,
+            owner_pid: std::process::id(),
+        }
+    }
+}
+impl Drop for AccountLock {
+    fn drop(&mut self) {
+        // File close still releases the lock if unlock fails. Drop cannot return
+        // an error; do not panic during an unrelated credential failure.
+        if std::process::id() == self.owner_pid {
+            let _ = FileExt::unlock(&self.file);
+        }
+    }
+}
+pub(super) fn lock(db: &Store, account: &str) -> Result<AccountLock> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -116,9 +140,9 @@ pub(super) fn lock(db: &Store, account: &str) -> Result<File> {
         .open(root(db, account)?.join("refresh.lock"))?;
     file.try_lock_exclusive()
         .map_err(|_| anyhow::anyhow!("ChatGPT account operation already in progress"))?;
-    Ok(file)
+    Ok(AccountLock::acquired(file))
 }
-pub(super) async fn lock_async(db: &Store, account: &str) -> Result<File> {
+pub(super) async fn lock_async(db: &Store, account: &str) -> Result<AccountLock> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -130,7 +154,7 @@ pub(super) async fn lock_async(db: &Store, account: &str) -> Result<File> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match file.try_lock_exclusive() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(AccountLock::acquired(file)),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 ensure!(
                     std::time::Instant::now() < deadline,
@@ -273,6 +297,7 @@ pub(super) fn host_id(db: &Store, account: &str) -> Result<String> {
     guard
         .try_lock_exclusive()
         .map_err(|_| anyhow::anyhow!("ChatGPT host identity is being initialized"))?;
+    let _guard = AccountLock::acquired(guard);
     let path = shared.join("host-id");
     if path.exists() {
         let value =
@@ -286,4 +311,39 @@ pub(super) fn host_id(db: &Store, account: &str) -> Result<String> {
     let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     write_private_atomic(&path, id.as_bytes())?;
     Ok(id)
+}
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+    use crate::chatgpt_auth::integration_tests::setup;
+    #[test]
+    fn released_lock_does_not_wait_for_an_inherited_descriptor_to_close() {
+        let (_temp, db, account) = setup();
+        let guard = lock(&db, &account).unwrap();
+        // dup and fork refer to the same open file description: closing only
+        // the parent descriptor must not leave the account busy in a child.
+        let inherited = guard.file.try_clone().unwrap();
+        assert!(lock(&db, &account).is_err());
+        drop(guard);
+        let next = lock(&db, &account);
+        assert!(
+            next.is_ok(),
+            "released guard must unlock while inherited descriptors remain open"
+        );
+        drop(inherited);
+    }
+    #[test]
+    fn async_guard_explicitly_releases_inherited_open_description() {
+        let (_temp, db, account) = setup();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let guard = runtime.block_on(lock_async(&db, &account)).unwrap();
+        let inherited = guard.file.try_clone().unwrap();
+        assert!(lock(&db, &account).is_err());
+        drop(guard);
+        assert!(lock(&db, &account).is_ok());
+        drop(inherited);
+    }
 }

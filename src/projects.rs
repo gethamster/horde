@@ -173,6 +173,16 @@ pub fn infer(db: &Store, repo: &Path) -> Result<Option<String>> {
 pub fn register_repository(db: &Store, project: &str, repo: &Path) -> Result<String> {
     let project = resolve(db, project)?;
     let common = common_dir(repo)?;
+    register_repository_identity(db, &project, repo, &common)
+}
+
+/// Register an identity already inspected by a bounded, stricter caller.
+pub(crate) fn register_repository_identity(
+    db: &Store,
+    project: &str,
+    repo: &Path,
+    common: &Path,
+) -> Result<String> {
     let existing: Option<(String, String)> = db
         .conn
         .query_row(
@@ -234,7 +244,7 @@ pub fn bind_task(db: &Store, task: &str, project: &str, repo: &Path) -> Result<(
         Ok(())
     })
 }
-pub fn local_runtime(db: &Store) -> Result<String> {
+pub(crate) fn local_runtime_identity(db: &Store) -> Result<String> {
     let cached = crate::management::value(db, "runtime.identity")?;
     let file = db.root.join("network-runtime.toml");
     let identity = if file.exists() {
@@ -245,6 +255,12 @@ pub fn local_runtime(db: &Store) -> Result<String> {
     } else {
         cached.clone().unwrap_or_else(|| "local".to_owned())
     };
+    Ok(identity)
+}
+
+pub fn local_runtime(db: &Store) -> Result<String> {
+    let identity = local_runtime_identity(db)?;
+    let cached = crate::management::value(db, "runtime.identity")?;
     if cached.as_deref() != Some(identity.as_str()) {
         crate::management::set(db, "runtime.identity", &identity)?;
     }

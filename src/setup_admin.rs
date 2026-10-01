@@ -1,4 +1,8 @@
 //! Private administrative setup transport. Receipts never contain request secrets.
+mod locking;
+#[cfg(test)]
+#[path = "setup_operations/project_registration/http_tests.rs"]
+mod registration_tests;
 use crate::store::Store;
 use anyhow::{Context, Result, ensure};
 use axum::{
@@ -15,6 +19,7 @@ use std::{path::PathBuf, sync::Arc};
 
 struct Admin {
     root: PathBuf,
+    execution_root: PathBuf,
     token: [u8; 32],
     requests: std::sync::Mutex<(std::time::Instant, u32)>,
 }
@@ -22,6 +27,9 @@ impl Admin {
     fn new(root: PathBuf, token: &str) -> Self {
         Self {
             root,
+            execution_root: std::env::var_os("HORDE_EXECUTION_WORKSPACE_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| "/workspace".into()),
             token: Sha256::digest(token.as_bytes()).into(),
             requests: std::sync::Mutex::new((std::time::Instant::now(), 0)),
         }
@@ -93,7 +101,7 @@ fn valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 fn receipt(db: &Store, id: &str) -> Result<Option<Value>> {
-    Ok(db.conn.query_row("SELECT a.kind,CASE WHEN EXISTS(SELECT 1 FROM setup_receipts b WHERE b.kind=a.kind AND b.rowid>a.rowid) THEN 'superseded' ELSE a.state END,a.result FROM setup_receipts a WHERE a.id=?",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?))).optional()?.map(|(kind,state,result)|json!({"id":id,"kind":kind,"state":state,"result":result.and_then(|v|serde_json::from_str::<Value>(&v).ok())})))
+    Ok(db.conn.query_row("SELECT a.kind,CASE WHEN a.kind != 'project-registration' AND EXISTS(SELECT 1 FROM setup_receipts b WHERE b.kind=a.kind AND b.rowid>a.rowid) THEN 'superseded' ELSE a.state END,a.result FROM setup_receipts a WHERE a.id=?",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?))).optional()?.map(|(kind,state,result)|json!({"id":id,"kind":kind,"state":state,"result":result.and_then(|v|serde_json::from_str::<Value>(&v).ok())})))
 }
 async fn capabilities(s: Arc<Admin>, h: HeaderMap) -> Reply {
     if !authorized(&s, &h) {
@@ -103,7 +111,7 @@ async fn capabilities(s: Arc<Admin>, h: HeaderMap) -> Reply {
         ));
     }
     Ok(Json(
-        json!({"version":1,"operations":["execution-profile","workspace","account-pool","storage","preview-pipeline","operational-observations"],"idempotency":true}),
+        json!({"version":1,"operations":["execution-profile","workspace","account-pool","storage","preview-pipeline","operational-observations","project-registration"],"idempotency":true}),
     ))
 }
 async fn status(s: Arc<Admin>, h: HeaderMap, Path(id): Path<String>) -> Reply {
@@ -135,21 +143,11 @@ async fn apply(
             "administrative credential required",
         ));
     }
-    if !valid_id(&id)
-        || ![
-            "execution-profile",
-            "workspace",
-            "account-pool",
-            "storage",
-            "preview-pipeline",
-            "operational-observations",
-        ]
-        .contains(&request.kind.as_str())
-    {
+    if !valid_id(&id) {
         return Err(error(StatusCode::BAD_REQUEST, "invalid operation"));
     }
     // Blocking work survives HTTP disconnects. Claim persists before any side effect.
-    tokio::task::spawn_blocking(move || apply_blocking(&s.root, &id, &request))
+    tokio::task::spawn_blocking(move || apply_at(&s.root, &s.execution_root, &id, &request))
         .await
         .map_err(|_| {
             error(
@@ -158,23 +156,51 @@ async fn apply(
             )
         })?
 }
+#[cfg(test)]
 fn apply_blocking(root: &std::path::Path, id: &str, request: &Request) -> Reply {
-    use fs2::FileExt;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(root.join("setup-admin.lock"))
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "setup lock unavailable"))?;
-    lock.try_lock_exclusive().map_err(|_| {
-        error(
-            StatusCode::TOO_MANY_REQUESTS,
-            "another setup operation is active",
-        )
-    })?;
+    apply_at(root, std::path::Path::new("/workspace"), id, request)
+}
+fn apply_at(
+    root: &std::path::Path,
+    execution_root: &std::path::Path,
+    id: &str,
+    request: &Request,
+) -> Reply {
+    locking::with_lock(root, |_| apply_locked(root, execution_root, id, request))
+}
+fn apply_locked(
+    root: &std::path::Path,
+    execution_root: &std::path::Path,
+    id: &str,
+    request: &Request,
+) -> Reply {
     let db = database(root)
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "receipt unavailable"))?;
     let digest = hex::encode(Sha256::digest(serde_json::to_vec(request).unwrap()));
+    if ![
+        "execution-profile",
+        "workspace",
+        "account-pool",
+        "storage",
+        "preview-pipeline",
+        "operational-observations",
+        "project-registration",
+    ]
+    .contains(&request.kind.as_str())
+    {
+        let original_registration: bool = db.conn.query_row("SELECT EXISTS(SELECT 1 FROM setup_receipts WHERE id=? AND kind='project-registration')", [id], |r| r.get(0)).map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "receipt unavailable"))?;
+        return Err(error(
+            if original_registration {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            "invalid operation",
+        ));
+    }
+    if request.kind == "project-registration" {
+        return registration(&db, execution_root, id, request, &digest);
+    }
     let inserted = db
         .conn
         .execute(
@@ -219,14 +245,207 @@ fn apply_blocking(root: &std::path::Path, id: &str, request: &Request) -> Reply 
     let result = receipt(&db, id)
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "receipt unavailable"))?
         .unwrap();
-    // Explicit unlock also releases a temporarily inherited descriptor during fork/exec.
-    fs2::FileExt::unlock(&lock).map_err(|_| {
+    Ok(Json(result))
+}
+// Inspect only raw kind members; no config members are collapsed into a Value.
+fn is_registration(raw: &str) -> bool {
+    struct Kind;
+    impl<'de> serde::de::Visitor<'de> for Kind {
+        type Value = bool;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("setup envelope")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> std::result::Result<bool, A::Error> {
+            let mut registration = false;
+            while let Some(key) = map.next_key::<String>()? {
+                let value = map.next_value::<Box<serde_json::value::RawValue>>()?;
+                if key == "kind"
+                    && serde_json::from_str::<String>(value.get())
+                        .is_ok_and(|v| v == "project-registration")
+                {
+                    registration = true;
+                }
+            }
+            Ok(registration)
+        }
+    }
+    serde::de::Deserializer::deserialize_map(&mut serde_json::Deserializer::from_str(raw), Kind)
+        .unwrap_or(false)
+}
+async fn apply_wire(
+    s: Arc<Admin>,
+    h: HeaderMap,
+    id: Path<String>,
+    Json(raw): Json<Box<serde_json::value::RawValue>>,
+) -> Reply {
+    let registration = is_registration(raw.get());
+    if registration {
+        crate::setup_operations::project_registration::strict::decode(raw.get())
+            .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid JSON"))?;
+    }
+    let request: Request = serde_json::from_str(raw.get()).map_err(|_| {
         error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "setup lock release failed",
+            if registration {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            },
+            "invalid envelope",
         )
     })?;
-    Ok(Json(result))
+    apply(s, h, id, Json(request)).await
+}
+fn registration(
+    db: &Store,
+    root: &std::path::Path,
+    id: &str,
+    request: &Request,
+    digest: &str,
+) -> Reply {
+    use crate::setup_operations::project_registration as registration;
+    let internal = || {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "operation outcome unavailable; inspect receipt and reconcile original ID",
+        )
+    };
+    let previous: Option<(String, String)> = db
+        .conn
+        .query_row(
+            "SELECT digest,state FROM setup_receipts WHERE id=?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(|_| internal())?;
+    if let Some((old_digest, state)) = &previous {
+        if old_digest != digest {
+            return Err(error(
+                StatusCode::CONFLICT,
+                "operation ID already has a different request",
+            ));
+        }
+        if state != "running" {
+            return registration_reply(db, id);
+        }
+    }
+    let config = registration::validate(&request.config).map_err(|e| {
+        error(
+            if e.downcast_ref::<registration::Conflict>().is_some() {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            },
+            "invalid_registration",
+        )
+    })?;
+    // A hold does not claim a new operation or terminate a running intent.
+    registration::quiet(db).map_err(|e| {
+        if let Some(code) = e.downcast_ref::<registration::Conflict>() {
+            error(StatusCode::CONFLICT, code.0)
+        } else {
+            internal()
+        }
+    })?;
+    let context = registration::context(db, root, &config);
+    let fingerprint = match context {
+        Ok(context) => context.fingerprint().map_err(|_| internal())?,
+        Err(e) => {
+            if previous.is_some() {
+                return Err(error(StatusCode::CONFLICT, "context_conflict"));
+            }
+            if let Some(code) = e.downcast_ref::<registration::Conflict>() {
+                db.conn
+                    .execute(
+                        "INSERT INTO setup_receipts VALUES(?,'project-registration',?,'failed',?)",
+                        params![id, digest, json!({"error":code.0}).to_string()],
+                    )
+                    .map_err(|_| internal())?;
+                return registration_reply(db, id);
+            }
+            return Err(internal());
+        }
+    };
+    if previous.is_some() {
+        let stored = receipt(db, id)
+            .map_err(|_| internal())?
+            .ok_or_else(internal)?;
+        if stored["result"]["context_hash"] != fingerprint {
+            return Err(error(StatusCode::CONFLICT, "context_conflict"));
+        }
+    } else {
+        db.conn
+            .execute(
+                "INSERT INTO setup_receipts VALUES(?,'project-registration',?,'running',?)",
+                params![id, digest, json!({"context_hash":fingerprint}).to_string()],
+            )
+            .map_err(|_| internal())?;
+    }
+    let applied = db.atomic(|| {
+        let result = registration::apply(db, root, &config, &fingerprint)?;
+        db.conn.execute(
+            "UPDATE setup_receipts SET state='succeeded',result=? WHERE id=? AND state='running'",
+            params![result.to_string(), id],
+        )?;
+        Ok(())
+    });
+    registration_outcome(db, id, applied)
+}
+fn registration_outcome(db: &Store, id: &str, applied: Result<()>) -> Reply {
+    use crate::setup_operations::project_registration;
+    let internal = || {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "operation outcome unavailable; inspect receipt and reconcile original ID",
+        )
+    };
+    if let Err(e) = applied {
+        // Store::atomic may return an uncertain COMMIT failure. Release any pending
+        // transaction, then inspect a separate connection before recording a failure.
+        if !db.conn.is_autocommit() && db.conn.execute_batch("ROLLBACK").is_err() {
+            return Err(internal());
+        }
+        let fresh = database(&db.root).map_err(|_| internal())?;
+        let stored = receipt(&fresh, id)
+            .map_err(|_| internal())?
+            .ok_or_else(internal)?;
+        if stored["state"] == "succeeded" {
+            return Ok(Json(stored));
+        }
+        if let Some(code) = e.downcast_ref::<project_registration::Conflict>() {
+            if matches!(code.0, "context_conflict" | "runtime_not_quiescent") {
+                return Err(error(StatusCode::CONFLICT, code.0));
+            }
+            fresh.conn.execute("UPDATE setup_receipts SET state='failed',result=? WHERE id=? AND state='running'", params![json!({"error":code.0}).to_string(),id]).map_err(|_| internal())?;
+            return registration_reply(&fresh, id);
+        }
+        // Infrastructure failures retain running intent; PUT reconciles it.
+        return Err(internal());
+    }
+    registration_reply(db, id)
+}
+fn registration_reply(db: &Store, id: &str) -> Reply {
+    let value = receipt(db, id)
+        .map_err(|_| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "receipt unavailable; inspect original ID",
+            )
+        })?
+        .ok_or_else(|| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "receipt unavailable; inspect original ID",
+            )
+        })?;
+    if value["state"] == "failed" {
+        Err((StatusCode::CONFLICT, Json(value)))
+    } else {
+        Ok(Json(value))
+    }
 }
 fn execute(db: &Store, r: &Request) -> Result<Value> {
     match r.kind.as_str() {
@@ -262,8 +481,10 @@ fn router(admin: Arc<Admin>) -> Router {
                 status(status_admin.clone(), headers, id)
             })
             .put(
-                move |headers: HeaderMap, id: Path<String>, body: Json<Request>| {
-                    apply(apply_admin.clone(), headers, id, body)
+                move |headers: HeaderMap,
+                      id: Path<String>,
+                      body: Json<Box<serde_json::value::RawValue>>| {
+                    apply_wire(apply_admin.clone(), headers, id, body)
                 },
             ),
         )

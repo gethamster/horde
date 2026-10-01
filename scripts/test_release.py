@@ -257,6 +257,9 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads((self.dist/'manifest.json').read_text())
         self.assertEqual(manifest['version'], VERSION)
+        for metadata in self.dist.glob('*.compatibility.json'):
+            with self.subTest(platform=metadata.name):
+                self.assertEqual(manifest['version'], json.loads(metadata.read_text())['version'])
         self.assertEqual((manifest['schema_min'], manifest['schema_max']), (2, SCHEMA_VERSION))
         self.assertTrue(all(a['url'].startswith(f'https://horde.sh/releases/v{VERSION}/') for a in manifest['artifacts']))
 
