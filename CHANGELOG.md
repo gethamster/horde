@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.6.26 - 2026-09-30
+
+- Register existing Foundry project repositories through the private setup API.
+  Validate strict typed requests and immutable project bindings, atomically
+  persist repository/runtime grants with their success receipt, and reconcile
+  the original operation after interruption. Registration preserves revoked
+  grants and task-bearing projects, requires quiescent execution, and grants no
+  accounts, preview publication, browser acceptance or release authority.
+
 ## 0.6.25 - 2026-09-30
 
 - Derive signed release schema bounds from each compiled binary's state-free

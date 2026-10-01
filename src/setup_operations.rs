@@ -1,4 +1,5 @@
 //! Component-owned setup operations; filesystem paths are never supplied by clients.
+pub(crate) mod project_registration;
 use crate::{projects, store::Store};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -12,6 +13,14 @@ fn project(db: &Store, id: &str) -> Result<String> {
     ensure!(resolved == id, "project ID must be canonical");
     Ok(resolved)
 }
+#[derive(Debug)]
+struct RuntimeNotQuiet;
+impl std::fmt::Display for RuntimeNotQuiet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("runtime must have no active or unsettled work")
+    }
+}
+impl std::error::Error for RuntimeNotQuiet {}
 fn quiet(db: &Store) -> Result<()> {
     for (table, states) in [
         ("attempts", "'running','uncertain'"),
@@ -23,7 +32,9 @@ fn quiet(db: &Store) -> Result<()> {
             [],
             |r| r.get(0),
         )?;
-        ensure!(count == 0, "runtime must have no active or unsettled work");
+        if count != 0 {
+            return Err(RuntimeNotQuiet.into());
+        }
     }
     Ok(())
 }
