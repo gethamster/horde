@@ -177,6 +177,7 @@ pub struct Invocation<'a> {
 impl Invocation<'_> {
     pub fn prompt(&self) -> Result<String> {
         let skills = crate::skills::prompt(self.db, self.task, self.attempt, self.spec)?;
+        let feedback = crate::preview::feedback_prompt(self.db, self.task, self.spec)?;
         Ok(format!(
             "You are worker {} assigned step {} in task {}.\nInstructions: {}\nCompletion: once this assigned step meets its acceptance criteria, commit any code changes and return {{\"result\": string, \"accepted\": boolean, \"artifacts\": array of paths}} using the completion mechanism below. Do not repeat completed tool calls to signal completion. If blocked, explain why with accepted=false.\nAcceptance criteria: {}\nExpected artifacts: {}\nRequired named outputs (JSON types): {}\nWrite scope: {}\nContext with provenance: {}\n{skills}\nWhen delegating, retain inherited context and cite source IDs. Inspect child results with list_children and import changes with integrate_child plus a real parent verification command. Do not mark the parent complete until children are integrated and checked. Questions go to your immediate caller; answer child questions within your authority or escalate them unchanged. Read coordination messages BEFORE editing and BEFORE submitting. If Horde requests storage cleanup, remove only caches you own and can safely regenerate, using the relevant tool cleanup command; report what was reclaimed or why cleanup is unsafe. HORDE_STORAGE_PRESSURE_FILE describes host disk health. Do not delete arbitrary shared caches. Critical pressure may suspend your process until the host recovers. Use the coordination MCP tools for messages and claims. Messaging never changes ownership; acquire or transfer claims explicitly. Stay inside this workspace and your claimed paths. Commit code changes if you made any. The accepted field means THIS ASSIGNED STEP is complete. A planning-only step is accepted when its plan is complete, even when baseline repository tests fail. Return a JSON object with result (string), accepted (boolean), and artifacts (array of paths). For implementation or verification steps, do not claim acceptance if their required checks fail.\n",
             self.worker,
@@ -187,7 +188,7 @@ impl Invocation<'_> {
             serde_json::to_string(&self.spec.artifacts)?,
             serde_json::to_string(&self.spec.output_types)?,
             serde_json::to_string(&self.spec.scope)?,
-            self.context
+            format_args!("{}{feedback}", self.context)
         ))
     }
 }

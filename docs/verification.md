@@ -237,3 +237,29 @@ Record base/head revisions, coverage denominators and exclusions with that evide
 Loopback Rust tests do not substitute for the System compatibility gate or the
 sequential final Local browser acceptance cycles. Missing tools remain open gates;
 registration verification does not authorize publication or installation changes.
+
+## Browser feedback review gates
+
+The preview feedback regressions exercise the actual worker invocation prompt,
+including conflicting initial requirements, later feedback precedence,
+acknowledgment and restart, replay identity, forged worker messages and foreign
+Run bindings. They also verify that feedback arriving after review preparation
+holds prompt dispatch and publication without a source change. Empty legacy
+context remains valid, while malformed and oversized criteria fail closed.
+
+```sh
+cargo test --locked --lib preview::tests::feedback
+```
+
+Measure coverage of the feedback projection and affected review/prompt behavior,
+then run the complete tests, formatting and Clippy gates. The Local browser cycle
+must still demonstrate that the revised preview implements the requested feedback;
+a reviewer returning `accepted:true` alone does not establish that behavior.
+
+For local installation upgrades, `containers/local/Dockerfile.release` copies
+the binary from the qualified signed release image into a previously qualified
+tooling image. Supply both images by digest, publish from the final committed
+recipe, and compare the resulting binary with the signed platform artifact.
+Verify unchanged helper binaries, compiler, runtime user, entrypoint and required
+bundled skills before reusing the tooling image. This recipe does not qualify
+new tooling or authorize application promotion.

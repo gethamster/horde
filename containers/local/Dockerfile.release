@@ -1,0 +1,7 @@
+# Both arguments must be digest-pinned by the installation publisher.
+# Reuse the verified release binary and the previously qualified tooling image.
+ARG HORDE_RELEASE_IMAGE
+ARG DELIVERY_IMAGE
+FROM ${HORDE_RELEASE_IMAGE} AS binary
+FROM ${DELIVERY_IMAGE}
+COPY --from=binary /usr/local/bin/horde /usr/local/bin/horde

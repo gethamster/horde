@@ -147,7 +147,8 @@ fn disk_pressure_queues_work_and_recovers_without_a_restart() {
     );
     daemon.call(
         "runtime_storage_configure",
-        json!({"min_free_bytes":1048576}),
+        // Explicit hysteresis keeps this fixture independent of host free space.
+        json!({"min_free_bytes":1048576,"warning_free_bytes":2097152,"resume_free_bytes":3145728}),
     );
     let started = Instant::now();
     loop {
@@ -298,7 +299,8 @@ fn active_disk_pressure_requests_cleanup_and_resumes_the_same_attempt() {
     );
     daemon.call(
         "runtime_storage_configure",
-        json!({"min_free_bytes":1048576}),
+        // Recovery must not inherit the production policy's 12 GiB headroom.
+        json!({"min_free_bytes":1048576,"warning_free_bytes":2097152,"resume_free_bytes":3145728}),
     );
     let started = Instant::now();
     loop {
