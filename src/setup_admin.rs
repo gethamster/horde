@@ -1,4 +1,5 @@
 //! Private administrative setup transport. Receipts never contain request secrets.
+mod locking;
 #[cfg(test)]
 #[path = "setup_operations/project_registration/http_tests.rs"]
 mod registration_tests;
@@ -165,19 +166,14 @@ fn apply_at(
     id: &str,
     request: &Request,
 ) -> Reply {
-    use fs2::FileExt;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(root.join("setup-admin.lock"))
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "setup lock unavailable"))?;
-    lock.try_lock_exclusive().map_err(|_| {
-        error(
-            StatusCode::TOO_MANY_REQUESTS,
-            "another setup operation is active",
-        )
-    })?;
+    locking::with_lock(root, |_| apply_locked(root, execution_root, id, request))
+}
+fn apply_locked(
+    root: &std::path::Path,
+    execution_root: &std::path::Path,
+    id: &str,
+    request: &Request,
+) -> Reply {
     let db = database(root)
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "receipt unavailable"))?;
     let digest = hex::encode(Sha256::digest(serde_json::to_vec(request).unwrap()));
@@ -249,13 +245,6 @@ fn apply_at(
     let result = receipt(&db, id)
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "receipt unavailable"))?
         .unwrap();
-    // Explicit unlock also releases a temporarily inherited descriptor during fork/exec.
-    fs2::FileExt::unlock(&lock).map_err(|_| {
-        error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "setup lock release failed",
-        )
-    })?;
     Ok(Json(result))
 }
 // Inspect only raw kind members; no config members are collapsed into a Value.

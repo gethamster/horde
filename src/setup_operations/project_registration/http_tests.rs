@@ -19,8 +19,12 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("data");
         database(&root).unwrap();
+        let root = root.canonicalize().unwrap();
         let repos = dir.path().join("repos");
         std::fs::create_dir(&repos).unwrap();
+        // macOS exposes temporary directories through /var -> /private/var.
+        // Exercise an ordinary checkout while retaining explicit symlink denials.
+        let repos = repos.canonicalize().unwrap();
         let mut admin = Admin::new(root.clone(), "fixture-administrator-token");
         admin.execution_root = repos.clone();
         let state = Arc::new(admin);
