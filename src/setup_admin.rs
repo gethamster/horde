@@ -1,4 +1,7 @@
 //! Private administrative setup transport. Receipts never contain request secrets.
+#[cfg(test)]
+#[path = "setup_operations/project_registration/http_tests.rs"]
+mod registration_tests;
 use crate::store::Store;
 use anyhow::{Context, Result, ensure};
 use axum::{
