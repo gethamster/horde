@@ -480,6 +480,29 @@ backup. The migration assigns legacy tasks and repositories to `default`, keeps
 IDs and active paths, and preserves uncertain attempts. The schema version
 advances after all additive migrations complete; older binaries reject it.
 
+### Setup registration durability
+
+The private setup listener registers provisioned local repositories through
+`project-registration`. A raw JSON boundary detects duplicate members before
+request canonicalization. Existing setup kinds retain their request hashes and
+receipt behavior. Registration receipts are independent of kind-wide supersession.
+
+The setup lock serializes claims. A running claim stores the content digest and
+an opaque fingerprint of the canonical operator root, physical checkout and Git
+metadata identities, and local runtime identity. The handler validates the entire
+batch under an immediate SQLite transaction and rechecks filesystem identity before
+applying project business logic. Binding writes and the typed success result commit
+together in the existing receipt table; no Store schema migration is required.
+Native mutations use the same SQLite write serialization.
+
+A terminal replay returns the saved receipt before filesystem inspection, so it
+cannot undo a later revocation. A running PUT rechecks both content and context;
+GET only observes receipts. A database failure triggers lookup through a fresh
+connection before a deterministic failure can be saved. Possible success is never
+overwritten with failure. Infrastructure uncertainty retains the running intent
+for original-ID reconciliation. Store opening can still initialize or migrate the
+database; prepare the database before an operational registration rollout.
+
 ## Opt-in verified preview pipeline
 
 Schema 10 adds operator-owned project preview policies, review bindings, durable
