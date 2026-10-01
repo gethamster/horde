@@ -255,8 +255,10 @@ class InstallerTest(unittest.TestCase):
         result = subprocess.run(['openssl', 'pkeyutl', '-verify', '-pubin', '-inkey', str(self.dist/'release-key.pem'), '-rawin', '-in', str(self.dist/'manifest.json'), '-sigfile', str(self.dist/'manifest.sig')], capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads((self.dist/'manifest.json').read_text())
-        current_version = re.search(r'^version = "([^"]+)"$', (REPO/'Cargo.toml').read_text(), re.MULTILINE).group(1)
-        self.assertEqual(manifest['version'], current_version)
+        # This signed offline fixture is independent of the current source release.
+        for metadata in self.dist.glob('*.compatibility.json'):
+            with self.subTest(platform=metadata.name):
+                self.assertEqual(manifest['version'], json.loads(metadata.read_text())['version'])
         self.assertEqual((manifest['schema_min'], manifest['schema_max']), (2, SCHEMA_VERSION))
         self.assertTrue(all(a['url'].startswith('https://horde.sh/releases/v0.6.25/') for a in manifest['artifacts']))
 
