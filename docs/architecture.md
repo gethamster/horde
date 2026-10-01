@@ -8,7 +8,7 @@ flowchart LR
   MCP[Personal agent / stdio MCP] --> RPC
   RPC --> DB[(SQLite WAL)]
   DB --> Scheduler[Dependency scheduler]
-  Scheduler --> Native[Tuara native tool loop]
+  Scheduler --> Native[Tuara / ChatGPT native tool loop]
   Scheduler --> Harness[Codex / Claude CLI]
   Native --> Coordination[Messages and ownership]
   Harness --> Coordination
@@ -20,6 +20,37 @@ flowchart LR
   Checks --> Delivery[Configured GitHub delivery]
   DB --> CAS[SHA-256 artifact store]
 ```
+
+## ChatGPT account authorization
+
+The daemon owns ChatGPT OAuth sessions separately from workflow coordination.
+Login starts a loopback callback listener and records fresh state, nonce, and PKCE
+values. The callback validates the issued identity before an atomic account
+credential update. Login status exposes consent progress and plan-usage permission
+without tokens. A failed replacement login leaves the active credential in place.
+
+```mermaid
+flowchart LR
+  Owner[Account owner] --> Login[Login URL and loopback callback]
+  Login --> OpenAI[OpenAI consent and token exchange]
+  OpenAI --> Protected[Protected managed-account registration]
+  Protected --> Refresh[Serialized token renewal]
+  Refresh --> Models[Account model discovery]
+  Refresh --> Responses[Native Responses tool loop]
+  Responses --> Claims[Tool permissions and ownership]
+```
+
+The protected registration keeps the issued OAuth client ID and rotating refresh
+token. A cross-process lock serializes refresh and credential handoff. Export
+writes a private bundle and disables the source account without remote revocation;
+import gives the destination daemon refresh ownership and preserves its host ID.
+Workers on other runtimes receive short-lived access tokens through the existing
+authorized account transport, while the owner controller retains refresh material.
+
+Sign-out gates new requests before revocation and removes local tokens while
+retaining the registration mapping. OAuth listener state is temporary, so a daemon
+restart requires a new login attempt without clearing a previously active account.
+Workflow events and worker conversations remain separate from credential storage.
 
 ## Durability
 

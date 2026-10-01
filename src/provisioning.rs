@@ -19,6 +19,15 @@ pub struct Preset {
 }
 pub const PRESETS: &[Preset] = &[
     Preset {
+        name: "chatgpt",
+        kind: "chatgpt",
+        auth_mode: "login",
+        base_url: "https://api.openai.com/v1",
+        api_key_env: "",
+        model: None,
+        summary: "Native Horde workers using authorized ChatGPT plan usage",
+    },
+    Preset {
         name: "tuara",
         kind: "tuara",
         auth_mode: "api",
@@ -339,7 +348,7 @@ fn one(directory: &Path, terminal: &mut Terminal) -> Result<String> {
         spec = spec.with_preset(preset);
     } else {
         spec.name = terminal.ask("Name for this provider", "")?;
-        spec.kind = Some(terminal.ask("Kind (tuara, codex, claude, simulated)", "tuara")?);
+        spec.kind = Some(terminal.ask("Kind (tuara, chatgpt, codex, claude, simulated)", "tuara")?);
         spec.auth_mode = Some(terminal.ask("Auth mode (api, login)", "api")?);
         spec.base_url = Some(terminal.ask("Base URL", "")?);
         spec.api_key_env = Some(terminal.ask("Environment variable holding the key", "")?);
@@ -468,7 +477,9 @@ pub fn list(directory: &Path) -> Result<Vec<serde_json::Value>> {
                 "auth_mode": provider.auth_mode,
                 "model": provider.model,
                 "api_key_env": provider.api_key_env,
-                "credential": if !needs_key {
+                "credential": if provider.kind == "chatgpt" {
+                    "managed account login; inspect with horde account inspect"
+                } else if !needs_key {
                     "not required"
                 } else if crate::config::credential(&provider.api_key_env).is_ok() {
                     "present"
@@ -487,6 +498,11 @@ pub async fn models(directory: &Path, name: &str) -> Result<Vec<String>> {
         .providers
         .get(name)
         .with_context(|| format!("provider {name} is not configured"))?;
+    if provider.kind == "chatgpt" {
+        bail!(
+            "ChatGPT model discovery requires a managed account; use `horde account models ACCOUNT_ID`"
+        );
+    }
     if provider.base_url.is_empty() {
         bail!("provider {name} has no base_url to ask");
     }

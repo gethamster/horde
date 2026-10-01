@@ -72,6 +72,9 @@ fn terminal(status: &str) -> bool {
 
 pub fn dispatch(db: &Store, args: &Value) -> Result<Value> {
     crate::fleet_enrollment::admin()?;
+    if args["provider"] == "chatgpt" || args["account"].is_string() {
+        return crate::chatgpt_auth::dispatch(db, args);
+    }
     let request: Request = serde_json::from_value(args.clone())
         .map_err(|_| anyhow::anyhow!("invalid provider login request"))?;
     if request.action == "start" {

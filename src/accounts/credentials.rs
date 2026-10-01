@@ -57,10 +57,14 @@ fn validate(credential: &Credential, provider: &str, mode: &str) -> Result<()> {
             "api_key" => mode == "api",
             "claude_setup_token" => mode == "login" && provider == "claude",
             "codex_refresh_token" | "codex_access_token" => mode == "login" && provider == "codex",
+            "chatgpt_oauth" => mode == "login" && provider == "chatgpt",
             _ => false,
         },
         "credential kind does not match account provider and authentication mode"
     );
+    if credential.kind == "chatgpt_oauth" {
+        crate::chatgpt_auth::validate_credential(credential)?;
+    }
     Ok(())
 }
 pub fn set_credential(
@@ -175,7 +179,7 @@ pub fn provision(
         }
         let credential=credential(db,project,account)?;
         let kind=credential.kind.clone();let expires_at=credential.expires_at;
-        let credential=if kind=="codex_refresh_token"{None}else{Some(credential)};
+        let credential=if matches!(kind.as_str(),"codex_refresh_token"|"chatgpt_oauth"){None}else{Some(credential)};
         let (profile,provider,auth_mode,base_url,name,concurrency)=db.conn.query_row("SELECT p.id,a.provider,a.auth_mode,a.base_url,a.name,a.concurrency FROM auth_profiles p JOIN accounts a ON a.id=p.account WHERE a.id=?",[account],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
         let granted_at=db.conn.query_row("SELECT created FROM account_grants WHERE project=? AND account=?",params![project,account],|r|r.get(0))?;
         Ok(Provision{granted_at,project:project.into(),account:account.into(),profile,version,provider,auth_mode,base_url,name,concurrency,credential_kind:kind,expires_at,credential})
@@ -192,7 +196,11 @@ pub fn receive(db: &Store, envelope: &Provision) -> Result<()> {
         "invalid credential envelope"
     );
     ensure!(
-        envelope.credential.is_some() || envelope.credential_kind == "codex_refresh_token",
+        envelope.credential.is_some()
+            || matches!(
+                envelope.credential_kind.as_str(),
+                "codex_refresh_token" | "chatgpt_oauth"
+            ),
         "credential material missing"
     );
     if let Some(credential) = &envelope.credential {
@@ -203,7 +211,10 @@ pub fn receive(db: &Store, envelope: &Provision) -> Result<()> {
         );
         validate(credential, &envelope.provider, &envelope.auth_mode)?;
         ensure!(
-            credential.kind != "codex_refresh_token",
+            !matches!(
+                credential.kind.as_str(),
+                "codex_refresh_token" | "chatgpt_oauth"
+            ),
             "controller refresh material must never be transferred"
         );
     }

@@ -477,7 +477,7 @@ fn configure_provider(root: &Path, request: &Request) -> Result<Value> {
         ));
     };
     ensure!(
-        ["tuara", "codex", "claude", "grok", "simulated"].contains(&kind),
+        ["tuara", "codex", "claude", "grok", "chatgpt", "simulated"].contains(&kind),
         "unsupported provider kind"
     );
     let auth_mode =
@@ -553,6 +553,7 @@ fn configure_provider(root: &Path, request: &Request) -> Result<Value> {
         );
         None
     };
+    let chatgpt_login = kind == "chatgpt";
     let spec = provisioning::Spec {
         auth_mode: Some(auth_mode.into()),
         ..spec
@@ -578,7 +579,7 @@ fn configure_provider(root: &Path, request: &Request) -> Result<Value> {
     }
     let next = vec![tool(json!({"action":"verify"}))];
     Ok(
-        json!({"status":"configured","provider":provider,"summary":summary,"provider_api":"not_probed","credential_activation":if key_supplied {"next_invocation"} else {"not_applicable"},"restart_required":false,"activation_message":if key_supplied {"Saved credentials are read for the next provider invocation; running invocations keep their existing credentials."} else {"This provider uses its harness login store; no API credential was changed."},"next_actions":next}),
+        json!({"status":"configured","provider":provider,"summary":summary,"provider_api":"not_probed","credential_activation":if key_supplied {"next_invocation"} else {"not_applicable"},"restart_required":false,"activation_message":if key_supplied {"Saved credentials are read for the next provider invocation; running invocations keep their existing credentials."} else if chatgpt_login {"Connect a managed ChatGPT account with provider_login before assigning native work."} else {"This provider uses its harness login store; no API credential was changed."},"next_actions":next}),
     )
 }
 

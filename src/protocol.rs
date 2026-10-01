@@ -81,6 +81,8 @@ pub fn project_allowed(name: &str) -> bool {
             | "account_grant"
             | "account_revoke"
             | "account_credential_set"
+            | "account_credential_import"
+            | "account_sign_out"
             | "account_observe"
             | "account_status"
             | "management_events"
@@ -265,6 +267,10 @@ fn dispatch_authorized(
         } else {
             crate::orchestration::plan(db, &args)
         };
+    }
+    if name == "provider_login" && (args["provider"] == "chatgpt" || args["account"].is_string()) {
+        crate::fleet_enrollment::admin()?;
+        return crate::chatgpt_auth::dispatch(db, &args);
     }
     if matches!(
         name,
