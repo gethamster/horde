@@ -412,10 +412,10 @@ fn rejects_untrusted_discovery_endpoints() {
         "https://user:pass@auth.openai.com/jwks",
         "https://auth.openai.com/jwks?token=x",
     ] {
-        assert!(trusted_endpoint(&json!({"jwks_uri":uri}), "jwks_uri").is_err());
+        assert!(validated_discovery_url(&json!({"jwks_uri":uri}), "jwks_uri").is_err());
     }
     assert!(
-        trusted_endpoint(
+        validated_discovery_url(
             &json!({"jwks_uri":"https://auth.openai.com/custom-jwks"}),
             "jwks_uri"
         )

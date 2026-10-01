@@ -179,14 +179,14 @@ pub async fn sign_out(db: &Store, project: &str, account: &str) -> Result<Value>
         )
         .await
             && discovery["issuer"] == ISSUER
-            && trusted_endpoint(&discovery, "revocation_endpoint").is_ok()
+            && validated_discovery_url(&discovery, "revocation_endpoint").is_ok()
         {
+            let endpoint = validated_discovery_url(&discovery, "revocation_endpoint")?;
+            #[cfg(test)]
+            let endpoint = loopback_mock_url(&endpoint);
             for attempt in 0..3 {
                 let response = http
-                    .post(service_url(&trusted_endpoint(
-                        &discovery,
-                        "revocation_endpoint",
-                    )?))
+                    .post(&endpoint)
                     .form(&[
                         ("token", record.refresh_token.as_str()),
                         ("token_type_hint", "refresh_token"),

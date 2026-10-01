@@ -54,8 +54,10 @@ pub(super) fn callback_client(saved: Option<&str>, supplied: Option<&str>) -> Re
     Ok(value.into())
 }
 pub(super) async fn get_json(http: &reqwest::Client, url: &str) -> Result<Value> {
+    #[cfg(test)]
+    let url = loopback_mock_url(url);
     let response = http
-        .get(service_url(url))
+        .get(url)
         .send()
         .await
         .map_err(|_| anyhow::anyhow!("ChatGPT identity service unavailable"))?;
@@ -87,7 +89,7 @@ impl std::fmt::Display for SessionRevoked {
     }
 }
 impl std::error::Error for SessionRevoked {}
-pub(super) fn trusted_endpoint(value: &Value, key: &str) -> Result<String> {
+pub(super) fn validated_discovery_url(value: &Value, key: &str) -> Result<String> {
     let raw = value[key]
         .as_str()
         .context("identity service endpoint missing")?;
@@ -107,8 +109,11 @@ pub(super) fn trusted_endpoint(value: &Value, key: &str) -> Result<String> {
     Ok(format!("https://auth.openai.com{}", url.path()))
 }
 pub(super) async fn token(http: &reqwest::Client, form: &[(&str, &str)]) -> Result<Value> {
+    let endpoint = TOKEN;
+    #[cfg(test)]
+    let endpoint = loopback_mock_url(endpoint);
     let response = http
-        .post(service_url(TOKEN))
+        .post(endpoint)
         .form(form)
         .send()
         .await
@@ -240,7 +245,7 @@ pub(super) async fn identity(
         discovery["issuer"] == ISSUER,
         "invalid identity discovery issuer"
     );
-    let endpoint = trusted_endpoint(&discovery, "jwks_uri")?;
+    let endpoint = validated_discovery_url(&discovery, "jwks_uri")?;
     let keys = get_json(http, &endpoint).await?;
     validate_jwt(jwt, &keys, client_id, nonce, subject)
 }
@@ -248,15 +253,10 @@ pub(super) async fn identity(
 #[cfg(test)]
 thread_local! {pub(super) static TEST_SERVICE:std::cell::RefCell<Option<String>>=const {std::cell::RefCell::new(None)};}
 #[cfg(test)]
-pub(super) fn service_url(url: &str) -> String {
+pub(super) fn loopback_mock_url(url: &str) -> String {
     if let Some(base) = TEST_SERVICE.with(|value| value.borrow().clone()) {
         return url.replacen(ISSUER, &base, 1);
     }
-    url.to_owned()
-}
-
-#[cfg(not(test))]
-pub(super) fn service_url(url: &str) -> String {
     url.to_owned()
 }
 
