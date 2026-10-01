@@ -1,5 +1,5 @@
 {
-  "count": 115,
+  "count": 118,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -407,6 +407,71 @@
       "scope": "admin"
     },
     {
+      "description": "Import a ChatGPT credential bundle into an owner-authorized account",
+      "name": "account_credential_import",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "credential": {
+            "description": "Protected ChatGPT credential bundle supplied by its owner. Never repeat any bundle fields in responses or logs; prefer CLI stdin import over SSH.",
+            "type": "object"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "credential"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Revoke ChatGPT authorization and clear local credentials",
+      "name": "account_sign_out",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "List models available to an authorized ChatGPT account",
+      "name": "account_models",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
       "description": "Import a versioned credential from a private file",
       "name": "account_credential_set",
       "parameters": {
@@ -451,11 +516,15 @@
       "scope": "admin"
     },
     {
-      "description": "Administer default-project legacy provider sign-in; managed accounts use account_credential_set",
+      "description": "Start, inspect, or cancel provider sign-in; ChatGPT targets a managed account",
       "name": "provider_login",
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "account": {
+            "description": "Owner-managed account required for first-class ChatGPT login.",
+            "type": "string"
+          },
           "action": {
             "enum": [
               "start",
@@ -469,7 +538,6 @@
             "type": "string"
           },
           "project": {
-            "description": "Project ID or slug; cannot change a project-bound connection.",
             "type": "string"
           },
           "provider": {

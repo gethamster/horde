@@ -729,6 +729,17 @@ impl Settings {
         self.decision.validate()?;
         self.automatic_delivery.validate()?;
         for (slug, provider) in &self.providers {
+            if provider.kind == "chatgpt"
+                && (provider.auth_mode != "login"
+                    || provider.base_url != "https://api.openai.com/v1"
+                    || !provider.api_key_env.is_empty()
+                    || provider.max_price.is_some()
+                    || provider.max_api_cost_usd.is_some())
+            {
+                bail!(
+                    "provider {slug}: ChatGPT requires login at https://api.openai.com/v1 without API keys or API price controls"
+                );
+            }
             crate::native_protocol::validate_extra_body(&provider.extra_body)
                 .map_err(|e| anyhow::anyhow!("provider {slug}: {e}"))?;
             if provider.kind != "tuara" && !provider.extra_body.is_empty() {
@@ -752,6 +763,16 @@ impl Settings {
             }
         }
         for (role, executor) in &self.executors {
+            if self
+                .providers
+                .get(executor.provider())
+                .is_some_and(|p| p.kind == "chatgpt")
+                && (executor.max_price.is_some() || executor.max_api_cost_usd.is_some())
+            {
+                bail!(
+                    "executor role {role}: ChatGPT plan usage does not support API price controls"
+                );
+            }
             if executor.step_budget_seconds == Some(0) {
                 bail!("executor role {role}: step_budget_seconds must be positive");
             }
@@ -777,6 +798,15 @@ impl Settings {
         for (role, target) in &self.fallbacks {
             if !self.executors.contains_key(role) || !self.executors.contains_key(target) {
                 bail!("fallback refers to an unconfigured executor role");
+            }
+            if self
+                .executor(role)
+                .is_some_and(|config| config.kind == "chatgpt")
+                && self
+                    .executor(target)
+                    .is_some_and(|config| config.kind != "chatgpt")
+            {
+                bail!("ChatGPT plan usage cannot automatically fall back to another billing path");
             }
             let mut seen = std::collections::BTreeSet::new();
             let mut current = role;

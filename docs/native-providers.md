@@ -1,8 +1,8 @@
 # Native provider contract
 
-Horde's native executor speaks the OpenAI-compatible Chat Completions protocol,
-posting to `<base_url>/chat/completions`. Its internal
-kind is currently `tuara`; a configured base URL can point to a local server.
+Horde's native executor supports Chat Completions with `kind = "tuara"` and
+ChatGPT plan usage through Responses with `kind = "chatgpt"`. Tuara requests post
+to `<base_url>/chat/completions`; a configured base URL can point to a local server.
 The contract below applies within one native invocation. An invocation starts a
 new conversation when a step starts or retries.
 
@@ -12,8 +12,8 @@ Use the native executor for generative coding models that support Chat
 Completions and tool calls. Horde also supports Responses through an API-backed
 Codex CLI provider (`kind = "codex"`) and Messages through an API-backed Claude
 CLI provider (`kind = "claude"`). Those harnesses manage their own model
-conversations. The native executor has no Responses adapter or legacy text
-`/completions` adapter.
+conversations. The native ChatGPT adapter uses the account-scoped Responses
+service. Horde has no legacy text `/completions` adapter.
 
 Decision models use a separate `[decision]` configuration and the SystemOne v1
 contract. They return typed choices, scores, and assessments from 0 to 1
@@ -26,10 +26,40 @@ base URL `https://tuara.com/router/v1` and a generative model. See
 [decision configuration](configuration.md#decision-models-and-advisory-routing)
 for credentials, capability guidance, and inspection commands.
 
+## ChatGPT Responses transport
+
+A `chatgpt` provider requires login authentication, the public endpoint
+`https://api.openai.com/v1`, and a matching managed account. Horde discovers models
+through `/v1/models` using that account's authorized token. Configure the exact
+model slug from the result; Horde does not translate model aliases.
+
+Horde sends complete conversation history to `/v1/responses` with `store=false`
+and `stream=true`. The request uses developer instructions and supported function
+tool namespaces. It omits preview-unsupported fields, including `max_output_tokens`
+and `previous_response_id`. Horde retains returned reasoning items and tool-call
+IDs alongside tool results for the next request.
+
+A stream succeeds only after `response.completed`. Failed, incomplete, and
+interrupted streams fail the attempt even if some text arrived. Native tool
+permissions, exclusive ownership claims, completion evidence, cancellation, and
+attempt budgets still govern worker execution. ChatGPT does not enable Jev context
+pruning or active browser decisions through this adapter.
+
+The managed account renews its token under a cross-process lock before use.
+Temporary server failures receive bounded retries. Horde renews tokens near expiry;
+a revoked session requires sign-in. Usage-limit errors
+pause account selection for five minutes, which is a local retry delay rather
+than an OpenAI quota reset. Horde never falls back to a paid API credential.
+
+Tests use mock OAuth and inference endpoints, including streamed tool calls and
+interrupted responses. Live consent and inference checks remain opt-in and consume
+account usage. See [ChatGPT setup](configuration.md#sign-in-with-chatgpt) and
+[OpenAI's inference contract](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
+
 ## Request history and prefix reuse
 
-Horde serializes each message once when it enters the conversation and retains
-those bytes. Subsequent requests append messages without rewriting earlier ones.
+For Chat Completions, Horde serializes each message once when it enters the
+conversation and retains those bytes. Subsequent requests append messages without rewriting earlier ones.
 Tool definitions are also serialized once per invocation in a fixed order.
 Assistant content and tool-argument strings are not parsed and rewritten on each
 request. A null assistant content field is normalized to an empty string once,

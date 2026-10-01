@@ -231,7 +231,7 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
     match config.kind.as_str() {
         "simulated" => Ok(json!({"result":"simulated executor","accepted":true})),
         "codex" | "claude" | "grok" => harness(i, &config).await,
-        "tuara" => tuara(i, &config).await,
+        "tuara" | "chatgpt" => native_worker(i, &config).await,
         _ => bail!("unknown executor kind {}", config.kind),
     }
 }
@@ -917,7 +917,26 @@ pub async fn probe_with_key(config: &ExecutorConfig, key: &str) -> Result<Value>
     if !response.status().is_success() {
         bail!("provider model catalog returned {}", response.status());
     }
-    let models: Value = response.json().await?;
+    let mut models: Value = response.json().await?;
+    if config.kind == "chatgpt" {
+        let entries = models
+            .get("models")
+            .or_else(|| models.get("data"))
+            .and_then(Value::as_array)
+            .context("ChatGPT model catalog must contain a models array")?;
+        let entries: Vec<Value> = entries
+            .iter()
+            .filter(|entry| entry["visibility"] != "hidden")
+            .map(|entry| {
+                let mut entry = entry.clone();
+                if let Some(slug) = entry["slug"].as_str() {
+                    entry["id"] = json!(slug);
+                }
+                entry
+            })
+            .collect();
+        models = json!({"data":entries});
+    }
     let all = models["data"]
         .as_array()
         .context("provider model catalog must contain a data array")?;
@@ -945,7 +964,40 @@ pub async fn probe_with_key(config: &ExecutorConfig, key: &str) -> Result<Value>
         }
         requested
     };
-    Ok(json!({"model":model,"requested_model":requested,"catalog_verified":true}))
+    Ok(json!({"model":model,"requested_model":requested,"catalog_verified":true,"models":all}))
+}
+pub async fn chatgpt_models(config: &ExecutorConfig, key: &str) -> Result<Value> {
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(45))
+        .build()?
+        .get(format!("{}/models", config.base_url.trim_end_matches('/')))
+        .bearer_auth(key)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        bail!("ChatGPT model catalog returned {}", response.status());
+    }
+    let catalog: Value = response.json().await?;
+    let entries = catalog
+        .get("models")
+        .or_else(|| catalog.get("data"))
+        .and_then(Value::as_array)
+        .context("ChatGPT model catalog must contain a models array")?;
+    let models: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry["visibility"] != "hidden")
+        .cloned()
+        .collect();
+    let model = config.model.as_deref().filter(|model| *model != "auto");
+    if let Some(model) = model {
+        anyhow::ensure!(
+            models
+                .iter()
+                .any(|entry| entry["slug"] == model || entry["id"] == model),
+            "requested model {model} is unavailable in provider catalog; no model substituted"
+        );
+    }
+    Ok(json!({"models":models,"model":model,"catalog_verified":true}))
 }
 // Redact before truncation so a secret crossing the boundary cannot leak a prefix.
 fn tool_error_summary(db: &Store, task: &str, error: &str, provider_key: &str) -> (String, bool) {
@@ -1036,10 +1088,52 @@ pub fn record_tool_completed(
         "timing":crate::budget::status(i.db,i.attempt)?,"result":result_text,"result_summary":result_text,"result_truncated":result_truncated,"error":error,"error_truncated":error_truncated}))
 }
 
-async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
-    let generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
+fn ensure_native_account(
+    i: &Invocation<'_>,
+    config: &ExecutorConfig,
+    generation: Option<&str>,
+) -> Result<()> {
+    if config.kind == "chatgpt" {
+        let project = config
+            .project
+            .as_deref()
+            .context("ChatGPT project required")?;
+        let account = config
+            .account
+            .as_deref()
+            .context("ChatGPT account required")?;
+        crate::accounts::authorized(i.db, project, account)?;
+        let authenticated: bool = i.db.conn.query_row(
+            "SELECT authenticated=1 FROM accounts WHERE id=?",
+            [account],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(authenticated, "ChatGPT account signed out during execution");
+        crate::capacity::ensure_generation(i.db, config, generation)?;
+    }
+    Ok(())
+}
+
+async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
+    let mut generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
     let project = crate::projects::task_project(i.db, i.task)?;
-    let key = crate::account_auth::api_key(i.db, &project, config)?;
+    let chatgpt = config.kind == "chatgpt";
+    let mut key = if chatgpt {
+        crate::account_auth::invocation_chatgpt_token(
+            i,
+            &project,
+            config
+                .account
+                .as_deref()
+                .context("ChatGPT requires a managed account")?,
+        )
+        .await?
+    } else {
+        crate::account_auth::api_key(i.db, &project, config)?
+    };
+    if chatgpt {
+        generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
+    }
     crate::capacity::ensure_generation(i.db, config, generation.as_deref())?;
     let catalog = probe_with_key(config, &key).await?;
     let model = catalog["model"].as_str().context("resolved model")?;
@@ -1049,7 +1143,10 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         json!({"step":i.step,"attempt":i.attempt,"model":model,"requested_model":config.model}),
     )?;
     // A total spend cap cannot be guaranteed without a quoted price and usage contract.
-    if config.max_api_cost_usd.is_some() {
+    if chatgpt && (config.max_api_cost_usd.is_some() || config.max_price.is_some()) {
+        bail!("ChatGPT plan usage does not support API price or spend caps");
+    }
+    if !chatgpt && config.max_api_cost_usd.is_some() {
         bail!(
             "Tuara total-spend caps are not supported; configure max_price and max_tokens instead"
         );
@@ -1076,7 +1173,9 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         }
     }
     definitions.push(crate::native_protocol::completion_tool(i.spec));
-    if i.settings.decision.native_context_mode == crate::config::NativeContextMode::Active {
+    if !chatgpt
+        && i.settings.decision.native_context_mode == crate::config::NativeContextMode::Active
+    {
         definitions.push(crate::native_context::retrieval_tool());
     }
     let tool_names: std::collections::BTreeSet<String> = definitions
@@ -1102,7 +1201,9 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
         if unread.as_array().is_some_and(|a| !a.is_empty()) {
             messages.push(json!({"role":"user","content":format!("Unread coordination messages (acknowledge explicitly): {unread}")}))?;
         }
-        if i.settings.decision.native_context_mode != crate::config::NativeContextMode::Disabled {
+        if !chatgpt
+            && i.settings.decision.native_context_mode != crate::config::NativeContextMode::Disabled
+        {
             let before = crate::native_protocol::request_bytes(
                 model,
                 &messages,
@@ -1138,48 +1239,98 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
             }
         }
         let turn_started = Instant::now();
-        let body = crate::native_protocol::request_bytes(
-            model,
-            &messages,
-            &definitions,
-            config.stream,
-            config.max_tokens,
-            config.max_price.as_deref(),
-            &config.extra_body,
-        )?;
+        let body = if chatgpt {
+            crate::native_responses::request_bytes(
+                model,
+                &messages,
+                &definitions,
+                &config.extra_body,
+            )?
+        } else {
+            crate::native_protocol::request_bytes(
+                model,
+                &messages,
+                &definitions,
+                config.stream,
+                config.max_tokens,
+                config.max_price.as_deref(),
+                &config.extra_body,
+            )?
+        };
         let hard_limit = i.settings.decision.native_context_max_request_bytes;
         if hard_limit > 0 && body.len() > hard_limit {
             bail!(
                 "native provider request exceeds configured context byte ceiling after conservative pruning"
             );
         }
-        crate::storage::control::checkpoint().await;
-        let response = client
-            .post(format!(
-                "{}/chat/completions",
-                config.base_url.trim_end_matches('/')
-            ))
-            .bearer_auth(&key)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body)
-            .send()
-            .await?;
-        if i.settings.decision.native_context_mode == crate::config::NativeContextMode::Active {
-            crate::native_context::mark_used(i.db, i.task, i.attempt, &messages.hash()?)?;
-        }
-        crate::capacity::ingest_headers_current(
-            i.db,
-            config,
-            generation.as_deref(),
-            response.headers(),
-            response.status().as_u16(),
-        )?;
-        let status = response.status();
-        if !status.is_success() {
-            bail!("Tuara returned {status}; retry or fallback requires workflow policy");
-        }
-        let data =
-            crate::native_protocol::read_response(response, config.stream, |mut progress| {
+        let mut request_attempt = 0u32;
+        let data = loop {
+            crate::storage::control::checkpoint().await;
+            request_attempt += 1;
+            if chatgpt {
+                key = crate::account_auth::invocation_chatgpt_token(
+                    i,
+                    &project,
+                    config
+                        .account
+                        .as_deref()
+                        .context("ChatGPT requires a managed account")?,
+                )
+                .await?;
+            }
+            if chatgpt {
+                generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
+            }
+            crate::capacity::ensure_generation(i.db, config, generation.as_deref())?;
+            let response = client
+                .post(format!(
+                    "{}/{}",
+                    config.base_url.trim_end_matches('/'),
+                    if chatgpt {
+                        "responses"
+                    } else {
+                        "chat/completions"
+                    }
+                ))
+                .bearer_auth(&key)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.clone())
+                .send()
+                .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(error)
+                    if chatgpt
+                        && request_attempt < 3
+                        && (error.is_connect() || error.is_timeout()) =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_secs(u64::from(request_attempt)))
+                        .await;
+                    continue;
+                }
+                Err(error) => return Err(error.without_url().into()),
+            };
+            if !chatgpt
+                && i.settings.decision.native_context_mode
+                    == crate::config::NativeContextMode::Active
+            {
+                crate::native_context::mark_used(i.db, i.task, i.attempt, &messages.hash()?)?;
+            }
+            crate::capacity::ingest_headers_current(
+                i.db,
+                config,
+                generation.as_deref(),
+                response.headers(),
+                response.status().as_u16(),
+            )?;
+            let status = response.status();
+            if !chatgpt && !status.is_success() {
+                bail!(
+                    "{} returned {status}; retry or fallback requires workflow policy",
+                    if chatgpt { "ChatGPT" } else { "Tuara" }
+                );
+            }
+            let progress = |mut progress: Value| {
                 // Emit intent only for registered tools; fragments and arguments stay private.
                 if progress["kind"] == "tool_intent"
                     && !progress["tool"]
@@ -1192,9 +1343,41 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                 progress["attempt"] = json!(i.attempt);
                 i.db.event(i.task, "executor.progress", progress)?;
                 Ok(())
-            })
-            .await
-            .context("malformed native response")?;
+            };
+            let data = if chatgpt {
+                match crate::native_responses::read_response(response, progress).await {
+                    Ok(data) => data,
+                    Err(error) => {
+                        if error
+                            .downcast_ref::<crate::native_responses::ResponseError>()
+                            .is_some_and(|error| error.usage_limited())
+                        {
+                            crate::capacity::hold_chatgpt_usage(
+                                i.db,
+                                config,
+                                generation.as_deref(),
+                            )?;
+                        }
+                        if error
+                            .downcast_ref::<crate::native_responses::ResponseError>()
+                            .is_some_and(|error| error.retryable() && !error.usage_limited())
+                            && request_attempt < 3
+                        {
+                            tokio::time::sleep(std::time::Duration::from_secs(u64::from(
+                                request_attempt,
+                            )))
+                            .await;
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                }
+            } else {
+                crate::native_protocol::read_response(response, config.stream, progress).await?
+            };
+            break data;
+        };
+        ensure_native_account(i, config, generation.as_deref())?;
         let extras: serde_json::Map<String, Value> = data
             .as_object()
             .context("response object")?
@@ -1241,6 +1424,7 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
             let mut step_result = None;
             for call in calls {
                 crate::storage::control::checkpoint().await;
+                ensure_native_account(i, config, generation.as_deref())?;
                 let name = call["function"]["name"].as_str().context("tool name")?;
                 let tool_started = Instant::now();
                 let args: Result<Value> = (|| {
@@ -1336,6 +1520,7 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                 messages.push(json!({"role":"user","content":"Repeated identical tool calls returned unchanged results. If this step is complete and its checks passed, reply now with the final JSON result and no tool call. Otherwise report the blocker with accepted=false. Repeating the same call again will hold the task for inspection."}))?;
             }
             if let Some(result) = step_result {
+                ensure_native_account(i, config, generation.as_deref())?;
                 let mut result = accepted(result)?;
                 result["usage"] = json!({"requests":usages,"executor_role":i.spec.role,"subscription_capacity":null,"api_cost_usd":null});
                 result["latency_ms"] = json!(start.elapsed().as_millis() as u64);
@@ -1369,6 +1554,7 @@ async fn tuara(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
                 messages.push(json!({"role":"user","content":"Reply with only a JSON object for this step and nothing else: {\"result\": string summarising what you did, \"accepted\": boolean, \"artifacts\": array of paths}. No prose, no code fence."}))?;
                 continue;
             };
+            ensure_native_account(i, config, generation.as_deref())?;
             let mut result = accepted(object)?;
             result["usage"] = json!({"requests":usages,"executor_role":i.spec.role,"subscription_capacity":null,"api_cost_usd":null});
             result["latency_ms"] = json!(start.elapsed().as_millis() as u64);
@@ -1389,6 +1575,45 @@ pub async fn probe_tools(config: &ExecutorConfig) -> Result<Value> {
 pub async fn probe_tools_with_key(config: &ExecutorConfig, key: &str) -> Result<Value> {
     let catalog = probe_with_key(config, key).await?;
     let model = catalog["model"].as_str().context("resolved model")?;
+    if config.kind == "chatgpt" {
+        let messages = crate::native_protocol::Conversation::new(vec![
+            json!({"role":"user","content":"Call ping with value ok."}),
+        ])?;
+        let tools = serde_json::value::to_raw_value(
+            &json!([{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}}]),
+        )?;
+        let body =
+            crate::native_responses::request_bytes(model, &messages, &tools, &config.extra_body)?;
+        let response = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()?
+            .post(format!(
+                "{}/responses",
+                config.base_url.trim_end_matches('/')
+            ))
+            .bearer_auth(key)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await?;
+        let data = crate::native_responses::read_response(response, |_| Ok(())).await?;
+        let calls = data["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .context("probe returned no tool calls")?;
+        if calls.len() != 1
+            || calls[0]["function"]["name"] != "ping"
+            || serde_json::from_str::<Value>(
+                calls[0]["function"]["arguments"]
+                    .as_str()
+                    .context("probe arguments")?,
+            )? != json!({"value":"ok"})
+        {
+            bail!("model did not satisfy streaming tool-call contract");
+        }
+        return Ok(
+            json!({"model":model,"catalog_verified":true,"streaming_tool_calls_verified":true}),
+        );
+    }
     crate::native_protocol::validate_extra_body(&config.extra_body)?;
     let mut body = json!({"model":model,"messages":[{"role":"user","content":"Call ping with value ok."}],"stream":true,"max_tokens":128,"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}}],"tool_choice":{"type":"function","function":{"name":"ping"}}});
     body.as_object_mut().expect("request object").extend(

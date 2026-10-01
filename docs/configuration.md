@@ -489,8 +489,10 @@ horde account revoke ACCOUNT_ID hamster
 
 A credential file contains `kind`, `secret`, and optional `expires_at` (Unix
 seconds) and `metadata`. Supported kinds are `api_key`, `claude_setup_token`,
-`codex_refresh_token`, and `codex_access_token`. Keep this file private and outside
-the repository. Importing a credential creates a new version; only the owning
+`codex_refresh_token`, and `codex_access_token`. ChatGPT uses a separate
+`chatgpt_oauth` record created by verified login or protected bundle import, rather
+than `credential-set`. Keep credential files private and outside the repository.
+Importing a credential creates a new version; only the owning
 project can replace it. Account inspection returns metadata without the secret.
 
 For Codex, `secret` can contain the serialized authentication JSON with its
@@ -506,6 +508,90 @@ mode, and endpoint. Add several matching accounts to spread invocations across
 subscriptions. Accounts shared through grants retain one quota identity and
 concurrency total. See [runtime management](runtime-management.md#project-capacity-and-credential-lifetimes)
 for reservations, refresh, and revocation.
+
+## Sign in with ChatGPT
+
+A `chatgpt` provider runs Horde's native workers with the ChatGPT plan usage you
+approve during browser consent. Create a managed account owned by your project:
+
+```sh
+horde --project horde account create chatgpt-one --provider chatgpt --auth-mode login --base-url https://api.openai.com/v1 --concurrency 1
+horde --project horde account login ACCOUNT_ID
+```
+
+Open the returned `authorization_url` in a browser on the daemon's machine.
+Horde starts a listener at `127.0.0.1` before returning that URL. The consent
+callback exchanges the authorization code inside Horde; the CLI never prints
+access or refresh tokens. Save the returned `session_id` to check or cancel:
+
+```sh
+horde --project horde account login-status ACCOUNT_ID SESSION_ID
+horde --project horde account login-cancel ACCOUNT_ID SESSION_ID
+horde --project horde account inspect ACCOUNT_ID
+horde --project horde account models ACCOUNT_ID
+```
+
+Identity sign-in and plan-usage permission are separate status fields. An account
+can be signed in without permission to run models. Approve direct plan usage
+before assigning work, and select an exact model slug returned by `account models`.
+Configure the provider and pin the account on the worker role:
+
+```toml
+[providers.chatgpt]
+kind = "chatgpt"
+auth_mode = "login"
+base_url = "https://api.openai.com/v1"
+model = "MODEL_SLUG_FROM_ACCOUNT_MODELS"
+
+[executors.worker]
+provider = "chatgpt"
+account = "ACCOUNT_ID"
+```
+
+Horde saves a distinct `chatgpt_oauth` registration in its protected managed-account
+store. The registration includes the issued OAuth client ID, so renewals use that
+client rather than repeating initial dynamic registration. Concurrent renewals
+share a cross-process lock, and each rotated token creates a credential version.
+Failed or cancelled reauthorization preserves the existing active credential.
+
+To sign out, run `horde --project horde account sign-out ACCOUNT_ID`. Horde disables
+new requests, clears local tokens, and attempts remote session revocation. The
+response reports whether OpenAI confirmed revocation; Horde retains the client
+registration mapping for a later login.
+
+### Transfer a login to a remote daemon
+
+Authorize on a machine where you can open the loopback callback, then transfer the
+renewable session to the remote account over SSH. Create the destination account
+with the same provider kind, auth mode, and endpoint as the local account. Stop
+work using the source account before exporting it:
+
+```sh
+horde --project horde account credential-export LOCAL_ACCOUNT_ID /private/path/chatgpt-transfer.json
+ssh REMOTE_HOST 'horde --project horde account credential-import REMOTE_ACCOUNT_ID' < /private/path/chatgpt-transfer.json
+ssh REMOTE_HOST 'horde --project horde account inspect REMOTE_ACCOUNT_ID'
+rm /private/path/chatgpt-transfer.json
+```
+
+Export creates a new mode-0600 file and disables the local credential without
+revoking the OpenAI session. The remote daemon becomes the refresh owner after
+import and preserves its own host identity. Delete the transfer file after the
+remote inspection confirms success. If import fails, retain the private file and
+retry the same import. If export fails while writing the file, the source remains
+paused; retry export to a fresh private output path. Do not sign out on the source
+to transfer ownership,
+because remote revocation would invalidate the destination session too.
+
+The import accepts the bundle only through stdin and requires the destination
+account's owner. Keep the file outside repositories and transcripts. Horde does
+not publish OAuth callback listeners or use a browser on the remote host.
+
+Usage-limit errors temporarily pause the account for five minutes before Horde
+can retry. This delay is Horde's retry deadline, not an OpenAI usage reset time.
+Eligibility, missing permission, and revoked authorization require account action;
+Horde never substitutes paid API credentials. See the
+[native provider contract](native-providers.md#chatgpt-responses-transport) and
+[OpenAI's self-hosted VM guide](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms).
 
 ## Notifications
 

@@ -1,4 +1,5 @@
 pub mod branding;
+pub mod chatgpt_auth;
 pub mod config;
 pub mod credentials;
 pub mod decision;
@@ -12,6 +13,7 @@ pub mod metrics;
 pub mod native;
 mod native_context;
 mod native_protocol;
+mod native_responses;
 pub mod network;
 pub mod notify;
 pub mod protocol;

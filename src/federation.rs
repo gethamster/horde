@@ -342,6 +342,7 @@ impl Service {
                 account_control::remove_account(db, peer, method, args)
             }
             "account_tokens" => crate::account_auth::remote_tokens(db, peer, args),
+            "account_chatgpt_tokens" => crate::account_auth::remote_chatgpt_tokens(db, peer, args),
             "manage" => {
                 ensure!(
                     self.config.management_clients.iter().any(|p| p == peer),

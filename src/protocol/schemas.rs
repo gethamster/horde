@@ -56,9 +56,17 @@ pub fn admin_schema(name: &str) -> Value {
             ("concurrency", "integer"),
         ],
         "account_list" | "account_usage" => &[("project", "string")],
-        "account_inspect" | "account_grant" | "account_revoke" | "account_delivery_list" => {
-            &[("project", "string"), ("account", "string")]
-        }
+        "account_inspect"
+        | "account_grant"
+        | "account_revoke"
+        | "account_delivery_list"
+        | "account_sign_out"
+        | "account_models" => &[("project", "string"), ("account", "string")],
+        "account_credential_import" => &[
+            ("project", "string"),
+            ("account", "string"),
+            ("credential", "object"),
+        ],
         "account_credential_set" => &[
             ("project", "string"),
             ("account", "string"),
@@ -100,6 +108,8 @@ pub fn admin_schema(name: &str) -> Value {
             ("replace_existing", "boolean"),
         ],
         "provider_login" => &[
+            ("project", "string"),
+            ("account", "string"),
             ("action", "string"),
             ("provider", "string"),
             ("request_id", "string"),
@@ -458,6 +468,12 @@ pub fn admin_schema(name: &str) -> Value {
             if name == "agent_setup" && *k == "action" {
                 s["enum"] = json!(["inspect","verify","configure_provider","configure_workers","configure_controller","create_fleet_key","join_worker","restart_local"]);
             }
+            if name == "account_credential_import" && *k == "credential" {
+                s["description"] = json!("Protected ChatGPT credential bundle supplied by its owner. Never repeat any bundle fields in responses or logs; prefer CLI stdin import over SSH.");
+            }
+            if name == "provider_login" && *k == "account" {
+                s["description"] = json!("Owner-managed account required for first-class ChatGPT login.");
+            }
             if name == "provider_login" && *k == "action" {
                 s["enum"] = json!(["start", "status", "submit", "cancel"]);
             }
@@ -560,9 +576,12 @@ pub fn admin_schema(name: &str) -> Value {
         "project_repo_add" => &["project", "path"],
         "project_runtime_grant" | "project_runtime_revoke" => &["project", "runtime"],
         "account_create" => &["name", "provider"],
-        "account_inspect" | "account_delivery_list" => &["account"],
+        "account_inspect" | "account_delivery_list" | "account_sign_out" | "account_models" => {
+            &["account"]
+        }
         "account_grant" | "account_revoke" => &["project", "account"],
         "account_credential_set" => &["account", "credential_file"],
+        "account_credential_import" => &["account", "credential"],
         "plan_execution" => &["roles"],
         "provider_signup" => &["action", "request_id"],
         "provider_topup" => &["action", "provider"],

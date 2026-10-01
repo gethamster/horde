@@ -218,6 +218,9 @@ pub fn observe(db: &Store, s: &Snapshot) -> Result<()> {
     })
 }
 pub fn available(db: &Store, id: &str) -> Result<bool> {
+    if chatgpt_usage_hold(db, id)?.is_some() {
+        return Ok(false);
+    }
     let policy = crate::fleet::load()?.capacity_policy;
     for row in db.rows("SELECT * FROM account_capacity WHERE account=?", &[&id])? {
         let reset = row["reset"].as_i64();
@@ -236,6 +239,35 @@ pub fn available(db: &Store, id: &str) -> Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// A plan-sharing error does not reveal a usage percentage or reset time.
+/// Hold new requests briefly, then allow workflow policy to try again.
+pub fn hold_chatgpt_usage(
+    db: &Store,
+    config: &ExecutorConfig,
+    generation: Option<&str>,
+) -> Result<()> {
+    if_current(db, config, generation, || {
+        management::set(
+            db,
+            &format!("chatgpt.usage_hold:{}", account(config)),
+            &(now() + 300).to_string(),
+        )?;
+        management::event(
+            db,
+            "account.usage_limit",
+            json!({"account":account(config),"provider":"chatgpt","code":"subscription_sharing_usage_limit_exceeded","used_percent":null,"reset_at":null,"settings_url":"https://chatgpt.com/settings/usage"}),
+        )
+    })
+}
+
+pub fn chatgpt_usage_hold(db: &Store, account: &str) -> Result<Option<i64>> {
+    Ok(
+        management::value(db, &format!("chatgpt.usage_hold:{account}"))?
+            .and_then(|value| value.parse().ok())
+            .filter(|deadline| *deadline > now()),
+    )
 }
 pub fn select(db: &Store, settings: &Settings, role: &str) -> Result<Option<String>> {
     let mut current = role;

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.6.26 - 2026-09-30
+
+- Add Sign in with ChatGPT for native Horde workers. Account owners receive a
+  browser consent URL, and Horde stores and renews the resulting credentials
+  privately. Identity sign-in and permission to use a ChatGPT plan remain separate.
+- Run native workers through the public Responses API with full conversation
+  history, account-specific model selection, and streamed completion checks.
+  Usage-limit errors pause requests without switching to paid API credentials.
+- Transfer a protected login to a remote daemon over SSH, giving the destination
+  sole refresh ownership. Sign-out stops local tool execution and reports whether
+  remote revocation was confirmed.
+
 ## 0.6.25 - 2026-09-30
 
 - Derive signed release schema bounds from each compiled binary's state-free
