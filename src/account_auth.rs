@@ -133,6 +133,67 @@ pub async fn invocation_tokens(
     access_tokens(i.db, project, account, force, program).await
 }
 
+/// Native ChatGPT workers receive short-lived access only; refresh remains on
+/// the account's owner controller even when the invocation runs elsewhere.
+pub async fn invocation_chatgpt_token(
+    i: &crate::executor::Invocation<'_>,
+    project: &str,
+    account: &str,
+) -> Result<String> {
+    accounts::authorized(i.db, project, account)?;
+    let origins =
+        i.db.rows("SELECT * FROM remote_origins WHERE task=?", &[&i.task])?;
+    if let Some(origin) = origins.first() {
+        let response = crate::federation::call(
+            &crate::federation::config(i.db)?,
+            origin["owner_peer"].as_str().context("controller")?,
+            "account_chatgpt_tokens",
+            json!({"project":project,"account":account,"task":origin["owner_task"],"remote_task":i.task}),
+        ).await?;
+        let token = response["access_token"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .context("invalid controller access token response")?
+            .to_owned();
+        let version = response["version"]
+            .as_i64()
+            .filter(|v| *v > 0)
+            .context("invalid controller credential version")?;
+        accounts::authorized(i.db, project, account)?;
+        i.db.atomic(|| {
+            let old = accounts::credential_version(i.db, account)?;
+            ensure!(version >= old, "controller credential version regressed");
+            if version > old {
+                i.db.conn.execute("UPDATE auth_profiles SET credential_version=? WHERE account=? AND kind='chatgpt_oauth' AND credential_version=?", rusqlite::params![version,account,old])?;
+                i.db.conn.execute("UPDATE attempt_bindings SET credential_version=? WHERE account=? AND credential_version=? AND attempt IN (SELECT id FROM attempts WHERE state='running')", rusqlite::params![version,account,old])?;
+                i.db.conn.execute("UPDATE account_reservations SET credential_version=? WHERE account=? AND credential_version=? AND state='active'", rusqlite::params![version,account,old])?;
+            }
+            Ok(())
+        })?;
+        return Ok(token);
+    }
+    crate::chatgpt_auth::access_token(i.db, project, account).await
+}
+
+pub fn remote_chatgpt_tokens(db: &Store, peer: &str, args: &Value) -> Result<Value> {
+    authorize_remote_tokens(db, peer, args)?;
+    let root = db.root.clone();
+    let peer = peer.to_owned();
+    let args = args.clone();
+    std::thread::spawn(move || {
+        let db = Store::open(&root)?;
+        let project = args["project"].as_str().context("project required")?;
+        let account = args["account"].as_str().context("account required")?;
+        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
+            let token = crate::chatgpt_auth::access_token(&db, project, account).await?;
+            authorize_remote_tokens(&db, &peer, &args)?;
+            Ok(json!({"access_token":token,"version":accounts::credential_version(&db,account)?}))
+        })
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("controller refresh worker failed"))?
+}
+
 pub async fn access_tokens(
     db: &Store,
     project: &str,

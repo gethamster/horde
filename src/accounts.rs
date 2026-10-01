@@ -87,7 +87,28 @@ fn argument<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
 }
 fn inspect(db: &Store, project: &str, account: &str) -> Result<Value> {
     authorized(db, project, account)?;
-    db.rows("SELECT a.*,p.id AS profile,p.credential_version,p.kind AS credential_kind,p.expires_at,(SELECT COUNT(*) FROM account_allocations r WHERE r.account=a.id AND r.state IN ('active','revoked','uncertain')) AS active FROM accounts a JOIN auth_profiles p ON p.account=a.id WHERE a.id=?",&[&account])?.into_iter().next().context("account missing")
+    let mut value = db.rows("SELECT a.*,p.id AS profile,p.credential_version,p.kind AS credential_kind,p.expires_at,(SELECT COUNT(*) FROM account_allocations r WHERE r.account=a.id AND r.state IN ('active','revoked','uncertain')) AS active FROM accounts a JOIN auth_profiles p ON p.account=a.id WHERE a.id=?",&[&account])?.into_iter().next().context("account missing")?;
+    if value["provider"] == "chatgpt" {
+        value["usage_hold_until"] = json!(crate::capacity::chatgpt_usage_hold(db, account)?);
+        value["usage_settings_url"] = json!("https://chatgpt.com/settings/usage");
+        if value["authenticated"] == 1 {
+            if let Ok(credential) = credential(db, project, account) {
+                value["identity_signed_in"] = credential.metadata["identity_signed_in"].clone();
+                value["plan_usage_enabled"] = credential.metadata["plan_usage_enabled"].clone();
+                value["credential_material"] = json!("local");
+            } else {
+                // A federated account reference deliberately contains no refresh
+                // material. Availability and permission are checked by its owner.
+                value["identity_signed_in"] = Value::Null;
+                value["plan_usage_enabled"] = Value::Null;
+                value["credential_material"] = json!("not_local");
+            }
+        } else {
+            value["identity_signed_in"] = json!(false);
+            value["plan_usage_enabled"] = json!(false);
+        }
+    }
+    Ok(value)
 }
 pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
     if !name.starts_with("account_") {
@@ -108,6 +129,12 @@ pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
             let limit = args["concurrency"].as_u64().unwrap_or(1);
             ensure!(limit > 0 && limit <= 4096, "invalid account concurrency");
             let base_url = args["base_url"].as_str().unwrap_or("");
+            if provider == "chatgpt" {
+                ensure!(
+                    auth_mode == "login" && base_url == "https://api.openai.com/v1",
+                    "ChatGPT accounts require login at https://api.openai.com/v1"
+                );
+            }
             if !base_url.is_empty() {
                 let url = reqwest::Url::parse(base_url)?;
                 ensure!(
@@ -156,12 +183,72 @@ pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
         }
         "account_credential_set" => {
             let account = argument(args, "account")?;
+            let provider: String =
+                db.conn
+                    .query_row("SELECT provider FROM accounts WHERE id=?", [account], |r| {
+                        r.get(0)
+                    })?;
+            ensure!(
+                provider != "chatgpt",
+                "ChatGPT credentials require verified login or account_credential_import"
+            );
             let path = argument(args, "credential_file")?;
             let bytes = std::fs::read(path).context("cannot read credential file")?;
             ensure!(bytes.len() <= 64 * 1024, "credential file too large");
             let credential: Credential = serde_json::from_slice(&bytes)
                 .map_err(|_| anyhow::anyhow!("invalid credential file"))?;
             json!({"account":account,"credential_version":set_credential(db,&project,account,&credential)?})
+        }
+        "account_credential_import" | "account_sign_out" | "account_models" => {
+            crate::fleet_enrollment::admin()?;
+            let account = argument(args, "account")?.to_owned();
+            authorized(db, &project, &account)?;
+            let root = db.root.clone();
+            let operation = name.to_owned();
+            let args = args.clone();
+            std::thread::spawn(move || {
+                let db = Store::open(&root)?;
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?
+                    .block_on(async {
+                        match operation.as_str() {
+                            "account_credential_import" => {
+                                crate::chatgpt_auth::import(
+                                    &db,
+                                    &project,
+                                    &account,
+                                    args["credential"].clone(),
+                                )
+                                .await
+                            }
+                            "account_sign_out" => {
+                                crate::chatgpt_auth::sign_out(&db, &project, &account).await
+                            }
+                            _ => {
+                                let details = inspect(&db, &project, &account)?;
+                                ensure!(
+                                    details["provider"] == "chatgpt",
+                                    "account_models requires a ChatGPT account"
+                                );
+                                let token =
+                                    crate::chatgpt_auth::access_token(&db, &project, &account)
+                                        .await?;
+                                let config = ExecutorConfig {
+                                    kind: "chatgpt".into(),
+                                    auth_mode: "login".into(),
+                                    base_url: "https://api.openai.com/v1".into(),
+                                    account: Some(account.clone()),
+                                    project: Some(project),
+                                    ..Default::default()
+                                };
+                                crate::executor::chatgpt_models(&config, &token).await
+                            }
+                        }
+                    })
+            })
+            .join()
+            .map_err(|_| anyhow::anyhow!("ChatGPT account operation failed"))??
         }
         "account_delivery_list" => {
             let account = argument(args, "account")?;
@@ -192,6 +279,12 @@ pub fn select_account(
         if config.account.as_deref().is_some_and(|pin| pin != id)
             || row["expires_at"].as_i64().is_some_and(|t| t <= now())
             || row["active"].as_i64() >= row["concurrency"].as_i64()
+        {
+            continue;
+        }
+        if config.kind == "chatgpt"
+            && let Ok(credential) = credential(db, project, id)
+            && credential.metadata["plan_usage_enabled"] != true
         {
             continue;
         }
@@ -257,6 +350,7 @@ pub fn choose_for_step(
         };
         if config.kind == "simulated"
             || (project == "default"
+                && config.kind != "chatgpt"
                 && !managed
                 && !pinned_managed
                 && crate::capacity::available(db, &crate::capacity::account(&config))?)

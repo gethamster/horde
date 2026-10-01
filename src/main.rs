@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::{Value, json};
 use std::{
-    io::{BufRead, Write},
+    io::{BufRead, Read, Write},
     path::PathBuf,
 };
 mod watch;
@@ -306,6 +306,33 @@ enum AccountCommands {
         account: String,
         credential_file: PathBuf,
     },
+    /// Start ChatGPT consent and return the authorization URL.
+    Login {
+        account: String,
+    },
+    LoginStatus {
+        account: String,
+        session_id: String,
+    },
+    LoginCancel {
+        account: String,
+        session_id: String,
+    },
+    /// Import a ChatGPT credential bundle from stdin (for example, over SSH).
+    CredentialImport {
+        account: String,
+    },
+    /// Transfer renewable login to a private file and disable the local source account.
+    CredentialExport {
+        account: String,
+        output_file: PathBuf,
+    },
+    SignOut {
+        account: String,
+    },
+    Models {
+        account: String,
+    },
     DeliveryList {
         account: String,
     },
@@ -363,7 +390,7 @@ enum ProviderCommands {
     Add {
         /// Provider name. With no name and a terminal, the walkthrough runs.
         name: Option<String>,
-        /// Start from a ready-made provider: tuara, codex, claude, openai, anthropic.
+        /// Start from a ready-made provider: tuara, chatgpt, codex, claude, openai, anthropic.
         #[arg(long)]
         preset: Option<String>,
         #[arg(long)]
@@ -1015,6 +1042,63 @@ async fn main() -> Result<()> {
                     "account_credential_set",
                     json!({"account":account,"credential_file":credential_file.canonicalize()?}),
                 ),
+                AccountCommands::Login { account } => (
+                    "provider_login",
+                    json!({"provider":"chatgpt","account":account,"action":"start"}),
+                ),
+                AccountCommands::LoginStatus {
+                    account,
+                    session_id,
+                } => (
+                    "provider_login",
+                    json!({"provider":"chatgpt","account":account,"action":"status","session_id":session_id}),
+                ),
+                AccountCommands::LoginCancel {
+                    account,
+                    session_id,
+                } => (
+                    "provider_login",
+                    json!({"provider":"chatgpt","account":account,"action":"cancel","session_id":session_id}),
+                ),
+                AccountCommands::CredentialImport { account } => {
+                    let mut input = String::new();
+                    std::io::stdin()
+                        .take(1024 * 1024 + 1)
+                        .read_to_string(&mut input)
+                        .map_err(|_| {
+                            anyhow::anyhow!("could not read credential bundle from stdin")
+                        })?;
+                    anyhow::ensure!(
+                        input.len() <= 1024 * 1024,
+                        "credential bundle exceeds 1 MiB"
+                    );
+                    let credential: Value = serde_json::from_str(&input)
+                        .map_err(|_| anyhow::anyhow!("invalid credential bundle JSON"))?;
+                    (
+                        "account_credential_import",
+                        json!({"account":account,"credential":credential}),
+                    )
+                }
+                AccountCommands::CredentialExport {
+                    account,
+                    output_file,
+                } => {
+                    let db = horde::store::Store::open(&root)?;
+                    let project = match CLI_PROJECT.get() {
+                        Some(project) => horde::projects::resolve(&db, project)?,
+                        None => horde::projects::DEFAULT_PROJECT.to_owned(),
+                    };
+                    let exported =
+                        horde::chatgpt_auth::export_file(&db, &project, &account, &output_file)?;
+                    println!("{}", serde_json::to_string_pretty(&exported)?);
+                    return Ok(());
+                }
+                AccountCommands::SignOut { account } => {
+                    ("account_sign_out", json!({"account":account}))
+                }
+                AccountCommands::Models { account } => {
+                    ("account_models", json!({"account":account}))
+                }
                 AccountCommands::DeliveryList { account } => {
                     ("account_delivery_list", json!({"account":account}))
                 }

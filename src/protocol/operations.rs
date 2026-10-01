@@ -59,6 +59,18 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     ),
     ("account_revoke", "Revoke a project's account grant"),
     (
+        "account_credential_import",
+        "Import a ChatGPT credential bundle into an owner-authorized account",
+    ),
+    (
+        "account_sign_out",
+        "Revoke ChatGPT authorization and clear local credentials",
+    ),
+    (
+        "account_models",
+        "List models available to an authorized ChatGPT account",
+    ),
+    (
         "account_credential_set",
         "Import a versioned credential from a private file",
     ),
@@ -68,7 +80,7 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     ),
     (
         "provider_login",
-        "Administer default-project legacy provider sign-in; managed accounts use account_credential_set",
+        "Start, inspect, or cancel provider sign-in; ChatGPT targets a managed account",
     ),
     (
         "provider_signup",

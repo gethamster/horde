@@ -197,7 +197,8 @@ fn validate(record: &RuntimeInventory) -> Result<()> {
             "capability IDs must be unique executor names"
         );
         ensure!(
-            ["codex", "claude", "grok", "tuara", "simulated"].contains(&capability.kind.as_str()),
+            ["codex", "claude", "grok", "tuara", "chatgpt", "simulated"]
+                .contains(&capability.kind.as_str()),
             "unsupported executor capability kind"
         );
         ensure!(
@@ -212,7 +213,7 @@ fn validate(record: &RuntimeInventory) -> Result<()> {
         );
         ensure!(
             capability.availability.executable != Evidence::NotRequired
-                || ["tuara", "simulated"].contains(&capability.kind.as_str()),
+                || ["tuara", "chatgpt", "simulated"].contains(&capability.kind.as_str()),
             "external executor requires executable evidence"
         );
         ensure!(
@@ -293,7 +294,7 @@ fn capability(
     credential: &impl Fn(&str) -> Evidence,
 ) -> Result<Capability> {
     let executable = match config.kind.as_str() {
-        "tuara" | "simulated" => Evidence::NotRequired,
+        "tuara" | "chatgpt" | "simulated" => Evidence::NotRequired,
         "codex" | "claude" => executable(config.program.as_deref().unwrap_or(&config.kind)),
         _ => Evidence::Unknown,
     };
