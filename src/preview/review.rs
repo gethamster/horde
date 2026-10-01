@@ -41,8 +41,9 @@ pub fn prepare_review(db: &Store, task: &str, row: &Value) -> Result<()> {
     let main = crate::run::main_head(db, task)?;
     let main = main["commit_sha"].as_str().context("main head")?;
     let integrated = crate::run::integrate_main(db, task, &before, main)?;
+    let feedback_fingerprint = feedback::fingerprint(&feedback::snapshot(db, task)?)?;
     db.conn.execute("INSERT INTO preview_reviews VALUES(?,?,?,?,?,?,NULL) ON CONFLICT(step) DO UPDATE SET head=excluded.head,tree=excluded.tree,main_head=excluded.main_head,generation=excluded.generation,attempt=NULL",params![row["id"].as_str(),task,integrated["head_sha"].as_str(),integrated["tree_sha"].as_str(),main,generation])?;
-    db.event(task,"run.preview_review_started",json!({"step":row["id"],"commit_sha":integrated["head_sha"],"tree_sha":integrated["tree_sha"],"expected_main_head":main}))?;
+    db.event(task,"run.preview_review_started",json!({"step":row["id"],"commit_sha":integrated["head_sha"],"tree_sha":integrated["tree_sha"],"expected_main_head":main,"feedback_fingerprint":feedback_fingerprint}))?;
     Ok(())
 }
 pub(super) fn reviewed(
@@ -52,16 +53,54 @@ pub(super) fn reviewed(
     tree: &str,
     generation: &str,
 ) -> Result<Option<String>> {
-    let rows=db.rows("SELECT r.main_head,s.result FROM preview_reviews r JOIN steps s ON s.id=r.step JOIN attempts a ON a.id=r.attempt AND a.step=s.id JOIN preview_review_execution x ON x.attempt=a.id AND x.head=r.head AND x.tree=r.tree AND x.executor!='simulated' WHERE r.task=? AND r.head=? AND r.tree=? AND r.generation=? AND s.state='succeeded' AND a.state='succeeded' ORDER BY s.rowid DESC LIMIT 1",&[&task,&head,&tree,&generation])?;
+    let rows=db.rows("SELECT r.step,r.main_head,s.result FROM preview_reviews r JOIN steps s ON s.id=r.step JOIN attempts a ON a.id=r.attempt AND a.step=s.id JOIN preview_review_execution x ON x.attempt=a.id AND x.head=r.head AND x.tree=r.tree AND x.executor!='simulated' WHERE r.task=? AND r.head=? AND r.tree=? AND r.generation=? AND s.state='succeeded' AND a.state='succeeded' ORDER BY s.rowid DESC LIMIT 1",&[&task,&head,&tree,&generation])?;
     let Some(r) = rows.first() else {
         return Ok(None);
     };
+    if !feedback::current(
+        db,
+        task,
+        r["step"].as_str().context("review step")?,
+        &feedback::snapshot(db, task)?,
+    )? {
+        return Ok(None);
+    }
     let result: Value = serde_json::from_str(r["result"].as_str().unwrap_or("null"))?;
     ensure!(
         result["accepted"] == true,
         "review agent did not accept the current tree"
     );
     Ok(Some(r["main_head"].as_str().context("review main")?.into()))
+}
+
+/// Project user revisions into the review prompt without creating mailbox effects.
+pub(crate) fn feedback_prompt(
+    db: &Store,
+    task: &str,
+    spec: &crate::template::Step,
+) -> Result<String> {
+    if !is_review(db, task, &json!({"name":spec.id}))? {
+        return Ok(String::new());
+    }
+    let value = feedback::snapshot(db, task)?;
+    if value.as_array().is_some_and(Vec::is_empty) {
+        return Ok(String::new());
+    }
+    let row = db.rows(
+        "SELECT id FROM steps WHERE task=? AND name=?",
+        &[&task, &spec.id],
+    )?;
+    let step = row
+        .first()
+        .and_then(|r| r["id"].as_str())
+        .context("preview review step")?;
+    ensure!(
+        feedback::current(db, task, step, &value)?,
+        "authorized feedback changed after review preparation; rerun review"
+    );
+    Ok(format!(
+        "\nAuthorized browser feedback for this Run, in durable sequence order: {value}\nLater feedback supersedes conflicting earlier feedback and original instructions, acceptance criteria, and objective. Preserve original requirements that do not conflict. Review and validate the resulting current behavior; do not revert a requested feedback revision to satisfy the initial preview. This feedback does not authorize acceptance or release.\n"
+    ))
 }
 pub fn bind_attempt(db: &Store, step: &str, attempt: &str) -> Result<()> {
     db.conn.execute(

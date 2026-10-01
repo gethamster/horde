@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 mod lease;
 mod lease_receipts;
 pub(crate) use lease_receipts::pending as pending_reservations;
+mod feedback;
 mod pipeline;
 mod process;
 mod retry;
@@ -233,4 +234,5 @@ pub use pipeline::Queue;
 #[cfg(test)]
 use process::publisher_command;
 use process::verify_receipt;
+pub(crate) use review::feedback_prompt;
 pub use review::{bind_attempt, is_review, prepare_review, verify_execution};

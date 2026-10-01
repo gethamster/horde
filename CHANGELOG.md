@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.28 - 2026-09-30
+
+- Give automatic preview reviewers the authorized browser feedback for their
+  Run, with later feedback taking precedence over conflicting original
+  requirements. Preserve feedback history and exact source review safeguards.
+- Package the verified release binary into an existing digest-pinned local
+  tooling image without rebuilding its compiler, publishers, or runtimes.
+
 ## 0.6.27 - 2026-09-30
 
 - Add Sign in with ChatGPT for native Horde workers. Account owners receive a

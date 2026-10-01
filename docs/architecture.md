@@ -551,6 +551,18 @@ publication, and checks cannot modify the reviewed tree. Jobs key the Run, revie
 commit/tree/base, recipe hash, and policy generation. No stage accepts a preview
 or authorizes a release; those remain explicit user operations in Discover.
 
+Review prompts include durable browser feedback from the authenticated task
+operator, scoped to the Run's immutable tenant, project, Thread and Brief. The
+projection retains acknowledged messages in sequence order without broadcasting
+them to another worker. Later feedback overrides conflicting original requirements
+and earlier feedback. Worker-authored messages cannot supply these criteria.
+Review preparation records a fingerprint of that bounded projection in its
+existing event. Prompt dispatch and publication verify that it remains current;
+new feedback requires another review even if the source tree has not changed.
+Pre-upgrade reviews with browser feedback require a fresh review. Empty legacy
+feedback context remains compatible. Invalid or oversized context holds review
+with an actionable reconciliation error; it is never silently truncated.
+
 The publisher receives JSON stdin in the Run workspace with a cleared environment,
 only nonsecret execution paths, the fixed sandbox Docker host, and the scoped
 admission credential path. Controller signing keys never cross that boundary.

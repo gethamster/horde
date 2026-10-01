@@ -966,5 +966,7 @@ fn retry_reviewer_fast_forwards_only_clean_registered_workspace() {
     );
     assert!(path.join("unreviewed").exists());
 }
+#[path = "tests/feedback.rs"]
+mod feedback;
 #[path = "tests/hardening.rs"]
 mod hardening;
