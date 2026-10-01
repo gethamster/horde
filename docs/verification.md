@@ -209,3 +209,31 @@ receiving a successful revision. Tests also check MCP error-result envelopes,
 unknown/missing fields, nested environment type errors, unchanged workflow state
 on rejection, and stable tool definitions across successive model requests.
 These checks do not establish live pmlx planner convergence or prefix-cache speed.
+
+
+## Project registration gates
+
+Focused registration regressions run against disposable SQLite stores and actual
+loopback HTTP setup listeners. Git fixtures are local temporary checkouts; tests
+perform no provider writes. The suite covers strict decoding, receipt order and
+replay, native reconciliation, legacy project/Run preservation, filesystem and
+ownership denials, quiet-state holds, context changes, response loss with listener
+restart, and rollback when receipt persistence fails. A post-commit error test
+verifies that fresh durable success takes precedence over a reported failure.
+
+Run the focused checks with the repository's pinned toolchain:
+
+```sh
+cargo test --locked --lib setup_admin
+cargo test --locked --lib setup_operations
+cargo test --locked --test projects --test project_protocol
+cargo fmt --all --check
+```
+
+The integration owner must also run the complete test suite and Clippy gates,
+measure at least 80% coverage for each changed component and changed lines, and
+exercise the native System producer against an isolated candidate Deliver server.
+Record base/head revisions, coverage denominators and exclusions with that evidence.
+Loopback Rust tests do not substitute for the System compatibility gate or the
+sequential final Local browser acceptance cycles. Missing tools remain open gates;
+registration verification does not authorize publication or installation changes.
