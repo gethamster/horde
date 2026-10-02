@@ -669,9 +669,20 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
             .map_err(Into::into)
     }
     pub fn acknowledge(&self, wid: &str, ids: &[String]) -> Result<()> {
-        self.atomic(||{for mid in ids {if self.conn.execute("UPDATE receipts SET ack=1 WHERE worker=? AND message=?",params![wid,mid])?!=1{bail!("message not in worker mailbox");}}
+        self.atomic(|| {
+            let worker = self.worker(wid)?;
+            let task = worker["task"].as_str().context("acknowledging worker task")?;
+            for mid in ids {
+                if self.conn.execute("UPDATE receipts SET ack=1 WHERE worker=? AND message=? AND ack=0", params![wid,mid])? == 1 {
+                    self.event(task, "message.acknowledged", json!({"message":mid,"worker":wid}))?;
+                } else if self.rows("SELECT ack FROM receipts WHERE worker=? AND message=?", &[&wid,mid])?.is_empty() {
+                    bail!("message not in worker mailbox");
+                }
+            }
             // Cursor advances only past a contiguous acknowledged prefix, never skips an unread message.
-            self.conn.execute("UPDATE cursors SET seq=COALESCE((SELECT MIN(m.seq)-1 FROM messages m JOIN receipts r ON m.id=r.message WHERE r.worker=? AND r.ack=0),(SELECT COALESCE(MAX(seq),0) FROM messages)) WHERE worker=?",params![wid,wid])?;Ok(())})
+            self.conn.execute("UPDATE cursors SET seq=COALESCE((SELECT MIN(m.seq)-1 FROM messages m JOIN receipts r ON m.id=r.message WHERE r.worker=? AND r.ack=0),(SELECT COALESCE(MAX(seq),0) FROM messages)) WHERE worker=?",params![wid,wid])?;
+            Ok(())
+        })
     }
     pub fn artifact(
         &self,

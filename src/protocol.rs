@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
 
+mod inspect;
 mod operations;
 mod resume;
 pub use operations::OPERATIONS;
@@ -104,6 +105,15 @@ pub fn dispatch_scoped(
 ) -> Result<Value> {
     if !args.is_object() {
         bail!("arguments must be an object");
+    }
+    if name == "run_changes"
+        && args.as_object().is_some_and(|object| {
+            object.keys().any(|key| {
+                !["task", "project", "expected_base", "expected_head"].contains(&key.as_str())
+            })
+        })
+    {
+        bail!("run_changes accepts only task, project, and exact checkpoint commits");
     }
     if token.is_some() && !worker_allowed(name) {
         bail!("operation unavailable to worker credentials");
@@ -483,9 +493,10 @@ fn dispatch_authorized(
             args["limit"].as_i64().unwrap_or(50),
         )?)),
         "inspect" => Ok(
-            json!({"task":db.task(oid)?,"project_runtime":crate::project_runtime::inspection(db,oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started ASC,a.rowid ASC",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
+            json!({"task":db.task(oid)?,"project_runtime":crate::project_runtime::inspection(db,oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started ASC,a.rowid ASC",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"feedback_receipts":inspect::feedback_receipts(db,oid)?,"checkpoint_event":inspect::checkpoint_event(db,oid)?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
         ),
         "summary" => crate::summary::build(db, oid),
+        "run_changes" => crate::run::run_changes(db, oid, string(&args, "expected_base")?, string(&args, "expected_head")?),
         "run_integrate_main" => crate::run::integrate_main(db, oid, string(&args, "expected_head")?, string(&args, "expected_main_head")?),
         "run_main_head" => crate::run::main_head(db, oid),
         "run_reconcile" => crate::run::reconcile_run(db, oid, string(&args, "expected_head")?),
@@ -636,34 +647,7 @@ fn dispatch_authorized(
             db.atomic(||{db.conn.execute("WITH RECURSIVE subtree(id) AS (SELECT ? UNION ALL SELECT t.task FROM task_tree t JOIN subtree s ON t.parent=s.id) UPDATE tasks SET status='cancelled' WHERE id IN (SELECT id FROM subtree)",[oid])?;db.conn.execute("UPDATE steps SET state='cancelled' WHERE task IN (SELECT id FROM tasks WHERE status='cancelled') AND state IN ('pending','running','waiting')",[])?;db.event(oid,"task.cancelled",json!({}))?;Ok(())})?;
             Ok(json!({"cancelled":true}))
         }
-        "resume" => {
-            if !db.rows("SELECT task FROM remote_links WHERE task=?", &[&oid])?.is_empty() {
-                bail!("this task runs on a remote runtime and cannot resume locally; submit a new task with --on targeting that runtime");
-            }
-            if db.task(oid)?["status"]=="blocked" && db.steps(oid)?.iter().all(|t|t["state"]=="succeeded"||t["state"]=="skipped") {
-                bail!("completed result needs revalidation; add a verification step before resuming");
-            }
-            let uncertain:i64=db.conn.query_row("SELECT COUNT(*) FROM attempts a JOIN steps t ON t.id=a.step WHERE t.task=? AND a.state IN ('uncertain','running')",[oid],|r|r.get(0))?;
-            if uncertain > 0 {
-                bail!("reconcile interrupted workers or wait for running attempts before resuming");
-            }
-            let questions: i64 = db.conn.query_row(
-                "SELECT COUNT(*) FROM questions WHERE task=? AND answer IS NULL",
-                [oid],
-                |r| r.get(0),
-            )?;
-            if questions > 0 {
-                bail!("answer pending questions before resuming");
-            }
-            let retry = resume::steps(db, oid)?;
-            db.atomic(|| {
-                resume::reset(db, oid, &retry)?;
-                db.conn.execute("UPDATE tasks SET status='running' WHERE id=?", [oid])?;
-                db.event(oid, "task.resumed", json!({"steps":retry.iter().map(|step| &step["name"]).collect::<Vec<_>>()}))?;
-                Ok(())
-            })?;
-            Ok(json!({"resumed":true}))
-        }
+        "resume" => resume::resume(db, oid, &args),
         "request_question" => crate::delegation::ask(db,oid,&args),
         "delegate_task" | "list_children" | "read_context" | "update_context" | "pending_questions" | "escalate_question" | "ack_events" => crate::delegation::dispatch(db,oid,name,&args),
         "answer_question" => {

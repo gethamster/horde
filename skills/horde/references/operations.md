@@ -42,12 +42,13 @@ Other commands have no operation equivalent: `init` (repository setup), `start`,
 | --- | --- | --- |
 | `submit_task` | `objective`*, `repo`*, `template`, `context[]` | Returns `{"id":...}`. `repo` is an absolute path. `context` entries are context records. |
 | `list_tasks` | none | |
-| `inspect` | `task`* | Steps, attempts, workers, questions, integration state. |
+| `inspect` | `task`* | Steps, attempts, workers, questions, integration state; bounded operator `feedback_receipts` and latest `checkpoint_event` sequence evidence, without message bodies or source references. |
 | `events` | `task`*, `after`, `consumer` | Ordered activity events. |
 | `ack_events` | `task`*, `consumer`*, `seq`* | Durable, monotonic per-consumer receipt. Does not answer questions. |
 | `metrics` | `task`* | Usage, cost, latency, retries, coordination counts, `children` tree. |
 | `cancel` | `task`* | Kills active process groups; cancels the owned subtree. |
-| `resume` | `task`* | Interrupted processes must be reconciled first. |
+| `resume` | `task`*, optional `request_id` | Interrupted processes must be reconciled first. Reusing a stable request ID returns its original response without resetting a later failure. |
+| `run_changes` | `task`*, `expected_base`*, `expected_head`* | Bounded committed file diffs/text at the latest verified checkpoint. Full commit IDs must match recorded main and current Run head; the server selects the registered repository. |
 | `add_steps` | `task`*, `steps`* | Appends a validated workflow revision. |
 
 ## Questions

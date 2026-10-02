@@ -1,8 +1,54 @@
 //! Retry failed work and reconsider only the skipped dependency closure.
 use crate::store::Store;
 use anyhow::{Context, Result, ensure};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
+
+/// Resume and its optional caller receipt commit together. Receipt replay must
+/// precede live checks: later attempts and failures belong to a newer operation.
+pub(super) fn resume(db: &Store, task: &str, args: &Value) -> Result<Value> {
+    let request = args
+        .get("request_id")
+        .map(|value| {
+            let id = value.as_str().context("request_id must be a string")?;
+            ensure!(
+                !id.trim().is_empty() && id.len() <= 256 && !id.chars().any(char::is_control),
+                "request_id must contain 1..256 bytes without control characters"
+            );
+            Ok::<_, anyhow::Error>(id)
+        })
+        .transpose()?;
+    let operation =
+        request.map(|id| format!("resume-request:{}", crate::store::hash(id.as_bytes())));
+    let request_hash = crate::store::hash(&serde_json::to_vec(args)?);
+    db.atomic(|| {
+        if let Some(operation) = &operation
+            && let Some(row) = db.rows("SELECT data FROM external_ops WHERE task=? AND name=?", &[&task, operation])?.first()
+        {
+            let receipt: Value = serde_json::from_str(row["data"].as_str().context("resume receipt")?)?;
+            ensure!(receipt["request_hash"] == request_hash, "resume request_id reused with different request");
+            return Ok(receipt["response"].clone());
+        }
+        ensure!(db.rows("SELECT task FROM remote_links WHERE task=?", &[&task])?.is_empty(),
+            "this task runs on a remote runtime and cannot resume locally; submit a new task with --on targeting that runtime");
+        ensure!(!(db.task(task)?["status"] == "blocked" && db.steps(task)?.iter().all(|t| t["state"] == "succeeded" || t["state"] == "skipped")),
+            "completed result needs revalidation; add a verification step before resuming");
+        let active: i64 = db.conn.query_row("SELECT COUNT(*) FROM attempts a JOIN steps t ON t.id=a.step WHERE t.task=? AND a.state IN ('uncertain','running')", [task], |r| r.get(0))?;
+        ensure!(active == 0, "reconcile interrupted workers or wait for running attempts before resuming");
+        let questions: i64 = db.conn.query_row("SELECT COUNT(*) FROM questions WHERE task=? AND answer IS NULL", [task], |r| r.get(0))?;
+        ensure!(questions == 0, "answer pending questions before resuming");
+        let retry = steps(db, task)?;
+        reset(db, task, &retry)?;
+        db.conn.execute("UPDATE tasks SET status='running' WHERE id=?", [task])?;
+        db.event(task, "task.resumed", json!({"steps":retry.iter().map(|step| &step["name"]).collect::<Vec<_>>(),"request_id":request}))?;
+        let response = json!({"resumed":true});
+        if let Some(operation) = &operation {
+            db.conn.execute("INSERT INTO external_ops(task,name,state,data) VALUES(?,?,'succeeded',?)",
+                rusqlite::params![task, operation, json!({"request_hash":request_hash,"response":response}).to_string()])?;
+        }
+        Ok(response)
+    })
+}
 
 pub(super) fn steps(db: &Store, task: &str) -> Result<Vec<Value>> {
     let steps = db.steps(task)?;

@@ -295,6 +295,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
     ),
     ("run_events", "Read versioned, project-scoped Run events"),
     (
+        "run_changes",
+        "Read bounded file changes at an exact verified Run checkpoint",
+    ),
+    (
         "run_diagnostics",
         "Read bounded structural Run diagnostics without secret or transcript data",
     ),
