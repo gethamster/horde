@@ -22,6 +22,8 @@ pub fn operator_id(oid: &str) -> String {
 
 #[path = "legacy_store.rs"]
 mod legacy_store;
+#[path = "store_feedback.rs"]
+mod store_feedback;
 
 pub fn id() -> String {
     uuid::Uuid::new_v4().to_string()

@@ -67,6 +67,17 @@ for recovery when the installed updater cannot open this layout.
 
 Messages and recipient receipts commit together before returning a sender acknowledgement. Message identity is immutable: reusing an ID with a different envelope fails. Delivery is at-least-once until explicit recipient acknowledgement. Acknowledgement cursors stop before the first unread message. A separate notification watermark prevents repeated model calls for an already-delivered wakeup.
 
+A fresh invocation for a retried step retains actionable operator feedback that
+the same worker acknowledged after that step first started. It carries exact
+message bodies, IDs, and message/ACK event sequences as recovery context; it
+does not resend messages or change receipt/cursor state. Other workers, peer
+conversations, nonactionable mail, and earlier completed-step feedback are
+excluded. The recovery context permits at most 100 messages and 256 KiB of
+serialized records, and rejects overflow instead of losing intent. Historical
+ACKs without a durable acknowledgement event cannot be attributed to a step;
+restore that feedback explicitly through the authorized context API.
+
+
 Each message also pins whether it may wake an idle worker. A task-wide broadcast
 from an automatically generated follow-up remains in recipient mailboxes but
 cannot schedule another follow-up generation. Direct worker messages and operator
