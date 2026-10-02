@@ -122,7 +122,11 @@ fn file_change(
             ],
             MAX_PART.min(budget.saturating_sub(used)),
         )?;
-        (String::from_utf8_lossy(&bytes).into_owned(), truncated)
+        // Lossy replacement can expand bytes past the remaining preview budget.
+        match String::from_utf8(bytes) {
+            Ok(diff) => (diff, truncated),
+            Err(_) => (String::new(), true),
+        }
     };
     used += diff.len();
     Ok((

@@ -31,6 +31,7 @@ fn fixture() -> Fixture {
     std::fs::write(repo.join("hello.txt"), "after\n").unwrap();
     std::fs::write(repo.join("[literal].txt"), "literal file\n").unwrap();
     std::fs::write(repo.join("binary.dat"), [0, 255, 1]).unwrap();
+    std::fs::write(repo.join("invalid-utf8.txt"), [255, 255, 255]).unwrap();
     std::fs::write(repo.join("large.txt"), vec![b'x'; 70_000]).unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink("/etc/passwd", repo.join("outside-link")).unwrap();
@@ -87,6 +88,12 @@ fn changes_reads_exact_committed_blobs_and_bounds_large_or_nontext_sources() {
         "literal file\n"
     );
     assert!(files.iter().find(|v| v["path"] == "binary.dat").unwrap()["content"].is_null());
+    let invalid = files
+        .iter()
+        .find(|v| v["path"] == "invalid-utf8.txt")
+        .unwrap();
+    assert_eq!(invalid["diff"], "");
+    assert!(invalid["truncated"].as_bool().unwrap());
     assert!(
         files.iter().find(|v| v["path"] == "large.txt").unwrap()["truncated"]
             .as_bool()
