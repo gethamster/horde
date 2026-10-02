@@ -354,18 +354,7 @@ async fn execute_step(
     if !simulated && step.kind == "agent" {
         db.claim(oid, wid, &step.scope)?;
     }
-    let context = json!({
-        "objective":o["objective"],
-        "inherited_contract":crate::delegation::mandatory(db,oid)?,
-        "answers":answered_questions(db,oid)?,
-        "dependencies":dependencies,
-        "children":crate::delegation::dispatch(db,oid,"list_children",&json!({}))?,
-        "pending_questions":crate::delegation::dispatch(db,oid,"pending_questions",&json!({}))?,
-        "remote_caller_context":db.rows("SELECT packet FROM remote_context WHERE task=?",&[&oid])?,
-        "knowledge":db.rows("SELECT * FROM knowledge WHERE task=? ORDER BY verified DESC LIMIT 100",&[&oid])?,
-        "messages":db.messages(wid,0,100)?,
-        "previous_attempts":db.rows("SELECT result FROM attempts WHERE step=? AND state!='running' ORDER BY started DESC LIMIT 3",&[&tid])?
-    });
+    let context = invocation_context(db, oid, tid, wid, attempt, dependencies)?;
     let invocation = Invocation {
         db,
         task: oid,
@@ -426,6 +415,28 @@ async fn execute_step(
         )?;
     }
     Ok(result)
+}
+fn invocation_context(
+    db: &Store,
+    oid: &str,
+    tid: &str,
+    wid: &str,
+    attempt: &str,
+    dependencies: Vec<Value>,
+) -> Result<Value> {
+    Ok(json!({
+        "objective":db.task(oid)?["objective"],
+        "inherited_contract":crate::delegation::mandatory(db,oid)?,
+        "answers":answered_questions(db,oid)?,
+        "dependencies":dependencies,
+        "children":crate::delegation::dispatch(db,oid,"list_children",&json!({}))?,
+        "pending_questions":crate::delegation::dispatch(db,oid,"pending_questions",&json!({}))?,
+        "remote_caller_context":db.rows("SELECT packet FROM remote_context WHERE task=?",&[&oid])?,
+        "knowledge":db.rows("SELECT * FROM knowledge WHERE task=? ORDER BY verified DESC LIMIT 100",&[&oid])?,
+        "messages":db.messages(wid,0,100)?,
+        "acknowledged_operator_feedback":db.retry_operator_feedback(oid,tid,wid,attempt)?,
+        "previous_attempts":db.rows("SELECT result FROM attempts WHERE step=? AND state!='running' ORDER BY started DESC LIMIT 3",&[&tid])?
+    }))
 }
 fn answered_questions(db: &Store, oid: &str) -> Result<Vec<Value>> {
     db.rows("SELECT question,answer FROM questions q WHERE task=? AND answer IS NOT NULL AND NOT EXISTS(SELECT 1 FROM context_records c WHERE c.id='answer:'||q.id AND c.mandatory=1)", &[&oid])
@@ -1265,6 +1276,7 @@ mod coordination_regressions {
             .unwrap();
         (dir, db, parent, child)
     }
+    include!("../tests/runtime_feedback_retry/mod.rs");
     #[test]
     fn terminal_child_wakes_caller_once_across_reopen() {
         let (dir, db, parent, child) = fixture();

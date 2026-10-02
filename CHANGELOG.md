@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.30 - 2026-10-02
+
+- Preserve acknowledged operator feedback in a recovered attempt for its original
+  worker and step. Include exact message and acknowledgement identities without
+  resending messages, changing receipts, or exposing another worker’s context.
+  Reject feedback that exceeds the bounded recovery context instead of silently
+  dropping its intent.
+
 ## 0.6.29 - 2026-10-02
 
 - Let Foundry show committed file changes from an exact verified Run checkpoint.
