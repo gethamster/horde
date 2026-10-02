@@ -1,5 +1,5 @@
 {
-  "count": 118,
+  "count": 119,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -2826,6 +2826,35 @@
       "scope": "admin"
     },
     {
+      "description": "Read bounded file changes at an exact verified Run checkpoint",
+      "name": "run_changes",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_base": {
+            "type": "string"
+          },
+          "expected_head": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "expected_base",
+          "expected_head"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
       "description": "Read bounded structural Run diagnostics without secret or transcript data",
       "name": "run_diagnostics",
       "parameters": {
@@ -2913,6 +2942,9 @@
         "properties": {
           "project": {
             "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "request_id": {
             "type": "string"
           },
           "task": {

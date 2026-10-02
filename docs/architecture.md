@@ -85,6 +85,37 @@ Each local Run keeps the existing `refs/heads/horde/<task-id>` branch and integr
 
 `run_checkpoint` executes a validation command against an exact expected commit and records a durable validation ID. A configured `HORDE_RUN_ATTESTATION_KEY` signs the project, tenant, Thread, Brief, branch, commit, validation ID, and passed command with HMAC-SHA256; signing requires both Thread and Brief IDs. The key is a base64-encoded 32-byte secret shared with the trusted release verifier. `run_publish` pushes only a currently verified commit with Git's ordinary non-force push. `run_events` pages through versioned Run events with authoritative project and tenant identity and stable event IDs. These operations do not require a PR; templates that include the older delivery step retain their existing GitHub behavior.
 
+`run_changes` reads the latest verified checkpoint's exact `expected_base` and
+`expected_head` commit IDs. The base must match the recorded `expected_main_head`,
+and the head must still match the Run branch. Its project-bound connection selects
+the task's registered repository; clients cannot select filesystem paths or Git
+revision expressions. Responses include `run_id`, `project_id`, `tenant_id`,
+`base_sha`, `head_sha`, and `files` with `path`, `status`, `diff`, `previousText`,
+`content`, and `truncated`. Git blobs supply text rather than working-tree files,
+so uncommitted edits cannot change the reviewed source. Symlinks and submodules
+are never followed, and binary blobs omit text. Reads return at most 128 files,
+64 KiB per diff or text blob, and 2 MiB of source content in total, with explicit
+truncation. The read does not fetch, reconcile, execute textconv, or invoke an
+external diff program.
+
+`resume` accepts an optional `request_id` for caller retries. Its task-scoped
+receipt commits with the step reset and returns the original response before
+checking current workers or failures. A lost response can therefore be retried
+after a newer attempt fails without resetting that newer failure. Reusing the
+same ID with changed arguments fails; callers without an ID retain the existing
+behavior. Project and task authorization still runs before receipt lookup.
+
+`inspect.feedback_receipts` exposes the latest 1,000 recipient acknowledgements
+for actionable operator messages in that task. Each entry contains `message_id`,
+`worker_id`, `ack` (0 or 1), `ack_seq`, and `created`; message bodies and arbitrary source
+references remain absent. Consumers can match the stable feedback message and
+original worker before associating a new checkpoint with updated source snapshots.
+The first acknowledgement records `message.acknowledged` in the receipt's
+transaction; repeating an acknowledgement does not add another event.
+`inspect.checkpoint_event` contains the latest checkpoint's `validation_id`,
+`commit_sha`, and `event_seq`. Consumers can require `ack_seq < event_seq` to
+prove acknowledgement preceded validation, including when the commit is unchanged.
+
 ### Local branch-first delivery
 
 `run_integrate_main` fetches the exact release base and merges it into the durable

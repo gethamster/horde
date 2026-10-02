@@ -14,6 +14,8 @@ mod recover;
 pub use recover::recover_step;
 mod unpin;
 pub use unpin::unpin_account;
+mod changes;
+pub use changes::run_changes;
 
 const RUN_CHECKPOINT_DOMAIN: &[u8] = b"horde-run-checkpoint-v1\0";
 
