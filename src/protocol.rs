@@ -75,6 +75,7 @@ pub fn project_allowed(name: &str) -> bool {
             | "project_create"
             | "project_update"
             | "project_configure"
+            | "run_rebind_model"
             | "project_repo_add"
             | "project_runtime_grant"
             | "project_runtime_revoke"
@@ -105,6 +106,23 @@ pub fn dispatch_scoped(
 ) -> Result<Value> {
     if !args.is_object() {
         bail!("arguments must be an object");
+    }
+    if name == "run_rebind_model"
+        && args.as_object().is_some_and(|object| {
+            object.keys().any(|key| {
+                ![
+                    "task",
+                    "project",
+                    "provider",
+                    "expected_settings_hash",
+                    "expected_project_config_hash",
+                    "idempotency_key",
+                ]
+                .contains(&key.as_str())
+            })
+        })
+    {
+        bail!("run_rebind_model accepts only its exact operator recovery arguments");
     }
     if name == "run_changes"
         && args.as_object().is_some_and(|object| {
@@ -508,6 +526,7 @@ fn dispatch_authorized(
             &strings(&args, "validation")?,
             string(&args, "idempotency_key")?,
         ),
+        "run_rebind_model" => crate::run::rebind_model(db, oid, string(&args, "provider")?, string(&args, "expected_settings_hash")?, string(&args, "expected_project_config_hash")?, string(&args, "idempotency_key")?),
         "run_unpin_account" => crate::run::unpin_account(
             db, oid, string(&args, "account")?, string(&args, "idempotency_key")?,
         ),

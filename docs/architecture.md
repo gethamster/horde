@@ -540,6 +540,19 @@ the Run branch and step identities, and records a durable idempotency receipt
 and audit event. Active or uncertain attempts and reservations block the
 change; the next dispatch chooses from the project's eligible account pool.
 
+`run_rebind_model` is an administrator-only correction for a failed or blocked,
+quiescent local Run before any successful step, integration, preview, checkpoint,
+or delivery authorization. It derives one named provider's corrected model from
+the owning operator project configuration, compares exact saved-settings and
+configuration hashes, and preserves every other setting and account pin. The
+retained account must still be authenticated and granted. Immutable execution
+selection, live or uncertain attempts, workers, reservations, claims, questions,
+and external operations prevent recovery. The original settings, model change,
+hashes and operation identity commit with the new settings and audit event;
+replaying that operation returns its original receipt. It never resumes work.
+An operator must qualify the configured model against the authenticated provider
+catalog before correction; this operation performs no provider request.
+
 New projects place workspaces, app resources, skills, and harness profiles under
 project-specific paths. The default project retains its legacy paths. Native
 execution provides logical separation within one OS user's authority; arbitrary

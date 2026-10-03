@@ -413,6 +413,13 @@ pub fn admin_schema(name: &str) -> Value {
             ("expected_head", "string"),
             ("idempotency_key", "string"),
         ],
+        "run_rebind_model" => &[
+            ("task", "string"),
+            ("provider", "string"),
+            ("expected_settings_hash", "string"),
+            ("expected_project_config_hash", "string"),
+            ("idempotency_key", "string"),
+        ],
         "run_unpin_account" => &[
             ("task", "string"),
             ("account", "string"),
@@ -622,6 +629,13 @@ pub fn admin_schema(name: &str) -> Value {
         ],
         "run_preview_retry" => &["task", "expected_head", "idempotency_key"],
         "run_changes" => &["task", "expected_base", "expected_head"],
+        "run_rebind_model" => &[
+            "task",
+            "provider",
+            "expected_settings_hash",
+            "expected_project_config_hash",
+            "idempotency_key",
+        ],
         "run_unpin_account" => &["task", "account", "idempotency_key"],
         "remote_result" => &["task"],
         "delegate_task" => &["id", "objective"],
