@@ -139,6 +139,18 @@ enum Commands {
     Resume {
         task: String,
     },
+    /// Correct only a stopped Run provider model from its owning project configuration; does not resume.
+    RebindModel {
+        task: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        expected_settings_hash: String,
+        #[arg(long)]
+        expected_project_config_hash: String,
+        #[arg(long)]
+        idempotency_key: String,
+    },
     /// Answer a task's pending question.
     Answer {
         task: String,
@@ -1120,6 +1132,17 @@ async fn main() -> Result<()> {
         }
         Commands::Summary { task } => request(&root, "summary", json!({"task":task}))?,
         Commands::Cancel { task } => request(&root, "cancel", json!({"task":task}))?,
+        Commands::RebindModel {
+            task,
+            provider,
+            expected_settings_hash,
+            expected_project_config_hash,
+            idempotency_key,
+        } => request(
+            &root,
+            "run_rebind_model",
+            json!({"task":task,"provider":provider,"expected_settings_hash":expected_settings_hash,"expected_project_config_hash":expected_project_config_hash,"idempotency_key":idempotency_key}),
+        )?,
         Commands::Resume { task } => request(&root, "resume", json!({"task":task}))?,
         Commands::Answer {
             task,

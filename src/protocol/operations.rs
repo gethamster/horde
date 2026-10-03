@@ -278,6 +278,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Validate and commit stranded agent work for a failed local step, then resume its Run",
     ),
     (
+        "run_rebind_model",
+        "Operator: correct a stopped Run provider model from its project configuration without resuming",
+    ),
+    (
         "run_unpin_account",
         "Release a stopped Run's account pin to use its project's granted account pool",
     ),

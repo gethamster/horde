@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 mod recover;
 pub use recover::recover_step;
+mod rebind_model;
+pub use rebind_model::rebind_model;
 mod unpin;
 pub use unpin::unpin_account;
 mod changes;

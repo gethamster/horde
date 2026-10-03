@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.31 - 2026-10-03
+
+- Let an administrator correct a stopped Run’s unsupported model from the current
+  project configuration before implementation begins. Preserve its identity,
+  account permissions and failed attempts, record the original settings and
+  correction atomically, and require a separate explicit resume. Refuse active or
+  uncertain work, accepted results and immutable execution selections.
+
 ## 0.6.30 - 2026-10-02
 
 - Preserve acknowledged operator feedback in a recovered attempt for its original

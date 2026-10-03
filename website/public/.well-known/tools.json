@@ -1,5 +1,5 @@
 {
-  "count": 119,
+  "count": 120,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -2674,6 +2674,43 @@
           "expected_worker_head",
           "expected_run_head",
           "validation",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Operator: correct a stopped Run provider model from its project configuration without resuming",
+      "name": "run_rebind_model",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_project_config_hash": {
+            "type": "string"
+          },
+          "expected_settings_hash": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "provider",
+          "expected_settings_hash",
+          "expected_project_config_hash",
           "idempotency_key"
         ],
         "type": "object"
