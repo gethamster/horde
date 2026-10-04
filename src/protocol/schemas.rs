@@ -437,6 +437,8 @@ pub fn admin_schema(name: &str) -> Value {
             ("idempotency_key", "string"),
             ("expected_main_head", "string"),
             ("artifact_digest", "string"),
+            ("artifact", "object"),
+            ("artifact_protocol_version", "integer"),
             ("build_id", "string"),
         ],
         "run_events" | "run_diagnostics" => &[

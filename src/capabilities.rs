@@ -379,6 +379,7 @@ fn local_from(
             version: 1,
             features: vec![
                 "heartbeat_ack".into(),
+                "native_artifact_checkpoint_v1".into(),
                 "capability_inventory".into(),
                 "execution_selection".into(),
                 "projects".into(),

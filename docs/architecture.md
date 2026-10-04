@@ -619,7 +619,8 @@ feedback context remains compatible. Invalid or oversized context holds review
 with an actionable reconciliation error; it is never silently truncated.
 
 The publisher receives JSON stdin in the Run workspace with a cleared environment,
-only nonsecret execution paths, the fixed sandbox Docker host, and the scoped
+only nonsecret execution paths, an operator-configured Docker host (the sandbox
+host by default), and the scoped
 admission credential path. Controller signing keys never cross that boundary.
 Before each new build/push the controller obtains a reservation; lease renewals
 continue during publication. Reservation request identities commit before HTTP
@@ -717,3 +718,32 @@ It performs no model invocation, Git fetch, reservation, retry, claim or release
 mutation. Worker access remains restricted to the worker's own Run and project.
 This lane does not collect arbitrary component logs, probe service health, detect
 incidents itself, or grant automatic release permission.
+
+
+### Native archive previews
+
+An operator can configure `native_recipe` instead of OCI image inputs. The recipe
+pins build argv, the relative tar archive path, the platform (`linux` or `darwin`,
+`arm64` or `x86_64`), and executable argv relative to the extracted archive.
+`native_artifact_store` names the installation-owned shared archive directory;
+the publisher receives that path through `SYSTEM_NATIVE_ARTIFACT_STORE`, never
+through a worker request. The controller independently verifies each receipt's
+regular `<sha256>.tar` bytes, length and digest before checkpointing. Native
+publication retains the existing reservation, exact review, restart and branch
+publication flow. A native publisher receives no Docker host or release API token.
+
+Native receipts use `schema_version:2`, `artifact_protocol_version:1`, and an
+`artifact` with `kind:native-archive`, digest, bytes, platform, entrypoint, build_id
+and source commit/tree/recipe_digest. The recipe digest hashes compact sorted JSON
+keys. Signed native checkpoints retain the authoritative Run identity, include the
+entire artifact and version, and use `horde-native-checkpoint-v1\0`; their
+attestation declares domain `horde-native-checkpoint-v1`. Legacy OCI checkpoints
+retain their original payload and `horde-run-checkpoint-v1\0` domain. The binary's
+`native-artifact-capabilities` output and runtime capabilities advertise native protocol
+support so consumers can negotiate it explicitly.
+
+For a host Docker composition, preview policies can explicitly set `docker_host`
+to an absolute `unix://` socket and `registry_publish_endpoint` to a literal
+loopback address and nonzero port. These are operator policy, separate from source
+recipe identity, and do not change the canonical registry image reference or its
+verified digest. Arbitrary remote Docker endpoints are rejected.
