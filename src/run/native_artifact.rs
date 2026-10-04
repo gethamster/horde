@@ -68,7 +68,7 @@ impl NativeArtifact {
             "invalid native archive digest/kind"
         );
         ensure!(
-            self.bytes > 0 && self.bytes <= 4 * 1024 * 1024 * 1024,
+            self.bytes > 0 && self.bytes <= 256 * 1024 * 1024,
             "native archive exceeds size bound"
         );
         self.platform.validate()?;

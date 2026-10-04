@@ -2752,8 +2752,14 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "artifact": {
+            "type": "object"
+          },
           "artifact_digest": {
             "type": "string"
+          },
+          "artifact_protocol_version": {
+            "type": "integer"
           },
           "build_id": {
             "type": "string"
