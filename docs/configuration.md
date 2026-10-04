@@ -778,6 +778,17 @@ execution layout, and binary image. Optional layout variables are
 `HORDE_EXECUTION_WORKSPACE_ROOT` (`/workspace`), `HORDE_EXECUTION_RUSTUP_ROOT`
 (`/usr/local/rustup`), and `HORDE_EXECUTION_TARGET_ROOT` (`/cache/target`).
 
+Native installations also set `HORDE_EXECUTION_GIT_PROXY_ORIGIN` to the private
+bridge's literal loopback HTTP origin with an explicit nonzero port, for example
+`http://127.0.0.1:8090`. The Docker default remains `http://deliver-bridge:8090`.
+Setup persists this operator setting with the execution layout. The generated
+Git configuration invokes Horde's credential helper only for that origin and
+the exact project's `/git/{slug}` path; helper environment changes cannot
+redirect a stored credential. URLs containing credentials, paths, queries,
+fragments, or non-loopback native hosts are rejected before profile writes.
+Changing the configured origin requires a new `execution-profile` setup
+operation; restarting services does not replace the persisted origin.
+
 Set `HORDE_EXECUTION_HOME` explicitly on the execution daemon to initialize its
 link to the shared managed Git configuration before the first setup request. A
 later setup request then becomes visible to an already-running daemon. Setup
