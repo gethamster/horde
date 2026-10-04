@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.32 - 2026-10-04
+
+- Support verified native archive previews for System, with a distinct signed
+  checkpoint domain and explicit consumer capability negotiation. Preserve OCI
+  checkpoint signatures and the existing review, admission, and recovery flow.
+- Let operator policy select the host Docker socket and loopback registry
+  publication endpoint while retaining canonical verified image digests.
+
 ## 0.6.31 - 2026-10-03
 
 - Let an administrator correct a stopped Run’s unsupported model from the current
