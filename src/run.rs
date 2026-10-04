@@ -19,6 +19,8 @@ pub use unpin::unpin_account;
 mod changes;
 pub use changes::run_changes;
 
+pub mod native_artifact;
+const NATIVE_CHECKPOINT_DOMAIN: &[u8] = b"horde-native-checkpoint-v1\0";
 const RUN_CHECKPOINT_DOMAIN: &[u8] = b"horde-run-checkpoint-v1\0";
 
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -268,6 +270,7 @@ pub struct CheckpointOptions<'a> {
     pub expected_main_head: Option<&'a str>,
     pub artifact_digest: Option<&'a str>,
     pub build_id: Option<&'a str>,
+    pub artifact: Option<&'a Value>,
 }
 
 fn checkpoint_identity(
@@ -292,7 +295,26 @@ fn checkpoint_identity(
         options.artifact_digest.is_some() == options.build_id.is_some(),
         "artifact_digest and build_id must be supplied together"
     );
-    if let (Some(digest), Some(build)) = (options.artifact_digest, options.build_id) {
+    if let Some(value) = options.artifact {
+        let artifact = native_artifact::NativeArtifact::parse(value)?;
+        ensure!(
+            options.expected_main_head.is_some(),
+            "native checkpoint requires expected_main_head"
+        );
+        ensure!(
+            options.artifact_digest == Some(artifact.digest.as_str())
+                && options.build_id == Some(artifact.build_id.as_str()),
+            "native artifact digest/build ID mismatch"
+        );
+        ensure!(
+            artifact.source.commit == head(path)? && identity["tree_sha"] == artifact.source.tree,
+            "native artifact source differs from exact Run checkpoint"
+        );
+        identity["artifact_protocol_version"] = json!(1);
+        identity["artifact"] = serde_json::to_value(artifact)?;
+        identity["artifact_digest"] = json!(options.artifact_digest);
+        identity["build_id"] = json!(options.build_id);
+    } else if let (Some(digest), Some(build)) = (options.artifact_digest, options.build_id) {
         ensure!(
             digest
                 .rsplit_once("@sha256:")
@@ -375,11 +397,19 @@ fn checkpoint_attestation(
         payload[key] = value.clone();
     }
     let bytes = serde_json::to_vec(&payload)?;
-    let mut signed = RUN_CHECKPOINT_DOMAIN.to_vec();
+    let native = !identity["artifact"].is_null();
+    let mut signed = if native {
+        NATIVE_CHECKPOINT_DOMAIN
+    } else {
+        RUN_CHECKPOINT_DOMAIN
+    }
+    .to_vec();
     signed.extend_from_slice(&bytes);
-    Ok(
-        json!({"algorithm":"hmac-sha256","payload_b64":STANDARD.encode(&bytes),"signature_hex":hmac_sha256(&key, &signed)}),
-    )
+    let mut attestation = json!({"algorithm":"hmac-sha256","payload_b64":STANDARD.encode(&bytes),"signature_hex":hmac_sha256(&key, &signed)});
+    if native {
+        attestation["domain"] = json!("horde-native-checkpoint-v1");
+    }
+    Ok(attestation)
 }
 
 fn require_signed_identity(context: &Value) -> Result<()> {
@@ -731,7 +761,9 @@ pub fn checkpoint_run(
                         "tree_sha",
                         "expected_main_head",
                         "artifact_digest",
-                        "build_id"
+                        "build_id",
+                        "artifact",
+                        "artifact_protocol_version"
                     ]
                     .iter()
                     .all(|key| recorded[*key] == identity[*key]),
@@ -865,7 +897,9 @@ fn publish_locked(db: &Store, oid: &str, expected: &str) -> Result<Value> {
 
 #[cfg(test)]
 mod run_attestation_tests {
-    use super::{RUN_CHECKPOINT_DOMAIN, hmac_sha256, require_signed_identity};
+    use super::{
+        NATIVE_CHECKPOINT_DOMAIN, RUN_CHECKPOINT_DOMAIN, hmac_sha256, require_signed_identity,
+    };
     use serde_json::json;
 
     #[test]
@@ -888,6 +922,12 @@ mod run_attestation_tests {
     fn checkpoint_domain_signature_matches_independent_vector() {
         let mut message = RUN_CHECKPOINT_DOMAIN.to_vec();
         message.extend_from_slice(br#"{"run_id":"run-1"}"#);
+        let mut native = NATIVE_CHECKPOINT_DOMAIN.to_vec();
+        native.extend_from_slice(br#"{"run_id":"run-1"}"#);
+        assert_ne!(
+            hmac_sha256(&[0x42u8; 32], &message),
+            hmac_sha256(&[0x42u8; 32], &native)
+        );
         assert_eq!(
             hmac_sha256(&[0x42u8; 32], &message),
             "e15cecc20555668b8f23e261159e379e8a9c34b144e425826e528a1a77eda5c5"

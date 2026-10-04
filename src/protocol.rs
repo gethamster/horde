@@ -531,14 +531,19 @@ fn dispatch_authorized(
             db, oid, string(&args, "account")?, string(&args, "idempotency_key")?,
         ),
         "run_preview_retry" => crate::preview::retry(db,oid,string(&args,"expected_head")?,string(&args,"idempotency_key")?),
-        "run_checkpoint" => crate::run::checkpoint_run(
+        "run_checkpoint" => {
+            if args.get("artifact").is_some() {
+                anyhow::ensure!(args["artifact_protocol_version"] == 1, "native artifact checkpoint requires negotiated protocol version 1");
+            }
+            crate::run::checkpoint_run(
             db,
             oid,
             string(&args, "expected_head")?,
             &strings(&args, "validation")?,
             args["idempotency_key"].as_str(),
-            crate::run::CheckpointOptions { expected_main_head: args["expected_main_head"].as_str(), artifact_digest: args["artifact_digest"].as_str(), build_id: args["build_id"].as_str() },
-        ),
+            crate::run::CheckpointOptions { expected_main_head: args["expected_main_head"].as_str(), artifact_digest: args["artifact_digest"].as_str(), build_id: args["build_id"].as_str(), artifact: args.get("artifact") },
+        )
+        },
         "run_publish" => crate::run::publish_run(db, oid, string(&args, "expected_head")?),
         "run_events" => {
             let after = args

@@ -20,7 +20,22 @@ fn compiled_release_compatibility_never_opens_or_creates_runtime_state() {
             "schema_min": 2, "schema_max": horde::store::SCHEMA_VERSION})
         );
     };
+    let read_native = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_horde"))
+            .arg("--data-dir")
+            .arg(&root)
+            .arg("native-artifact-capabilities")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            value,
+            json!({"native_artifact_protocol_version":1,"native_checkpoint_domain":"horde-native-checkpoint-v1"})
+        );
+    };
     read();
+    read_native();
     assert!(!root.exists());
     std::fs::create_dir(&root).unwrap();
     let path = root.join("state.sqlite3");
@@ -30,6 +45,7 @@ fn compiled_release_compatibility_never_opens_or_creates_runtime_state() {
     db.close().unwrap();
     let sentinel = std::fs::read(&path).unwrap();
     read();
+    read_native();
     assert_eq!(std::fs::read(path).unwrap(), sentinel);
     assert_eq!(std::fs::read_dir(root).unwrap().count(), 1);
 }

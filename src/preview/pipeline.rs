@@ -257,6 +257,9 @@ pub(super) async fn advance(db: &Store, id: &str) -> Result<()> {
     let head = j["head"].as_str().context("head")?;
     let tree = j["tree"].as_str().context("tree")?;
     let mut request = json!({"scope":scope,"project_id":p.project_id,"project_slug":p.project_slug,"component":p.component,"run_id":task,"built_commit":head,"tree_sha":tree,"builder_image":p.builder_image,"runtime_image":p.runtime_image,"dockerfile":p.dockerfile,"registry_admission":null,"mode":"probe"});
+    if let Some(recipe) = &p.native_recipe {
+        request = json!({"schema_version":2,"artifact_protocol_version":1,"scope":scope,"project_id":p.project_id,"project_slug":p.project_slug,"component":p.component,"run_id":task,"build_id":id,"built_commit":head,"tree_sha":tree,"native_recipe":recipe,"recipe_hash":p.recipe_hash(),"registry_admission":null,"mode":"probe"});
+    }
     let workspace = crate::git::task_workspace(db, task)?;
     phase(db, id, "validating", None)?;
     let validated = crate::executor::run_command_env(
@@ -299,7 +302,7 @@ pub(super) async fn advance(db: &Store, id: &str) -> Result<()> {
     if let Some(prior) = j["receipt"].as_str() {
         let prior: Value = serde_json::from_str(prior)?;
         ensure!(
-            prior["image"] == receipt["image"],
+            prior["image"] == receipt["image"] && prior["artifact"] == receipt["artifact"],
             "preview artifact changed after recorded publication; reconcile pinned digest"
         );
     }
@@ -313,7 +316,19 @@ pub(super) async fn advance(db: &Store, id: &str) -> Result<()> {
     let checkpoint_task = task.to_owned();
     let checkpoint_head = head.to_owned();
     let checkpoint_main = j["main_head"].as_str().context("main")?.to_owned();
-    let image = receipt["image"].as_str().context("image")?.to_owned();
+    let native_artifact = receipt.get("artifact").cloned();
+    let image = if let Some(artifact) = &native_artifact {
+        artifact["digest"].as_str().context("native digest")?
+    } else {
+        receipt["image"].as_str().context("image")?
+    }
+    .to_owned();
+    if let Some(artifact) = &native_artifact {
+        ensure!(
+            artifact["build_id"] == id,
+            "native build ID differs from publication job"
+        );
+    }
     let checkpoint_id = id.to_owned();
     let validation = p.validation.clone();
     let checkpoint = crate::budget::blocking_timeout(
@@ -330,6 +345,7 @@ pub(super) async fn advance(db: &Store, id: &str) -> Result<()> {
                     expected_main_head: Some(&checkpoint_main),
                     artifact_digest: Some(&image),
                     build_id: Some(&checkpoint_id),
+                    artifact: native_artifact.as_ref(),
                 },
             )
         },

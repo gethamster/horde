@@ -24,8 +24,11 @@ pub(crate) struct Policy {
     pub project_slug: String,
     pub enabled: bool,
     pub publisher: PathBuf,
+    #[serde(default)]
     pub builder_image: String,
+    #[serde(default)]
     pub runtime_image: String,
+    #[serde(default)]
     pub dockerfile: String,
     pub validation: Vec<String>,
     pub review_step: String,
@@ -35,6 +38,51 @@ pub(crate) struct Policy {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub component: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_publish_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_recipe: Option<NativeRecipe>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_artifact_store: Option<PathBuf>,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NativeRecipe {
+    pub build: Vec<String>,
+    pub archive: String,
+    pub platform: crate::run::native_artifact::Platform,
+    pub entrypoint: Vec<String>,
+}
+impl NativeRecipe {
+    fn validate(&self) -> Result<()> {
+        self.platform.validate()?;
+        ensure!(
+            !self.build.is_empty()
+                && self.build.len() <= 32
+                && self
+                    .build
+                    .iter()
+                    .all(|arg| !arg.is_empty() && arg.len() <= 4096 && !arg.contains('\0')),
+            "invalid native build argv"
+        );
+        ensure!(
+            crate::run::native_artifact::executable(&self.archive),
+            "invalid native archive path"
+        );
+        ensure!(
+            !self.entrypoint.is_empty()
+                && self.entrypoint.len() <= 32
+                && crate::run::native_artifact::executable(&self.entrypoint[0])
+                && self
+                    .entrypoint
+                    .iter()
+                    .all(|arg| arg.len() <= 4096 && !arg.contains('\0')),
+            "invalid native entrypoint"
+        );
+        Ok(())
+    }
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -85,14 +133,36 @@ fn configure(v: &Value) -> Result<Config> {
             absolute(&p.publisher) && absolute(&p.admission_token_file),
             "preview paths must be absolute without traversal"
         );
-        ensure!(
-            image(&p.builder_image) && image(&p.runtime_image),
-            "preview images must be pinned by digest"
-        );
-        ensure!(
-            crate::store::scope(&p.dockerfile)? == p.dockerfile && p.dockerfile != ".",
-            "invalid preview Dockerfile"
-        );
+        if let Some(recipe) = &p.native_recipe {
+            recipe.validate()?;
+            ensure!(
+                p.native_artifact_store
+                    .as_ref()
+                    .is_some_and(|path| absolute(path)),
+                "native publisher requires an absolute operator-owned artifact store"
+            );
+            ensure!(
+                p.builder_image.is_empty()
+                    && p.runtime_image.is_empty()
+                    && p.dockerfile.is_empty()
+                    && p.docker_host.is_none()
+                    && p.registry_publish_endpoint.is_none(),
+                "native recipe cannot contain Docker configuration"
+            );
+        } else {
+            ensure!(
+                p.native_artifact_store.is_none(),
+                "OCI publisher cannot configure native artifact store"
+            );
+            ensure!(
+                image(&p.builder_image) && image(&p.runtime_image),
+                "preview images must be pinned by digest"
+            );
+            ensure!(
+                crate::store::scope(&p.dockerfile)? == p.dockerfile && p.dockerfile != ".",
+                "invalid preview Dockerfile"
+            );
+        }
         ensure!(
             !p.validation.is_empty()
                 && p.validation.len() <= 32
@@ -109,11 +179,17 @@ fn configure(v: &Value) -> Result<Config> {
                     .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)),
             "invalid review step"
         );
+        validate_transport(p)?;
         let url = reqwest::Url::parse(&p.admission_url)?;
         ensure!(
             url.scheme() == "http"
-                && url.host_str() == Some("registry-admission")
-                && url.port() == Some(8092)
+                && (url.host_str() == Some("registry-admission")
+                    || (p.native_recipe.is_some()
+                        && url.host_str().is_some_and(|host| host
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_loopback()))))
+                && (url.port() == Some(8092)
+                    || (p.native_recipe.is_some() && url.port().is_some_and(|port| port != 0)))
                 && url.path() == "/"
                 && url.query().is_none()
                 && url.fragment().is_none()
@@ -128,8 +204,44 @@ fn configure(v: &Value) -> Result<Config> {
     }
     Ok(c)
 }
+fn validate_transport(p: &Policy) -> Result<()> {
+    if let Some(host) = &p.docker_host {
+        ensure!(
+            host == "tcp://sandbox-docker:2375"
+                || host
+                    .strip_prefix("unix://")
+                    .is_some_and(|path| absolute(Path::new(path))),
+            "Docker host must be the installation sandbox or an explicit absolute Unix socket"
+        );
+    }
+    if let Some(endpoint) = &p.registry_publish_endpoint {
+        let address: std::net::SocketAddr = endpoint
+            .parse()
+            .context("registry publish endpoint must be a literal loopback address and port")?;
+        ensure!(
+            address.ip().is_loopback() && address.port() != 0,
+            "registry publish endpoint must be loopback with a nonzero port"
+        );
+        ensure!(
+            p.docker_host
+                .as_ref()
+                .is_some_and(|host| host.starts_with("unix://")),
+            "host registry publication requires an explicit Unix Docker host"
+        );
+    }
+    Ok(())
+}
+
 impl Policy {
     fn recipe_hash(&self) -> String {
+        if let Some(recipe) = &self.native_recipe {
+            return crate::store::hash(
+                &serde_json::to_vec(
+                    &serde_json::to_value(recipe).expect("serializable native recipe"),
+                )
+                .expect("serializable native recipe"),
+            );
+        }
         let recipe = format!(
             "{{\"builder_image\": {}, \"component\": {}, \"dockerfile\": {}, \"runtime_image\": {}}}",
             json!(self.builder_image),

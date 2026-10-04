@@ -58,6 +58,32 @@ fn publisher_environment_omits_controller_secrets() {
     assert!(!env.contains_key("HORDE_SETUP_ADMIN_TOKEN_FILE"));
     assert_eq!(env["DOCKER_HOST"], "tcp://sandbox-docker:2375");
 }
+#[test]
+fn host_publisher_transport_is_explicit_and_loopback_only() {
+    let mut c = config();
+    c["projects"][0]["docker_host"] = json!("unix:///var/run/docker.sock");
+    c["projects"][0]["registry_publish_endpoint"] = json!("127.0.0.1:15000");
+    let p = configure(&c).unwrap().projects.remove(0);
+    let command = publisher_command(&p);
+    let env = command
+        .get_envs()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        env[std::ffi::OsStr::new("DOCKER_HOST")].unwrap(),
+        "unix:///var/run/docker.sock"
+    );
+    assert_eq!(
+        env[std::ffi::OsStr::new("SYSTEM_REGISTRY_PUBLISH_ENDPOINT")].unwrap(),
+        "127.0.0.1:15000"
+    );
+    for endpoint in ["registry:5000", "192.168.1.1:5000", "127.0.0.1:0"] {
+        c["projects"][0]["registry_publish_endpoint"] = json!(endpoint);
+        assert!(configure(&c).is_err());
+    }
+    c["projects"][0]["registry_publish_endpoint"] = json!("127.0.0.1:15000");
+    c["projects"][0]["docker_host"] = json!("tcp://attacker:2375");
+    assert!(configure(&c).is_err());
+}
 fn fixture() -> (tempfile::TempDir, Store, String, Value, Value) {
     let d = tempfile::tempdir().unwrap();
     let repo = d.path().join("repo");
@@ -209,31 +235,52 @@ fn command_review_or_unaccepted_agent_cannot_publish() {
 #[test]
 fn lost_publication_checkpoint_and_push_responses_reconcile_one_job() {
     if std::env::var_os("HORDE_PREVIEW_FIXTURE_CHILD").is_none() {
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
+        for mode in ["oci", "native"] {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "preview::tests::lost_publication_checkpoint_and_push_responses_reconcile_one_job",
                 "--nocapture",
             ])
-            .env("HORDE_PREVIEW_FIXTURE_CHILD", "1")
+            .env("HORDE_PREVIEW_FIXTURE_CHILD", mode)
             .env(
                 "HORDE_RUN_ATTESTATION_KEY",
                 base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [42; 32]),
             )
             .output()
             .unwrap();
-        assert!(
-            out.status.success(),
-            "stdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
+            assert!(
+                out.status.success(),
+                "stdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
         return;
     }
     let (d, db, task, _row, mut c) = fixture();
     let (head, tree) = pipeline::identity(&db, &task).unwrap();
+    let native = std::env::var("HORDE_PREVIEW_FIXTURE_CHILD").unwrap() == "native";
+    if native {
+        let project = &mut c["projects"][0];
+        for key in ["builder_image", "runtime_image", "dockerfile"] {
+            project.as_object_mut().unwrap().remove(key);
+        }
+        project["native_artifact_store"] = json!(d.path());
+        project["native_recipe"] = json!({"build":["cargo","build","--locked"],"archive":"target/app.tar","platform":{"os":"darwin","architecture":"arm64"},"entrypoint":["bin/app"]});
+    }
     let p = configure(&c).unwrap().projects.remove(0);
-    let receipt = json!({"schema_version":1,"scope":"local","project_id":p.project_id,"project_slug":"hello","run_id":task,"built_commit":head,"tree_sha":tree,"recipe_hash":p.recipe_hash(),"component":p.component,"artifact_digest":format!("sha256:{}","c".repeat(64)),"image":format!("registry:5000/local/hello@sha256:{}","c".repeat(64))});
+    let mut receipt = json!({"schema_version":1,"scope":"local","project_id":p.project_id,"project_slug":"hello","run_id":task,"built_commit":head,"tree_sha":tree,"recipe_hash":p.recipe_hash(),"component":p.component,"artifact_digest":format!("sha256:{}","c".repeat(64)),"image":format!("registry:5000/local/hello@sha256:{}","c".repeat(64))});
+    if native {
+        let bytes = b"archive fixture for existing durable pipeline";
+        let digest = crate::store::hash(bytes);
+        std::fs::write(d.path().join(format!("{digest}.tar")), bytes).unwrap();
+        receipt["schema_version"] = json!(2);
+        receipt["image"] = Value::Null;
+        receipt["artifact_protocol_version"] = json!(1);
+        receipt["artifact_digest"] = json!(format!("sha256:{digest}"));
+        receipt["artifact"] = json!({"kind":"native-archive","digest":format!("sha256:{digest}"),"bytes":bytes.len(),"platform":{"os":"darwin","architecture":"arm64"},"entrypoint":["bin/app"],"build_id":"pending","source":{"commit":head,"tree":tree,"recipe_digest":p.recipe_hash()}});
+    }
     let helper = d.path().join("publisher");
     std::fs::write(&helper,format!("#!/bin/sh\n[ \"$(pwd)\" = \"{}\" ] || exit 1\nrequest=$(cat)\ncase \"$request\" in *'\"mode\":\"probe\"'*) printf '%s' '{{\"reused\":true}}';; *) printf '%s' '{}' ;; esac\n",crate::git::task_workspace(&db,&task).unwrap().canonicalize().unwrap().display(),receipt)).unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -251,6 +298,10 @@ fn lost_publication_checkpoint_and_push_responses_reconcile_one_job() {
     bind_attempt(&db, review["id"].as_str().unwrap(), "review-attempt").unwrap();
     fixture_execution(&db, &task, &review);
     let job = pipeline::enqueue(&db, &task).unwrap().unwrap();
+    if native {
+        receipt["artifact"]["build_id"] = json!(job);
+        std::fs::write(&helper, format!("#!/bin/sh\nrequest=$(cat)\ncase \"$request\" in *'\"mode\":\"probe\"'*) printf '%s' '{{\"reused\":true}}';; *) printf '%s' '{}' ;; esac\n", receipt)).unwrap();
+    }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -302,7 +353,24 @@ fn lost_publication_checkpoint_and_push_responses_reconcile_one_job() {
     let s = status(&db, &task).unwrap();
 
     assert_eq!(s["phase"], "succeeded");
-    assert_eq!(s["checkpoint"]["artifact_digest"], receipt["image"]);
+    assert_eq!(
+        &s["checkpoint"]["artifact_digest"],
+        if native {
+            &receipt["artifact_digest"]
+        } else {
+            &receipt["image"]
+        }
+    );
+    if native {
+        assert_eq!(s["checkpoint"]["artifact"], receipt["artifact"]);
+        assert_eq!(
+            s["checkpoint"]["attestation"]["domain"],
+            "horde-native-checkpoint-v1"
+        );
+        assert_eq!(s["checkpoint"]["artifact_protocol_version"], 1);
+    } else {
+        assert!(s["checkpoint"]["attestation"]["domain"].is_null());
+    }
     assert_eq!(s["checkpoint"]["build_id"], job);
     assert_eq!(
         db.rows(
@@ -970,3 +1038,35 @@ fn retry_reviewer_fast_forwards_only_clean_registered_workspace() {
 mod feedback;
 #[path = "tests/hardening.rs"]
 mod hardening;
+
+#[test]
+fn native_receipt_binds_verified_archive_and_has_no_docker_environment() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut c = config();
+    let project = &mut c["projects"][0];
+    for key in ["builder_image", "runtime_image", "dockerfile"] {
+        project.as_object_mut().unwrap().remove(key);
+    }
+    project["native_artifact_store"] = json!(directory.path());
+    project["native_recipe"] = json!({"build":["cargo","build","--locked"],"archive":"target/app.tar","platform":{"os":"darwin","architecture":"arm64"},"entrypoint":["bin/app"]});
+    project["admission_url"] = json!("http://127.0.0.1:18092");
+    let p = configure(&c).unwrap().projects.remove(0);
+    let bytes = b"verified archive fixture";
+    let digest = crate::store::hash(bytes);
+    let path = directory.path().join(format!("{digest}.tar"));
+    std::fs::write(&path, bytes).unwrap();
+    let head = "a".repeat(40);
+    let tree = "b".repeat(40);
+    let mut receipt = json!({"schema_version":2,"artifact_protocol_version":1,"scope":"local","project_id":p.project_id,"project_slug":"hello","run_id":"run","built_commit":head,"tree_sha":tree,"recipe_hash":p.recipe_hash(),"component":null,"artifact_digest":format!("sha256:{digest}"),"artifact":{"kind":"native-archive","digest":format!("sha256:{digest}"),"bytes":bytes.len(),"platform":{"os":"darwin","architecture":"arm64"},"entrypoint":["bin/app"],"build_id":"build","source":{"commit":head,"tree":tree,"recipe_digest":p.recipe_hash()}}});
+    assert!(verify_receipt(&p, "local", "run", &head, &tree, &receipt).is_ok());
+    let command = publisher_command(&p);
+    let env = command
+        .get_envs()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert!(!env.contains_key(std::ffi::OsStr::new("DOCKER_HOST")));
+    assert!(!env.contains_key(std::ffi::OsStr::new("RELEASES_API_TOKEN")));
+    std::fs::write(&path, b"tampered archive bytes!!").unwrap();
+    assert!(verify_receipt(&p, "local", "run", &head, &tree, &receipt).is_err());
+    receipt["image"] = json!("registry:5000/local/hello@sha256:fake");
+    assert!(verify_receipt(&p, "local", "run", &head, &tree, &receipt).is_err());
+}

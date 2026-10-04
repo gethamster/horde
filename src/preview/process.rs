@@ -18,8 +18,21 @@ pub(super) fn publisher_command(p: &Policy) -> Command {
             c.env(key, v);
         }
     }
-    c.env("DOCKER_HOST", "tcp://sandbox-docker:2375")
-        .env("SYSTEM_REGISTRY_ADMISSION_REQUIRED", "1")
+    if let Some(endpoint) = &p.registry_publish_endpoint {
+        c.env("SYSTEM_REGISTRY_PUBLISH_ENDPOINT", endpoint);
+    }
+    if p.native_recipe.is_none() {
+        c.env(
+            "DOCKER_HOST",
+            p.docker_host
+                .as_deref()
+                .unwrap_or("tcp://sandbox-docker:2375"),
+        );
+    }
+    if let Some(store) = &p.native_artifact_store {
+        c.env("SYSTEM_NATIVE_ARTIFACT_STORE", store);
+    }
+    c.env("SYSTEM_REGISTRY_ADMISSION_REQUIRED", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("CI", "true");
     c
@@ -54,7 +67,7 @@ pub(super) fn verify_receipt(
     r: &Value,
 ) -> Result<()> {
     ensure!(
-        r["schema_version"] == 1
+        r["schema_version"] == if p.native_recipe.is_some() { 2 } else { 1 }
             && r["scope"] == scope
             && r["project_id"] == p.project_id
             && r["project_slug"] == p.project_slug
@@ -64,6 +77,72 @@ pub(super) fn verify_receipt(
             && r["component"] == json!(p.component)
             && r["recipe_hash"] == p.recipe_hash(),
         "preview receipt source/tree/recipe mismatch"
+    );
+    if let Some(recipe) = &p.native_recipe {
+        let artifact = crate::run::native_artifact::NativeArtifact::parse(&r["artifact"])?;
+        ensure!(
+            artifact.source.commit == head
+                && artifact.source.tree == tree
+                && artifact.source.recipe_digest == p.recipe_hash()
+                && artifact.digest == r["artifact_digest"]
+                && artifact.platform.os == recipe.platform.os
+                && artifact.platform.architecture == recipe.platform.architecture
+                && artifact.entrypoint == recipe.entrypoint,
+            "native receipt identity or recipe mismatch"
+        );
+        ensure!(
+            r["image"].is_null() && r["artifact_protocol_version"] == 1,
+            "native receipt cannot masquerade as OCI"
+        );
+        let store = p
+            .native_artifact_store
+            .as_ref()
+            .context("native artifact store")?;
+        let path = store.join(format!(
+            "{}.tar",
+            artifact
+                .digest
+                .strip_prefix("sha256:")
+                .context("native digest")?
+        ));
+        let metadata = std::fs::symlink_metadata(&path)?;
+        ensure!(
+            metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.len() == artifact.bytes,
+            "native archive bytes or file type mismatch"
+        );
+        let mut file = std::fs::File::open(path)?;
+        let mut hash = sha2::Sha256::new();
+        use sha2::Digest;
+        use std::io::Read;
+        let mut buffer = [0u8; 65536];
+        let mut bytes = 0u64;
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            bytes += read as u64;
+            ensure!(
+                bytes <= artifact.bytes,
+                "native archive grew during verification"
+            );
+            hash.update(&buffer[..read]);
+        }
+        ensure!(
+            bytes == artifact.bytes,
+            "native archive changed during verification"
+        );
+        ensure!(
+            format!("sha256:{}", hex::encode(hash.finalize())) == artifact.digest,
+            "native archive digest mismatch"
+        );
+        return Ok(());
+    }
+    ensure!(
+        r["artifact"].is_null() && r["artifact_protocol_version"].is_null(),
+        "OCI receipt cannot contain native artifact identity"
     );
     let artifact = r["image"].as_str().context("preview image")?;
     ensure!(
