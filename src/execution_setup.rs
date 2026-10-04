@@ -13,6 +13,31 @@ mod files;
 #[cfg(test)]
 mod tests;
 
+const LEGACY_GIT_PROXY_ORIGIN: &str = "http://deliver-bridge:8090";
+fn default_git_proxy_origin() -> String {
+    LEGACY_GIT_PROXY_ORIGIN.to_owned()
+}
+fn legacy_git_proxy_origin(origin: &str) -> bool {
+    origin == LEGACY_GIT_PROXY_ORIGIN
+}
+fn git_proxy_origin(origin: &str) -> Result<String> {
+    if origin == LEGACY_GIT_PROXY_ORIGIN {
+        return Ok("deliver-bridge:8090".to_owned());
+    }
+    let authority = origin
+        .strip_prefix("http://")
+        .context("execution Git proxy must use HTTP")?;
+    let authority = authority.strip_suffix('/').unwrap_or(authority);
+    let address: std::net::SocketAddr = authority.parse().map_err(|_| {
+        anyhow::anyhow!("execution Git proxy requires a literal loopback address and explicit port")
+    })?;
+    ensure!(
+        address.ip().is_loopback() && address.port() > 0 && address.to_string() == authority,
+        "execution Git proxy must be a canonical loopback HTTP origin with explicit nonzero port"
+    );
+    Ok(authority.to_owned())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Project {
@@ -28,6 +53,11 @@ struct Layout {
     rustup: PathBuf,
     target: PathBuf,
     executable: PathBuf,
+    #[serde(
+        default = "default_git_proxy_origin",
+        skip_serializing_if = "legacy_git_proxy_origin"
+    )]
+    git_proxy_origin: String,
 }
 impl Layout {
     fn configured() -> Result<Self> {
@@ -40,11 +70,17 @@ impl Layout {
             rustup: path("HORDE_EXECUTION_RUSTUP_ROOT", "/usr/local/rustup"),
             target: path("HORDE_EXECUTION_TARGET_ROOT", "/cache/target"),
             executable: std::env::current_exe()?,
+            git_proxy_origin: match std::env::var("HORDE_EXECUTION_GIT_PROXY_ORIGIN") {
+                Ok(origin) => origin,
+                Err(std::env::VarError::NotPresent) => default_git_proxy_origin(),
+                Err(_) => anyhow::bail!("execution Git proxy origin must be valid UTF-8"),
+            },
         };
         layout.validate()?;
         Ok(layout)
     }
     fn validate(&self) -> Result<()> {
+        git_proxy_origin(&self.git_proxy_origin)?;
         for path in [
             &self.home,
             &self.workspace,
@@ -110,6 +146,9 @@ fn load(root: &Path) -> Result<Option<Profile>> {
     );
     for project in &profile.projects {
         identity(project)?;
+    }
+    if let Some(layout) = &profile.layout {
+        layout.validate()?;
     }
     Ok(Some(profile))
 }
@@ -331,7 +370,14 @@ fn development_home(
             files::link(&home.join(".cargo").join(name), &shared)?;
         }
     }
-    files::git(root, home, projects, &layout.executable, controller)
+    files::git(
+        root,
+        home,
+        projects,
+        &layout.executable,
+        &layout.git_proxy_origin,
+        controller,
+    )
 }
 
 /// Implements Git's credential-helper protocol without an interpreter or secret argv.
@@ -360,8 +406,16 @@ pub fn credential_helper(
             return Ok(String::new());
         }
     }
+    let host = git_proxy_origin(
+        profile
+            .layout
+            .as_ref()
+            .map_or(LEGACY_GIT_PROXY_ORIGIN, |layout| {
+                layout.git_proxy_origin.as_str()
+            }),
+    )?;
     if fields.get("protocol") != Some(&"http")
-        || fields.get("host") != Some(&"deliver-bridge:8090")
+        || fields.get("host") != Some(&host.as_str())
         || fields.get("path").map(|s| s.trim_end_matches('/'))
             != Some(format!("git/{}", project.slug).as_str())
     {

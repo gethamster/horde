@@ -133,6 +133,7 @@ pub(super) fn git(
     home: &Path,
     projects: &[Project],
     executable: &Path,
+    origin: &str,
     controller: bool,
 ) -> Result<()> {
     let destination = home.join(".gitconfig");
@@ -164,7 +165,11 @@ pub(super) fn git(
     write(stage.path(), &bytes)?;
     git_config(stage.path(), &["--list"])?;
     for project in projects {
-        let prefix = format!("credential.http://deliver-bridge:8090/git/{}", project.slug);
+        let prefix = format!(
+            "credential.{}/git/{}",
+            origin.trim_end_matches('/'),
+            project.slug
+        );
         let helper = format!(
             "!{} --data-dir {} git-credential --project-id {}",
             quoted(executable.to_str().context("executable encoding")?),

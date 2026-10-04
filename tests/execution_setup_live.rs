@@ -87,6 +87,7 @@ async fn first_admin_apply_is_visible_to_running_controller_without_restart() {
         command(directory, &directory.join("sidecar-home"))
             .args(["setup-serve", "--listen", &address.to_string()])
             .env("HORDE_SETUP_ADMIN_TOKEN_FILE", &token_path)
+            .env("HORDE_EXECUTION_GIT_PROXY_ORIGIN", "http://127.0.0.1:18090")
             .spawn()
             .unwrap(),
     );
@@ -133,7 +134,7 @@ async fn first_admin_apply_is_visible_to_running_controller_without_restart() {
     git.stdin
         .take()
         .unwrap()
-        .write_all(b"protocol=http\nhost=deliver-bridge:8090\npath=git/example\n\n")
+        .write_all(b"protocol=http\nhost=127.0.0.1:18090\npath=git/example\n\n")
         .unwrap();
     let output = git.wait_with_output().unwrap();
     assert!(

@@ -15,6 +15,7 @@ fn setup() -> (tempfile::TempDir, Store, String, Layout) {
         rustup: temp.path().join("rustup"),
         target: temp.path().join("target"),
         executable: PathBuf::from("/usr/local/bin/horde"),
+        git_proxy_origin: default_git_proxy_origin(),
     };
     (temp, db, project, layout)
 }
@@ -45,6 +46,28 @@ fn configure_is_repeatable_preserves_settings_and_never_returns_tokens() {
     assert!(cargo.contains("retry = 5"));
     let persisted = std::fs::read_to_string(db.root.join("private/execution.json")).unwrap();
     assert!(!persisted.contains("test-secret"));
+    assert!(!persisted.contains("git_proxy_origin"));
+    for origin in [
+        "https://127.0.0.1:18090",
+        "http://127.0.0.1",
+        "http://127.0.0.1:0",
+        "http://localhost:18090",
+        "http://other.example:18090",
+        "http://127.0.0.1:18090/git/example",
+        "http://127.0.0.1:18090?token=secret",
+        "http://horde:secret@127.0.0.1:18090",
+        "http://127.0.0.1:18090#fragment",
+    ] {
+        let invalid = Layout {
+            git_proxy_origin: origin.to_owned(),
+            ..layout.clone()
+        };
+        assert!(configure_request(&db, request(&db, &project), invalid).is_err());
+        assert_eq!(
+            std::fs::read_to_string(db.root.join("private/execution.json")).unwrap(),
+            persisted
+        );
+    }
     use std::os::unix::fs::PermissionsExt;
     let token = db.root.join("private/git").join(&project).join("token");
     assert_eq!(
@@ -55,23 +78,41 @@ fn configure_is_repeatable_preserves_settings_and_never_returns_tokens() {
 
 #[test]
 fn helper_restricts_credentials_to_exact_protocol_host_and_project() {
-    let (_temp, db, project, layout) = setup();
-    configure_request(&db, request(&db, &project), layout).unwrap();
-    let valid = "protocol=http\nhost=deliver-bridge:8090\npath=git/example\n\n";
-    let response = credential_helper(&db.root, &project, "get", valid).unwrap();
-    assert!(response.contains("password=test-secret-value-at-least-32-bytes"));
-    for invalid in [
-        valid.replace("http", "https"),
-        valid.replace(":8090", ":8091"),
-        valid.replace("git/example", "git/other"),
-        valid.replace("git/example", "git/example/child"),
-        format!("protocol=https\n{valid}"),
-        valid.replace("git/example", "git/%65xample"),
+    for host in [
+        "deliver-bridge:8090",
+        "127.0.0.1:18090",
+        "[::1]:18090",
+        "127.0.0.1:80",
     ] {
+        let (_temp, db, project, layout) = setup();
+        let mut configured = serde_json::to_value(&layout).unwrap();
+        if host != "deliver-bridge:8090" {
+            configured["git_proxy_origin"] = json!(format!("http://{host}"));
+        }
+        let layout = serde_json::from_value(configured).unwrap();
+        configure_request(&db, request(&db, &project), layout).unwrap();
+        let saved = load(&db.root).unwrap().unwrap();
         assert_eq!(
-            credential_helper(&db.root, &project, "get", &invalid).unwrap(),
-            ""
+            saved.layout.unwrap().git_proxy_origin,
+            format!("http://{host}")
         );
+        let valid = format!("protocol=http\nhost={host}\npath=git/example\n\n");
+        let response = credential_helper(&db.root, &project, "get", &valid).unwrap();
+        assert!(response.contains("password=test-secret-value-at-least-32-bytes"));
+        for invalid in [
+            valid.replace("http", "https"),
+            valid.replace(host, "other.example:8090"),
+            valid.replace(host, "127.0.0.1:18091"),
+            valid.replace("git/example", "git/other"),
+            valid.replace("git/example", "git/example/child"),
+            format!("protocol=https\n{valid}"),
+            valid.replace("git/example", "git/%65xample"),
+        ] {
+            assert_eq!(
+                credential_helper(&db.root, &project, "get", &invalid).unwrap(),
+                ""
+            );
+        }
     }
 }
 
