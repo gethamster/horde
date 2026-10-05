@@ -73,7 +73,7 @@ fn native_cli_implements_git_protocol_without_daemon() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"protocol=http\nhost=deliver-bridge:8090\npath=git/example\n\n")
+        .write_all(b"capability[]=authtype\ncapability[]=state\nprotocol=http\nhost=deliver-bridge:8090\npath=git/example\nwwwauth[]=Basic realm=\"horde-git\"\nwwwauth[]=Bearer\n\n")
         .unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(
@@ -86,4 +86,18 @@ fn native_cli_implements_git_protocol_without_daemon() {
         "username=horde\npassword=test-secret-value-at-least-32-bytes\n\n"
     );
     assert!(!dir.path().join("state.sqlite3").exists());
+    for (key, value) in [
+        ("protocol", "http"),
+        ("host", "deliver-bridge:8090"),
+        ("path", "git/example"),
+    ] {
+        let request = format!(
+            "capability[]=authtype\ncapability[]=state\nprotocol=http\nhost=deliver-bridge:8090\npath=git/example\n{key}={value}\n\n"
+        );
+        assert!(
+            execution_setup::credential_helper(dir.path(), &project, "get", &request)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
