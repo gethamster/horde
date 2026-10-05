@@ -118,6 +118,16 @@ fn committed_recovery(
     validated: &str,
 ) -> Result<bool> {
     let current = head(workspace)?;
+    // An empty internal commit key records a preexisting agent commit. Operator
+    // idempotency keys cannot be empty, so legacy recovery trailers stay distinct.
+    if key.is_empty() {
+        ensure!(current == expected, "agent commit changed during recovery");
+        ensure!(
+            git::run(workspace, &["rev-parse", "HEAD^{tree}"])? == validated,
+            "agent tree changed during recovery"
+        );
+        return Ok(true);
+    }
     if current == expected {
         return Ok(false);
     }
@@ -140,6 +150,69 @@ fn committed_recovery(
         "worker head is not this recovery's commit"
     );
     Ok(true)
+}
+
+fn existing_agent_commit(
+    db: &Store,
+    worker: &Value,
+    workspace: &Path,
+    expected: &str,
+) -> Result<bool> {
+    let base = worker["base"].as_str().context("registered worker base")?;
+    if base == expected {
+        return Ok(false);
+    }
+    ensure!(
+        head(workspace)? == expected,
+        "worker head changed during recovery"
+    );
+    ensure!(
+        git::run(workspace, &["symbolic-ref", "--short", "HEAD"])?
+            == worker["branch"]
+                .as_str()
+                .context("registered worker branch")?,
+        "worker branch changed during recovery"
+    );
+    git::run(workspace, &["merge-base", "--is-ancestor", base, expected])?;
+    let paths = crate::budget::command_output(
+        crate::executor::clean_command("git")
+            .current_dir(workspace)
+            .args(["diff", "--name-only", "--no-renames", "-z", base, expected]),
+    )?;
+    ensure!(paths.status.success(), "cannot inspect agent commit paths");
+    let paths = String::from_utf8(paths.stdout)?;
+    ensure!(
+        !paths.is_empty(),
+        "agent commit has no content changes from its registered base"
+    );
+    for path in paths.split('\0').filter(|path| !path.is_empty()) {
+        db.check_write(worker["id"].as_str().context("worker id")?, path)?;
+    }
+    // A stale index may classify committed files as untracked. Compare physical
+    // work against the pinned commit using a private temporary index instead.
+    let directory = tempfile::tempdir()?;
+    let index = directory.path().join("index");
+    let inspect = |args: &[&str]| -> Result<std::process::Output> {
+        crate::budget::command_output(
+            crate::executor::clean_command("git")
+                .current_dir(workspace)
+                .args(args)
+                .env("GIT_INDEX_FILE", &index),
+        )
+    };
+    ensure!(
+        inspect(&["read-tree", expected])?.status.success(),
+        "cannot inspect agent commit"
+    );
+    let refreshed = inspect(&["update-index", "--refresh"])?;
+    let changed = inspect(&["diff-files", "--quiet"])?;
+    let untracked = inspect(&["ls-files", "--others", "--exclude-standard", "-z"])?;
+    ensure!(untracked.status.success(), "cannot inspect agent files");
+    ensure!(
+        head(workspace)? == expected,
+        "worker head changed during recovery"
+    );
+    Ok(refreshed.status.success() && changed.status.success() && untracked.stdout.is_empty())
 }
 
 fn exact_prior_integration(
@@ -309,7 +382,10 @@ fn recover_with_policy(
         .as_ref()
         .and_then(|row| row["validated_tree"].as_str());
     let was_committed = if let Some(validated) = receipt_tree {
-        committed_recovery(
+        let commit_key = existing.as_ref().unwrap()["commit_key"]
+            .as_str()
+            .context("commit key")?;
+        let verified = committed_recovery(
             workspace,
             existing.as_ref().unwrap()["commit_key"]
                 .as_str()
@@ -318,7 +394,8 @@ fn recover_with_policy(
                 .as_str()
                 .context("commit parent")?,
             validated,
-        )?
+        )?;
+        verified && !(commit_key.is_empty() && existing.as_ref().unwrap()["phase"] == "prepared")
     } else {
         ensure!(
             worker_head == expected_worker_head,
@@ -326,6 +403,7 @@ fn recover_with_policy(
         );
         false
     };
+    let agent_commit = existing_agent_commit(db, &worker, workspace, &worker_head)?;
     ensure!(
         existing
             .as_ref()
@@ -388,6 +466,40 @@ fn recover_with_policy(
             source_key.to_owned(),
             source_parent.to_owned(),
         )
+    } else if agent_commit && existing.as_ref().is_none_or(|row| row["commit_key"] == "") {
+        git::validate_scope(db, wid)?;
+        let pinned = git::run(workspace, &["rev-parse", "HEAD^{tree}"])?;
+        if let Some(recorded) = receipt_tree {
+            ensure!(
+                recorded == pinned,
+                "agent commit changed since the recovery request"
+            );
+        } else {
+            db.conn.execute("INSERT INTO run_step_recoveries(task,idempotency_key,request,step,attempt,worker,validated_tree,commit_key,commit_parent,phase,created) VALUES(?,?,?,?,?,?,?,'',?,'prepared',?)",
+                params![task,key,request.to_string(),sid,aid,wid,pinned,expected_worker_head,now()])?;
+        }
+        ensure!(
+            existing_agent_commit(db, &worker, workspace, expected_worker_head)?,
+            "agent work changed before index reconciliation"
+        );
+        git::run(workspace, &["add", "--all"])?;
+        ensure!(
+            tree(workspace)? == pinned,
+            "index reconciliation changed the agent tree"
+        );
+        checked_command(workspace, validation, settings.timeout_seconds)?;
+        git::validate_scope(db, wid)?;
+        ensure!(
+            existing_agent_commit(db, &worker, workspace, expected_worker_head)?
+                && git::run(workspace, &["status", "--porcelain"])?.is_empty()
+                && tree(workspace)? == pinned,
+            "validation changed the committed agent work"
+        );
+        db.conn.execute(
+            "UPDATE run_step_recoveries SET phase='validated' WHERE task=? AND idempotency_key=?",
+            params![task, key],
+        )?;
+        (pinned, String::new(), expected_worker_head.to_owned())
     } else {
         git::validate_scope(db, wid)?;
         ensure!(

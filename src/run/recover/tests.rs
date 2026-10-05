@@ -103,6 +103,56 @@ fn checks() -> Vec<String> {
 }
 
 #[test]
+fn recovers_existing_agent_commit_with_stale_index_without_replacing_it() {
+    let f = Fixture::new();
+    git::run(&f.workspace, &["add", "hello.txt"]).unwrap();
+    git::run(&f.workspace, &["commit", "-m", "Agent implementation"]).unwrap();
+    let committed = head(&f.workspace).unwrap();
+    git::run(&f.workspace, &["read-tree", &f.base]).unwrap();
+    assert!(
+        !git::run(&f.workspace, &["status", "--porcelain"])
+            .unwrap()
+            .is_empty()
+    );
+    for _ in 0..2 {
+        assert!(
+            recover_with_policy(
+                &f.db,
+                &f.task,
+                "left",
+                &committed,
+                &f.base,
+                &["false".into()],
+                "failed-committed-check"
+            )
+            .is_err()
+        );
+        assert_eq!(head(&f.workspace).unwrap(), committed);
+        assert_eq!(f.db.rows("SELECT phase FROM run_step_recoveries WHERE idempotency_key='failed-committed-check'", &[]).unwrap()[0]["phase"], "prepared");
+    }
+    let recover = || {
+        recover_with_policy(
+            &f.db,
+            &f.task,
+            "left",
+            &committed,
+            &f.base,
+            &checks(),
+            "existing-commit",
+        )
+    };
+    let recovered = recover().unwrap();
+    assert_eq!(recovered["worker_commit_sha"], committed);
+    assert_eq!(head(&f.workspace).unwrap(), committed);
+    assert_eq!(recover().unwrap(), recovered);
+    assert_eq!(
+        f.db.rows("SELECT state FROM attempts WHERE id='failed-agent'", &[])
+            .unwrap()[0]["state"],
+        "failed"
+    );
+}
+
+#[test]
 fn recovers_agent_edits_on_same_run_and_resets_only_skipped_dependents() {
     let f = Fixture::new();
     let recovered = f.recover("stable-request", &checks()).unwrap();
