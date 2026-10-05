@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+mod commit;
+pub use commit::commit_work;
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<String> {
     let out = crate::budget::command_output(

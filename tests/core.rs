@@ -456,6 +456,106 @@ fn independent_connections_cannot_take_overlapping_claims() {
     );
 }
 #[test]
+fn worker_commit_is_scoped_and_reconciles_a_lost_response_without_duplicate_commits() {
+    let f = Fixture::new();
+    let step =
+        f.db.steps(&f.oid)
+            .unwrap()
+            .into_iter()
+            .find(|s| s["name"] == "left")
+            .unwrap();
+    let sid = step["id"].as_str().unwrap();
+    let worker = f.db.register(&f.oid, Some(sid)).unwrap();
+    let wid = worker["id"].as_str().unwrap();
+    let token = worker["token"].as_str().unwrap();
+    let workspace = git::allocate(&f.db, &f.oid, wid).unwrap();
+    let base = git::run(&workspace, &["rev-parse", "HEAD"]).unwrap();
+    f.db.conn
+        .execute("UPDATE tasks SET status='running' WHERE id=?", [&f.oid])
+        .unwrap();
+    f.db.conn
+        .execute("UPDATE steps SET state='running' WHERE id=?", [sid])
+        .unwrap();
+    f.db.conn
+        .execute("UPDATE workers SET status='working' WHERE id=?", [wid])
+        .unwrap();
+    f.db.conn.execute("INSERT INTO attempts(id,step,worker,state,started) VALUES('commit-attempt',?,?,'running',1)", rusqlite::params![sid,wid]).unwrap();
+    f.db.claim(&f.oid, wid, &["allowed.txt".into(), "link.txt".into()])
+        .unwrap();
+    let args = json!({"expected_head":base,"message":format!("Implement greeting {token}"),"idempotency_key":token});
+    let call = || protocol::dispatch(&f.db, "commit_work", args.clone(), Some(token));
+    std::fs::write(workspace.join("outside.txt"), "not claimed").unwrap();
+    assert!(call().is_err());
+    assert_eq!(git::run(&workspace, &["rev-parse", "HEAD"]).unwrap(), base);
+    std::fs::remove_file(workspace.join("outside.txt")).unwrap();
+    std::os::unix::fs::symlink(f.repo(), workspace.join("link.txt")).unwrap();
+    assert!(call().is_err());
+    std::fs::remove_file(workspace.join("link.txt")).unwrap();
+    std::fs::write(workspace.join("allowed.txt"), "implementation\n").unwrap();
+    let mut injected = args.clone();
+    injected["path"] = json!(f.repo());
+    assert!(protocol::dispatch(&f.db, "commit_work", injected, Some(token)).is_err());
+    let committed = call().unwrap();
+    assert!(
+        !git::run(&workspace, &["log", "-1", "--format=%B"])
+            .unwrap()
+            .contains(token)
+    );
+    assert!(
+        !f.db
+            .rows("SELECT name,data FROM external_ops WHERE task=?", &[&f.oid])
+            .unwrap()
+            .iter()
+            .any(|row| row.to_string().contains(token))
+    );
+    assert_eq!(committed["worker"], wid);
+    assert_eq!(committed["attempt"], "commit-attempt");
+    assert_eq!(call().unwrap(), committed);
+    f.db.conn
+        .execute(
+            "UPDATE external_ops SET state='prepared' WHERE task=? AND name LIKE 'worker_commit/%'",
+            [&f.oid],
+        )
+        .unwrap();
+    assert_eq!(call().unwrap(), committed);
+    assert_eq!(
+        git::run(
+            &workspace,
+            &["rev-list", "--count", &format!("{base}..HEAD")]
+        )
+        .unwrap(),
+        "1"
+    );
+    assert!(
+        git::run(&workspace, &["status", "--porcelain"])
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(f.events("worker.committed").len(), 1);
+    f.db.conn
+        .execute(
+            "UPDATE attempts SET state='succeeded' WHERE id='commit-attempt'",
+            [],
+        )
+        .unwrap();
+    f.db.conn
+        .execute("UPDATE workers SET status='idle' WHERE id=?", [wid])
+        .unwrap();
+    std::fs::write(workspace.join("outside.txt"), "retained after attempt\n").unwrap();
+    assert_eq!(call().unwrap(), committed);
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("outside.txt")).unwrap(),
+        "retained after attempt\n"
+    );
+    let mut changed = args;
+    changed["idempotency_key"] = json!("new-commit-after-completion");
+    assert!(protocol::dispatch(&f.db, "commit_work", changed.clone(), Some(token)).is_err());
+    changed["idempotency_key"] = json!(token);
+    changed["message"] = json!("Different request");
+    assert!(protocol::dispatch(&f.db, "commit_work", changed, Some(token)).is_err());
+}
+
+#[test]
 fn claims_are_atomic_and_handoff_preserves_owner_on_failure() {
     let f = Fixture::new();
     let a = f.coding_worker();

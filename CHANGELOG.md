@@ -4,6 +4,8 @@
 
 ## 0.6.33 - 2026-10-04
 
+- Let live coding workers commit claimed source changes through the daemon,
+  retaining sandbox isolation and exact commit receipts after lost responses.
 - Accept Git's repeated credential capability and HTTP challenge fields so native
   Git operations authenticate with current Git versions. Keep duplicate origin
   and project fields rejected.

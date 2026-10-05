@@ -251,6 +251,13 @@ pub fn admin_schema(name: &str) -> Value {
             ("base", "string"),
         ],
         "claim_paths" => &[("task", "string"), ("worker", "string"), ("paths", "array")],
+        "commit_work" => &[
+            ("task", "string"),
+            ("worker", "string"),
+            ("expected_head", "string"),
+            ("message", "string"),
+            ("idempotency_key", "string"),
+        ],
         "transfer_claim" => &[
             ("task", "string"),
             ("worker", "string"),
@@ -652,6 +659,7 @@ pub fn admin_schema(name: &str) -> Value {
         "propose_steps" | "add_steps" => &["steps"],
         "register_workspace" => &["path", "branch", "base"],
         "claim_paths" => &["paths"],
+        "commit_work" => &["expected_head", "message", "idempotency_key"],
         "transfer_claim" => &["to", "path"],
         "acknowledge_messages" => &["ids"],
         "set_worker_status" => &["status"],

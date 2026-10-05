@@ -1,5 +1,5 @@
 {
-  "count": 120,
+  "count": 121,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -3065,6 +3065,31 @@
           "path",
           "branch",
           "base"
+        ],
+        "type": "object"
+      },
+      "scope": "worker"
+    },
+    {
+      "description": "Commit this live worker's claimed changes through the daemon; pin HEAD and use an idempotency key",
+      "name": "commit_work",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_head": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_head",
+          "message",
+          "idempotency_key"
         ],
         "type": "object"
       },

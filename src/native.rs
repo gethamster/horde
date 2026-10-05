@@ -12,7 +12,7 @@ pub fn tools() -> Vec<Value> {
         json!({"type":"function","function":{"name":"command","description":"Execute argv in the workspace. Environment excludes provider credentials. Changes are checked against claims.","parameters":{"type":"object","properties":{"argv":{"type":"array","items":{"type":"string"}}},"required":["argv"]}}}),
     ]
 }
-fn safe_path(root: &Path, p: &str) -> Result<PathBuf> {
+pub(crate) fn safe_path(root: &Path, p: &str) -> Result<PathBuf> {
     let p = crate::store::scope(p)?;
     let root = root.canonicalize()?;
     let target = root.join(p);
