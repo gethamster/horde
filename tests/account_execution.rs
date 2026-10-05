@@ -184,6 +184,15 @@ for line in sys.stdin:
   token=r['result']['accessToken']
   print(json.dumps({'method':'item/completed','params':{'item':{'type':'agentMessage','text':json.dumps({'accepted':True,'result':'done '+token})}}}),flush=True)
   print(json.dumps({'method':'thread/tokenUsage/updated','params':{'tokenUsage':{'total':{'inputTokens':12,'outputTokens':4}}}}),flush=True)
+  if os.path.exists('failure-mode'):
+   mode=open('failure-mode').read()
+   error={'message':'provider unavailable '+token+' initial-token controller-refresh '+worker_token,'code':503,'accessToken':'unselected-auth-field'}
+   if mode=='capacity': error['message']='usage limit reached '+token+' '+worker_token
+   if mode=='turn':
+    print(json.dumps({'method':'turn/completed','params':{'turn':{'status':'failed','error':error}}}),flush=True)
+   else:
+    print(json.dumps({'method':'error','params':{'error':error,'auth':{'accessToken':'unselected-auth-field'}}}),flush=True)
+   continue
   print(json.dumps({'method':'turn/completed','params':{'turn':{'status':'completed'}}}),flush=True)
   continue
  result={}
@@ -195,6 +204,7 @@ for line in sys.stdin:
   assert r['params']['type']=='chatgptAuthTokens'
   assert not os.path.exists(os.path.join(os.environ['CODEX_HOME'],'auth.json'))
  if r['method']=='thread/start':
+  worker_token=r['params']['config']['mcp_servers.coordination.env.HORDE_WORKER_TOKEN']
   assert r['params']['sandbox']=='workspace-write'
   assert r['params']['approvalPolicy']=='never'
   assert 'mcp_servers.coordination.command' in r['params']['config']
@@ -256,6 +266,40 @@ for line in sys.stdin:
     assert!(result["result"].as_str().unwrap().contains("[REDACTED]"));
     assert!(!result.to_string().contains("refreshed-access-token"));
     assert_eq!(result["usage"]["provider"]["input_tokens"], 12);
+    for mode in ["error", "turn", "capacity"] {
+        std::fs::write(temp.path().join("failure-mode"), mode).unwrap();
+        let error = horde::codex_session::execute(&invocation, &config, "default", &account)
+            .await
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("[REDACTED]"), "{text}");
+        assert_eq!(
+            error
+                .downcast_ref::<horde::executor::CapacityFailure>()
+                .is_some(),
+            mode == "capacity"
+        );
+        let row = db.rows("SELECT hash FROM artifact_links WHERE task=? AND name='executor-events' ORDER BY rowid DESC LIMIT 1", &[&task]).unwrap().remove(0);
+        let events = std::fs::read_to_string(
+            db.root
+                .join("artifacts")
+                .join(row["hash"].as_str().unwrap()),
+        )
+        .unwrap();
+        assert!(events.contains("horde/executorFailure"));
+        assert!(events.contains("item/completed"));
+        assert!(events.contains("503"));
+        for secret in [
+            "initial-token",
+            "refreshed-access-token",
+            "controller-refresh",
+            invocation.token,
+            "unselected-auth-field",
+        ] {
+            assert!(!text.contains(secret));
+            assert!(!events.contains(secret));
+        }
+    }
 }
 
 #[tokio::test]
