@@ -194,12 +194,27 @@ async fn execute_inner(
         ("initial_access_token".into(), token.access_token.clone()),
         ("worker_token".into(), i.token.to_owned()),
     ]);
+    let credential = crate::accounts::credential(i.db, project, account)?;
+    secrets.insert("account_credential".into(), credential.secret.clone());
+    if let Ok(auth) = serde_json::from_str::<Value>(&credential.secret) {
+        for key in ["access_token", "refresh_token", "id_token"] {
+            if let Some(value) = auth["tokens"][key].as_str() {
+                secrets.insert(format!("account_{key}"), value.to_owned());
+            }
+        }
+    }
     loop {
         let message = session.receive().await?;
         let method = message["method"].as_str().unwrap_or("");
         if message["id"] == turn_request && message.get("method").is_none() {
             if message.get("error").is_some() {
-                bail!("Codex app-server rejected turn/start");
+                return Err(invocation_failure(
+                    i,
+                    &message["error"],
+                    &mut event_bytes,
+                    &usage,
+                    &secrets,
+                )?);
             }
             continue;
         }
@@ -238,6 +253,7 @@ async fn execute_inner(
             "turn/completed",
         ]
         .contains(&method)
+            && !(method == "turn/completed" && message["params"]["turn"]["status"] != "completed")
         {
             let redacted = crate::secrets::redact_json(&message, &secrets);
             let bytes = serde_json::to_vec(&redacted)?;
@@ -268,18 +284,25 @@ async fn execute_inner(
             }
             "turn/completed" => {
                 if message["params"]["turn"]["status"] != "completed" {
-                    if crate::executor::is_capacity_message(
-                        message["params"]["turn"]["error"]["message"]
-                            .as_str()
-                            .unwrap_or(""),
-                    ) {
-                        return Err(crate::executor::CapacityFailure(json!({"error":"Codex subscription capacity unavailable", "capacity":true})).into());
-                    }
-                    bail!("Codex app-server turn failed or was interrupted");
+                    return Err(invocation_failure(
+                        i,
+                        &message["params"]["turn"]["error"],
+                        &mut event_bytes,
+                        &usage,
+                        &secrets,
+                    )?);
                 }
                 break;
             }
-            "error" => bail!("Codex app-server reported an invocation error"),
+            "error" => {
+                return Err(invocation_failure(
+                    i,
+                    &message["params"]["error"],
+                    &mut event_bytes,
+                    &usage,
+                    &secrets,
+                )?);
+            }
             _ => {}
         }
     }
@@ -303,6 +326,65 @@ async fn execute_inner(
     result["events_artifact"] = json!(artifact);
     result["latency_ms"] = json!(started.elapsed().as_millis() as u64);
     Ok(result)
+}
+
+fn invocation_failure(
+    i: &crate::executor::Invocation<'_>,
+    error: &Value,
+    events: &mut Vec<u8>,
+    usage: &Value,
+    secrets: &std::collections::BTreeMap<String, String>,
+) -> Result<anyhow::Error> {
+    let message = error["message"]
+        .as_str()
+        .unwrap_or("Codex app-server turn failed or was interrupted");
+    let capacity = crate::executor::is_capacity_message(message);
+    // Select diagnostics, never retain authentication/control payloads or arbitrary extra fields.
+    let diagnostic = crate::secrets::redact(
+        i.db,
+        i.task,
+        &crate::secrets::redact_json(
+            &json!({"message":message,"code":error["code"].as_i64(),"capacity":capacity}),
+            secrets,
+        ),
+    );
+    let safe_message: String = diagnostic["message"]
+        .as_str()
+        .unwrap_or("Codex failure details withheld: application bundle unavailable")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(2048)
+        .collect();
+    let diagnostic = json!({"message":safe_message,"code":diagnostic["code"],"capacity":capacity});
+    let bytes = serde_json::to_vec(&json!({"method":"horde/executorFailure","params":diagnostic}))?;
+    // Keep the transcript bounded while retaining the earlier complete events.
+    if events.len() + bytes.len() < 8 * 1024 * 1024 {
+        events.extend(bytes);
+        events.push(b'\n');
+    }
+    i.db.artifact(
+        i.task,
+        Some(i.step),
+        "executor-events",
+        events,
+        &json!({"attempt":i.attempt,"failed":true}),
+        false,
+    )?;
+    i.db.conn.execute(
+        "UPDATE attempts SET usage=? WHERE id=?",
+        rusqlite::params![usage.to_string(), i.attempt],
+    )?;
+    if capacity {
+        Ok(crate::executor::CapacityFailure(json!({"error":safe_message,"capacity":true})).into())
+    } else {
+        Ok(anyhow::anyhow!(
+            "Codex app-server invocation failed (code {}): {}",
+            error["code"]
+                .as_i64()
+                .map_or_else(|| "unavailable".into(), |v| v.to_string()),
+            safe_message
+        ))
+    }
 }
 
 /// The `thread/start` request keeps the Codex sandbox enabled by default.

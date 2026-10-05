@@ -4,6 +4,8 @@
 
 ## 0.6.33 - 2026-10-04
 
+- Retain bounded, redacted Codex failure evidence and report provider diagnostics
+  without recording authentication messages. Preserve capacity classification.
 - Let native execution use an explicitly configured loopback Git bridge, with
   credentials restricted to that origin and the assigned project path. Preserve
   the existing Docker bridge default and captured execution-profile authority.
