@@ -323,6 +323,10 @@ pub const OPERATIONS: &[(&str, &str)] = &[
         "Register path, branch and base before editing",
     ),
     (
+        "commit_work",
+        "Commit this live worker's claimed changes through the daemon; pin HEAD and use an idempotency key",
+    ),
+    (
         "send_message",
         "Persist a message to worker id, group:name, or task. Supply id for deduplication",
     ),

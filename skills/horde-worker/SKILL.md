@@ -73,6 +73,17 @@ alone never moves ownership; only the transfer does.
 commits into the shared result. Uncommitted work does not exist as far as
 integration is concerned.
 
+After checks pass, read `git rev-parse HEAD` and call the coordination tool:
+
+```text
+commit_work { "expected_head": "<current full commit SHA>", "message": "Implement the assigned change", "idempotency_key": "implementation-1" }
+```
+
+Use this tool rather than raw `git add` or `git commit`: the daemon owns Git
+metadata while the sandbox owns claimed source files. Reuse the same request and
+key after a lost response. A changed request needs a new key. The tool cannot
+commit changes outside your claims or from another worker's workspace.
+
 **5. Report status honestly.**
 
 ```

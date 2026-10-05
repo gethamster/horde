@@ -48,6 +48,7 @@ pub fn worker_allowed(name: &str) -> bool {
         "claim_paths",
         "transfer_claim",
         "register_workspace",
+        "commit_work",
         "put_artifact",
         "get_artifact",
         "reuse_artifact",
@@ -106,6 +107,26 @@ pub fn dispatch_scoped(
 ) -> Result<Value> {
     if !args.is_object() {
         bail!("arguments must be an object");
+    }
+    if name == "commit_work" {
+        if token.is_none() {
+            bail!("commit_work requires worker credentials");
+        }
+        if args.as_object().is_some_and(|fields| {
+            fields.keys().any(|key| {
+                ![
+                    "task",
+                    "worker",
+                    "project",
+                    "expected_head",
+                    "message",
+                    "idempotency_key",
+                ]
+                .contains(&key.as_str())
+            })
+        }) {
+            bail!("commit_work accepts only its exact worker commit arguments");
+        }
     }
     if name == "run_rebind_model"
         && args.as_object().is_some_and(|object| {
@@ -592,6 +613,7 @@ fn dispatch_authorized(
             )?;
             Ok(json!({"registered":true}))
         }
+        "commit_work" => crate::git::commit_work(db, string(&args, "worker")?, &args, token.context("worker credential")?),
         "send_message" => db.send(
             oid,
             string(&args, "worker")?,
