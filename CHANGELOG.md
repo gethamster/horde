@@ -4,6 +4,9 @@
 
 ## 0.6.33 - 2026-10-04
 
+- Accept Git's repeated credential capability and HTTP challenge fields so native
+  Git operations authenticate with current Git versions. Keep duplicate origin
+  and project fields rejected.
 - Retain bounded, redacted Codex failure evidence and report provider diagnostics
   without recording authentication messages. Preserve capacity classification.
 - Let native execution use an explicitly configured loopback Git bridge, with

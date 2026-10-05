@@ -402,6 +402,11 @@ pub fn credential_helper(
         let Some((key, value)) = line.split_once('=') else {
             return Ok(String::new());
         };
+        // Git's credential protocol permits repeated capabilities and HTTP
+        // challenges. They do not select this helper's credential authority.
+        if matches!(key, "capability[]" | "wwwauth[]") {
+            continue;
+        }
         if fields.insert(key, value).is_some() {
             return Ok(String::new());
         }
