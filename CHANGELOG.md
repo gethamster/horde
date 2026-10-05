@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.33 - 2026-10-04
+
+- Let native execution use an explicitly configured loopback Git bridge, with
+  credentials restricted to that origin and the assigned project path. Preserve
+  the existing Docker bridge default and captured execution-profile authority.
+
 ## 0.6.32 - 2026-10-04
 
 - Support verified native archive previews for System, with a distinct signed
