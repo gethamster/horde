@@ -7,6 +7,28 @@ use horde::{
 use serde_json::json;
 
 #[test]
+fn operator_capacity_observation_keeps_its_strict_snapshot_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(dir.path()).unwrap();
+    let observation = json!({"account":"codex:login","provider":"codex","window":"primary","used_percent":2.0,"reset_at":now()+600,"observed_at":now(),"source":"provider"});
+    protocol::dispatch(&db, "account_observe", observation.clone(), None).unwrap();
+    assert!(capacity::available(&db, "codex:login").unwrap());
+    assert!(
+        protocol::dispatch_scoped(
+            &db,
+            "account_observe",
+            observation.clone(),
+            None,
+            Some("default")
+        )
+        .is_err()
+    );
+    let mut unknown = observation;
+    unknown["unexpected"] = json!(true);
+    assert!(protocol::dispatch(&db, "account_observe", unknown, None).is_err());
+}
+
+#[test]
 fn live_limit_survives_restart_and_rejects_invalid_values() {
     let dir = tempfile::tempdir().unwrap();
     let db = Store::open(dir.path()).unwrap();
