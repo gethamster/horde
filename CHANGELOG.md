@@ -4,6 +4,9 @@
 
 ## 0.6.35 - 2026-10-12
 
+- Keep the controller responsive as task history grows by scanning notification
+  events once off the main event loop, preserving per-task delivery receipts.
+
 - Accept administrator capacity observations through the RPC protocol while
   preserving strict observation fields and project-bound authorization.
 

@@ -43,7 +43,9 @@ struct Pending {
 /// Deliver every event recorded since the last tick. Called once per maintenance
 /// loop iteration; all awaiting happens here, never on the scheduler.
 pub async fn tick(db: &Store) -> Result<()> {
-    for pending in pending(db)? {
+    let root = db.root.clone();
+    let pending = crate::budget::blocking(move || pending(&Store::open(&root)?)).await?;
+    for pending in pending {
         let notify = &pending.settings.notify;
         if !notify.enabled() || (!notify.children && has_parent(db, &pending.task)?) {
             advance(db, &pending.task, pending.latest)?;
@@ -68,27 +70,28 @@ pub async fn tick(db: &Store) -> Result<()> {
     Ok(())
 }
 
+const PENDING_QUERY: &str = "SELECT t.id,t.status,t.objective,t.repo,t.settings,e.latest,\
+    COALESCE(r.seq,0) AS cursor FROM \
+    (SELECT task,MAX(seq) AS latest FROM events WHERE task IS NOT NULL GROUP BY task) e \
+    JOIN tasks t ON t.id=e.task \
+    LEFT JOIN event_receipts r ON r.task=t.id AND r.consumer=? \
+    WHERE e.latest>COALESCE(r.seq,0) ORDER BY e.latest";
+
 fn pending(db: &Store) -> Result<Vec<Pending>> {
-    db.rows(
-        "SELECT * FROM (SELECT id,status,objective,repo,settings,\
-         (SELECT MAX(seq) FROM events WHERE task=tasks.id) AS latest,\
-         COALESCE((SELECT seq FROM event_receipts WHERE task=tasks.id AND consumer=?),0) AS cursor \
-         FROM tasks) WHERE latest > cursor ORDER BY latest",
-        &[&CONSUMER],
-    )?
-    .into_iter()
-    .map(|row| {
-        Ok(Pending {
-            task: row["id"].as_str().context("task id")?.to_owned(),
-            status: row["status"].as_str().unwrap_or("").to_owned(),
-            objective: row["objective"].as_str().unwrap_or("").to_owned(),
-            repo: row["repo"].as_str().unwrap_or("").to_owned(),
-            settings: serde_json::from_str(row["settings"].as_str().context("task settings")?)?,
-            cursor: row["cursor"].as_i64().unwrap_or(0),
-            latest: row["latest"].as_i64().unwrap_or(0),
+    db.rows(PENDING_QUERY, &[&CONSUMER])?
+        .into_iter()
+        .map(|row| {
+            Ok(Pending {
+                task: row["id"].as_str().context("task id")?.to_owned(),
+                status: row["status"].as_str().unwrap_or("").to_owned(),
+                objective: row["objective"].as_str().unwrap_or("").to_owned(),
+                repo: row["repo"].as_str().unwrap_or("").to_owned(),
+                settings: serde_json::from_str(row["settings"].as_str().context("task settings")?)?,
+                cursor: row["cursor"].as_i64().unwrap_or(0),
+                latest: row["latest"].as_i64().unwrap_or(0),
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 
 fn has_parent(db: &Store, task: &str) -> Result<bool> {
@@ -291,4 +294,38 @@ async fn command(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_history_is_scanned_once_and_keeps_each_task_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(dir.path()).unwrap();
+        let settings = serde_json::to_string(&Settings::default()).unwrap();
+        db.conn.execute("WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<200) INSERT INTO tasks SELECT printf('task-%03d',x),'test','.','succeeded',?,'{}',0 FROM n", [&settings]).unwrap();
+        db.conn.execute_batch("INSERT INTO events(task,kind,data,created) SELECT id,'task.finished','{}',0 FROM tasks WHERE id!='task-200' ORDER BY id;
+            INSERT INTO event_receipts SELECT task,'notify',CASE WHEN task='task-001' THEN 0 ELSE seq END FROM events WHERE task!='task-000';
+            WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO events(task,kind,data,created) SELECT 'task-199','test','{}',0 FROM n;
+            INSERT INTO events(task,kind,data,created) VALUES(NULL,'test','{}',0);
+            UPDATE event_receipts SET seq=999999 WHERE task='task-198';").unwrap();
+        let result = pending(&db).unwrap();
+        assert_eq!(
+            result.iter().map(|p| p.task.as_str()).collect::<Vec<_>>(),
+            ["task-000", "task-001", "task-199"]
+        );
+        assert_eq!(result[0].cursor, 0);
+        assert_eq!(result[1].cursor, 0);
+        assert_eq!(result[2].cursor, 200);
+        assert_eq!(result[2].latest, 10200);
+        let mut query = db.conn.prepare(PENDING_QUERY).unwrap();
+        {
+            let mut rows = query.query([CONSUMER]).unwrap();
+            while rows.next().unwrap().is_some() {}
+        }
+        // A correlated MAX walks this late history again for every old task.
+        assert!(query.get_status(rusqlite::StatementStatus::VmStep) < 500_000);
+    }
 }
