@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.35 - 2026-10-12
+
+- Accept administrator capacity observations through the RPC protocol while
+  preserving strict observation fields and project-bound authorization.
+
 ## 0.6.34 - 2026-10-12
 
 - Keep Codex accounts eligible when their included allowance is exhausted but
