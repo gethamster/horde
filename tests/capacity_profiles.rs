@@ -144,3 +144,117 @@ fn provider_headers_throttle_only_the_account_that_returned_them() {
     assert_eq!(windows[1]["used"], 50.0);
     assert_eq!(windows[2]["used"], 100.0);
 }
+
+#[test]
+fn codex_credits_cover_included_limits_but_preserve_budgets_and_throttles() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = Store::open_with_config_dir(temp.path(), &temp.path().join("config")).unwrap();
+    let config = ExecutorConfig {
+        kind: "codex".into(),
+        auth_mode: "login".into(),
+        account: Some("credit-account".into()),
+        ..Default::default()
+    };
+    let account = capacity::account(&config);
+    let mut response = json!({"rateLimits":{
+        "primary":{"usedPercent":100,"resetsAt":9999999999_i64},
+        "credits":{"hasCredits":true,"unlimited":false,"balance":"200"},
+        "spendControlReached":false
+    }});
+    capacity::ingest(&db, &config, &response).unwrap();
+    assert!(capacity::available(&db, &account).unwrap());
+    assert_eq!(
+        db.rows(
+            "SELECT used FROM account_capacity WHERE account=?",
+            &[&account]
+        )
+        .unwrap()[0]["used"],
+        100.0
+    );
+    let other = ExecutorConfig {
+        account: Some("other-account".into()),
+        ..config.clone()
+    };
+    let mut exhausted = response.clone();
+    exhausted["rateLimits"]["credits"]["hasCredits"] = json!(false);
+    capacity::ingest(&db, &other, &exhausted).unwrap();
+    assert!(!capacity::available(&db, "other-account").unwrap());
+    capacity::observe(
+        &db,
+        &capacity::Snapshot {
+            account: account.clone(),
+            provider: "configured".into(),
+            window: "local-budget".into(),
+            used_percent: Some(100.0),
+            reset_at: Some(9999999999),
+            observed_at: horde::store::now(),
+            source: "local_budget".into(),
+        },
+    )
+    .unwrap();
+    assert!(!capacity::available(&db, &account).unwrap());
+    db.conn
+        .execute(
+            "DELETE FROM account_capacity WHERE window='local-budget'",
+            [],
+        )
+        .unwrap();
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("retry-after", "300".parse().unwrap());
+    capacity::ingest_headers(&db, &config, &headers, 429).unwrap();
+    assert!(!capacity::available(&db, &account).unwrap());
+    db.conn
+        .execute(
+            "DELETE FROM account_capacity WHERE window='api-throttle'",
+            [],
+        )
+        .unwrap();
+    response["rateLimits"]["spendControlReached"] = json!(true);
+    capacity::ingest(&db, &config, &response).unwrap();
+    assert!(!capacity::available(&db, &account).unwrap());
+    response["rateLimits"]["spendControlReached"] = json!(false);
+    capacity::ingest(&db, &config, &response).unwrap();
+    db.conn.execute("UPDATE runtime_settings SET value=json_set(value,'$.observed_at',0) WHERE key LIKE 'capacity.credits:%'",[]).unwrap();
+    assert!(!capacity::available(&db, &account).unwrap());
+}
+
+#[test]
+fn credit_capacity_does_not_survive_a_changed_credential_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = Store::open_with_config_dir(temp.path(), &temp.path().join("config")).unwrap();
+    let config = ExecutorConfig {
+        kind: "codex".into(),
+        auth_mode: "login".into(),
+        ..Default::default()
+    };
+    let event = json!({"rate_limits":{"primary":{"used_percent":100,"resets_at":9999999999_i64},"credits":{"has_credits":true}}});
+    let generation = capacity::credential_generation(&db, &config).unwrap();
+    capacity::ingest_current(&db, &config, generation.as_deref(), &event).unwrap();
+    assert!(capacity::available(&db, "codex:login").unwrap());
+    capacity::credentials_changed(&db, &config).unwrap();
+    capacity::observe(
+        &db,
+        &capacity::Snapshot {
+            account: "codex:login".into(),
+            provider: "codex".into(),
+            window: "primary".into(),
+            used_percent: Some(100.0),
+            reset_at: Some(9999999999),
+            observed_at: horde::store::now(),
+            source: "provider".into(),
+        },
+    )
+    .unwrap();
+    assert!(!capacity::available(&db, "codex:login").unwrap());
+    capacity::ingest_current(&db, &config, generation.as_deref(), &event).unwrap();
+    assert!(!capacity::available(&db, "codex:login").unwrap());
+    let current = capacity::credential_generation(&db, &config).unwrap();
+    capacity::ingest_current(
+        &db,
+        &config,
+        current.as_deref(),
+        &json!({"rate_limits":{"primary":{"used_percent":100,"resets_at":9999999999_i64}}}),
+    )
+    .unwrap();
+    assert!(!capacity::available(&db, "codex:login").unwrap());
+}

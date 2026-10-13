@@ -395,6 +395,12 @@ model = "a-stronger-model-id"
 
 For Codex API authentication use `kind = "codex"`, `base_url = "https://api.openai.com/v1"`, and `api_key_env = "OPENAI_API_KEY"` on a provider. The shipped `codex` and `claude` providers use subscription login. The broker passes through SSE and provider errors and rejects requests outside the invocation's model endpoints.
 
+Codex account checks retain the reported included-allowance usage. When the
+provider also reports available credits and no reached spending control, those
+credits allow work to continue after the included allowance is exhausted. Credit
+availability expires with the normal capacity observation window and is bound
+to the current login. Local budgets and provider throttles still stop dispatch.
+
 The `claude` harness passes `--json-schema` so Claude Code validates the step's completion object (`result`, `accepted`, `artifacts`, and any declared named outputs) and returns it as structured output. If a reply still lacks that object, Horde resumes the same Claude session once and asks for only the JSON object. A second malformed reply fails the attempt, and both turns' usage is recorded. This needs a Claude Code CLI with `--json-schema`; 2.1.280 has it.
 
 The shipped `grok` provider runs the Grok CLI (`grok -p PROMPT --output-format json --always-approve`, `kind = "grok"`) under its installed subscription login; `auth_mode = "api"` is refused for it. The harness writes the coordination MCP server into the workspace's `.grok/config.toml` (the shape `grok mcp add --scope project` writes), passes the prompt as a command-line argument (limit 200 KiB), and reads the single JSON reply. Use it as a fallback hop, for example `[fallbacks] codex = "grok"`.

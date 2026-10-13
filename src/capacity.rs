@@ -34,19 +34,22 @@ fn generation_key(account: &str) -> String {
 
 /// Capture before acquiring credentials or starting a subscription process.
 pub fn credential_generation(db: &Store, config: &ExecutorConfig) -> Result<Option<String>> {
-    let id = account(config);
+    account_generation(db, &account(config))
+}
+
+fn account_generation(db: &Store, id: &str) -> Result<Option<String>> {
     let version: Option<i64> = db
         .conn
         .query_row(
             "SELECT credential_version FROM auth_profiles WHERE account=?",
-            [&id],
+            [id],
             |row| row.get(0),
         )
         .optional()?;
     if let Some(version) = version {
         return Ok(Some(format!("managed:{version}")));
     }
-    management::value(db, &generation_key(&id))
+    management::value(db, &generation_key(id))
 }
 
 /// Managed invocations must launch the profile version reserved before dispatch.
@@ -217,11 +220,28 @@ pub fn observe(db: &Store, s: &Snapshot) -> Result<()> {
         Ok(())
     })
 }
+fn credit_key(account: &str) -> String {
+    format!("capacity.credits:{account}")
+}
+
+fn credits_available(db: &Store, account: &str, stale_seconds: i64) -> Result<bool> {
+    let Some(saved) = management::value(db, &credit_key(account))? else {
+        return Ok(false);
+    };
+    let saved: Value = serde_json::from_str(&saved)?;
+    Ok(saved["available"] == true
+        && saved["observed_at"]
+            .as_i64()
+            .is_some_and(|at| at + stale_seconds >= now())
+        && saved["generation"] == json!(account_generation(db, account)?))
+}
+
 pub fn available(db: &Store, id: &str) -> Result<bool> {
     if chatgpt_usage_hold(db, id)?.is_some() {
         return Ok(false);
     }
     let policy = crate::fleet::load()?.capacity_policy;
+    let credits = credits_available(db, id, policy.stale_seconds)?;
     for row in db.rows("SELECT * FROM account_capacity WHERE account=?", &[&id])? {
         let reset = row["reset"].as_i64();
         if reset.is_some_and(|v| v <= now()) {
@@ -231,6 +251,15 @@ pub fn available(db: &Store, id: &str) -> Result<bool> {
         let used = row["used"].as_f64().unwrap_or(0.0);
         if row["observed"].as_i64().unwrap_or(0) + policy.stale_seconds < now()
             && !(used >= 100.0 && reset.is_some())
+        {
+            continue;
+        }
+        // Available credits cover the included Codex allowance, not explicit
+        // local budgets or a provider's request/token throttle.
+        if credits
+            && row["provider"] == "codex"
+            && row["source"] == "provider"
+            && matches!(row["window"].as_str(), Some("primary" | "secondary"))
         {
             continue;
         }
@@ -321,6 +350,23 @@ pub fn report(db: &Store) -> Result<Value> {
 pub fn ingest(db: &Store, c: &ExecutorConfig, event: &Value) -> Result<()> {
     let limits = event.get("rate_limits").or_else(|| event.get("rateLimits"));
     if let Some(limits) = limits {
+        if c.kind == "codex" && c.auth_mode == "login" {
+            let credits = &limits["credits"];
+            let available = (credits["has_credits"] == true
+                || credits["hasCredits"] == true
+                || credits["unlimited"] == true)
+                && limits["spend_control_reached"] != true
+                && limits["spendControlReached"] != true;
+            management::set(
+                db,
+                &credit_key(&account(c)),
+                &json!({
+                    "available": available, "observed_at": now(),
+                    "generation": credential_generation(db, c)?
+                })
+                .to_string(),
+            )?;
+        }
         for window in ["primary", "secondary"] {
             let w = &limits[window];
             if let Some(used) = w["used_percent"]

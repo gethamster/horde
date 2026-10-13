@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.34 - 2026-10-12
+
+- Keep Codex accounts eligible when their included allowance is exhausted but
+  the provider reports available credits. Preserve local budgets, provider
+  throttles, and spending controls.
+
 ## 0.6.33 - 2026-10-04
 
 - Let live coding workers commit claimed source changes through the daemon,
