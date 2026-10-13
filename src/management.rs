@@ -106,7 +106,13 @@ pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
         "runtime_status" => status(db)?,
         "account_status" => crate::capacity::report(db)?,
         "account_observe" => {
-            let snapshot: crate::capacity::Snapshot = serde_json::from_value(args.clone())?;
+            let mut observation = args.clone();
+            // Project authorization belongs to the protocol envelope, not a quota snapshot.
+            observation
+                .as_object_mut()
+                .context("arguments object")?
+                .remove("project");
+            let snapshot: crate::capacity::Snapshot = serde_json::from_value(observation)?;
             crate::capacity::observe(db, &snapshot)?;
             json!({"recorded":true})
         }
