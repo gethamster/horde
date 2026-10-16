@@ -4,7 +4,7 @@ on:
     inputs:
       platforms:
         type: string
-        default: '["ubuntu-latest", "macos-15", "macos-15-intel"]'
+        default: '["ubuntu-22.04", "macos-15", "macos-15-intel"]'
 permissions:
   contents: read
 jobs:
