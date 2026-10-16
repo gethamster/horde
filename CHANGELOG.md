@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.42 - 2026-10-16
+
+- Launch executor processes off the daemon event loop so fork/exec handshakes
+  do not delay control requests or provider timers. Preserve process-group
+  cancellation and storage ownership even when an attempt stops during launch.
+
 ## 0.6.41 - 2026-10-16
 
 - Index step-attempt ownership checks so revocation polling does not scan

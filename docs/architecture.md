@@ -210,6 +210,11 @@ deleted by this policy. See [disk space and retention](runtime-management.md#dis
 
 A hard restart marks running attempts uncertain and blocks their tasks. It never assumes an interrupted process, model call, merge, or external write did nothing. Reconciliation checks recorded PIDs, preserves claims, and requires inspection of local/external effects. A subsequent delivery attempt queries PR/merge/deployment state before retrying. Graceful SIGINT/SIGTERM and cancellation stop command process groups.
 
+Process launch uses the existing blocking executor so the fork/exec handshake
+does not block daemon I/O. The child and its process-group and storage guards
+are created together there; cancellation while launch is pending drops the
+completed launch result and stops the whole group.
+
 Automatic delivery has a separate operator-owned policy and immutable preflight, authorization, and merge-intent records. It requires a held-out qualification artifact before Jev can veto an otherwise eligible merge. GitHub checks and approvals are bound to the exact PR head; strict branch protection and the base commit are checked at the merge boundary. After a squash merge, the recorded base must be its first parent. A unique push-triggered deployment run, exact version, and app-specific smoke result complete the delivery evidence. Interrupted external effects are observed before any retry.
 
 An actionable message delivered to an idle managed worker schedules a new step revision using the same worker identity. Messages arriving during an invocation remain durable and can trigger a follow-up if still actionable and unread when that invocation finishes. Presence and acknowledgement updates never invoke a model.

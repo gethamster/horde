@@ -131,10 +131,16 @@ pub(crate) async fn run_process(
         });
     }
     crate::storage::control::checkpoint().await;
-    let mut child = cmd.spawn().context("launch executor")?;
+    // Keep guards with the blocking result so a cancelled launch still kills its group.
+    let (mut child, _group, _storage_process) = crate::budget::blocking(move || {
+        let child = cmd.spawn().context("launch executor")?;
+        let pid = child.id().context("child pid")?;
+        let group = ProcessGroup(pid);
+        let storage_process = crate::storage::control::register_process(pid)?;
+        Ok((child, group, storage_process))
+    })
+    .await?;
     let pid = child.id().context("child pid")?;
-    let _group = ProcessGroup(pid);
-    let _storage_process = crate::storage::control::register_process(pid)?;
     if let Some((db, attempt)) = record {
         if let Some(identity) = crate::environment::process_identity(pid) {
             db.conn.execute("INSERT OR REPLACE INTO app_process_groups SELECT id,?,? FROM app_environments WHERE attempt=? AND state!='removed'",rusqlite::params![pid,identity,attempt])?;
