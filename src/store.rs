@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 /// Status of the per-task synthetic worker row that carries operator steering messages.
 /// Operator rows never receive mail, never wake, and are hidden from worker listings.
 pub const OPERATOR_STATUS: &str = "operator";
@@ -221,6 +221,7 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
 CREATE INDEX IF NOT EXISTS events_attempt_seq ON events(json_extract(data,'$.attempt'),seq);
 CREATE INDEX IF NOT EXISTS events_task_kind_seq ON events(task,kind,seq);
 CREATE INDEX IF NOT EXISTS events_task_seq ON events(task,seq);
+CREATE INDEX IF NOT EXISTS attempts_step_state ON attempts(step,state);
 ",
             )?;
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -843,6 +844,154 @@ CREATE INDEX IF NOT EXISTS events_task_seq ON events(task,seq);
 #[cfg(test)]
 mod event_index_migration_tests {
     use super::*;
+
+    #[test]
+    fn schema_twelve_upgrade_indexes_live_step_attempts_without_losing_revocations() {
+        use fs2::FileExt;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(dir.path()).unwrap();
+        db.conn.execute_batch("INSERT INTO tasks VALUES('task','test','.','running','{}','{}',0);
+            INSERT INTO steps(id,task,name,spec,state) VALUES('step','task','work','{}','running'),('old-step','task','old','{}','succeeded');
+            INSERT INTO task_projects VALUES('task','default',NULL);
+            INSERT INTO attempts(id,step,state,started) VALUES('running','step','running',1),('uncertain','step','uncertain',1),('finished','step','succeeded',0);
+            INSERT INTO attempt_bindings VALUES('running','default','local',NULL,NULL,NULL,'native'),('uncertain','default','blocked-runtime',NULL,NULL,NULL,'native');
+            WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<50000)
+            INSERT INTO attempts(id,step,state,started) SELECT 'old-'||n,'old-step','succeeded',0 FROM history;").unwrap();
+        let query = "SELECT b.project,b.runtime FROM attempt_bindings b JOIN attempts a ON a.id=b.attempt WHERE a.step=? AND a.state IN ('running','uncertain')";
+        let measure = |db: &Store| {
+            let mut statement = db.conn.prepare(query).unwrap();
+            let mut rows = statement
+                .query_map(["step"], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            rows.sort();
+            (
+                rows,
+                statement.get_status(rusqlite::StatementStatus::VmStep),
+            )
+        };
+        // Seed an actual v12 database, including all existing event indexes.
+        db.conn
+            .execute_batch("DROP INDEX attempts_step_state; PRAGMA user_version=12;")
+            .unwrap();
+        let before = measure(&db);
+        assert!(before.1 > 100000);
+        let attempts = db.rows("SELECT * FROM attempts ORDER BY id", &[]).unwrap();
+        let bindings = db
+            .rows("SELECT * FROM attempt_bindings ORDER BY attempt", &[])
+            .unwrap();
+        db.event("task", "step.progress", json!({"attempt":"running"}))
+            .unwrap();
+        let events = db.rows("SELECT * FROM events", &[]).unwrap();
+        drop(db);
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.path().join("daemon.lock"))
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        assert!(
+            Store::open(dir.path())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("stop the running Horde daemon")
+        );
+        drop(lock);
+        let db = Store::open(dir.path()).unwrap();
+        assert_eq!(
+            db.conn
+                .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        assert_eq!(
+            db.rows("SELECT * FROM attempts ORDER BY id", &[]).unwrap(),
+            attempts
+        );
+        assert_eq!(
+            db.rows("SELECT * FROM attempt_bindings ORDER BY attempt", &[])
+                .unwrap(),
+            bindings
+        );
+        assert_eq!(db.rows("SELECT * FROM events", &[]).unwrap(), events);
+        let after = measure(&db);
+        assert_eq!(before.0, after.0);
+        assert_eq!(
+            after.0.len(),
+            2,
+            "running AND uncertain bindings remain visible"
+        );
+        assert!(
+            after.1 < 100,
+            "indexed revocation grew with historical attempts: {}",
+            after.1
+        );
+        assert!(!crate::project_runtime::revoked(&db, "step").unwrap());
+        db.conn
+            .execute(
+                "INSERT INTO project_runtime_revocations VALUES('default','blocked-runtime')",
+                [],
+            )
+            .unwrap();
+        assert!(
+            crate::project_runtime::revoked(&db, "step").unwrap(),
+            "uncertain attempt still enforces its revocation"
+        );
+        db.conn
+            .execute(
+                "UPDATE attempts SET state='succeeded' WHERE id='uncertain'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            !crate::project_runtime::revoked(&db, "step").unwrap(),
+            "terminal historical bindings do not revoke current work"
+        );
+        db.conn.execute_batch("INSERT INTO accounts(id,owner_project,name,provider,auth_mode,base_url,concurrency) VALUES('account','default','account','vertex','adc','https://example.com',1);
+            INSERT INTO auth_profiles(id,account,credential_version) VALUES('profile','account',1);
+            INSERT INTO account_grants VALUES('default','account',0);
+            UPDATE attempt_bindings SET account='account',profile='profile' WHERE attempt='running';").unwrap();
+        assert!(!crate::project_runtime::revoked(&db, "step").unwrap());
+        db.conn
+            .execute("DELETE FROM account_grants WHERE account='account'", [])
+            .unwrap();
+        assert!(
+            crate::project_runtime::revoked(&db, "step").unwrap(),
+            "account grant revocation still holds current work"
+        );
+        // Opening the now-current schema needs no migration write lock.
+        db.atomic(|| {
+            let reopened = Store::open(dir.path())?;
+            assert_eq!(measure(&reopened).0, measure(&db).0);
+            Ok(())
+        })
+        .unwrap();
+        // An operator may have installed this same index before upgrading.
+        // The normal migration must accept it and keep the retained bindings.
+        let retained = db
+            .rows("SELECT * FROM attempt_bindings ORDER BY attempt", &[])
+            .unwrap();
+        db.conn.pragma_update(None, "user_version", 12).unwrap();
+        drop(db);
+        let db = Store::open(dir.path()).unwrap();
+        assert_eq!(
+            db.rows("SELECT * FROM attempt_bindings ORDER BY attempt", &[])
+                .unwrap(),
+            retained
+        );
+        assert!(measure(&db).1 < 100);
+        assert!(crate::project_runtime::revoked(&db, "step").unwrap());
+        eprintln!(
+            "unchanged all-live-attempt revocation query VM steps: {} -> {}",
+            before.1, after.1
+        );
+    }
 
     #[test]
     fn schema_eleven_upgrade_retains_history_receipts_and_existing_attempt_index() {

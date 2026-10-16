@@ -1,8 +1,9 @@
 #[test]
 fn retry_prompt_preserves_acknowledged_operator_feedback_without_redelivery() {
+    let (_admission_sender, admission_pressure) = tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
     let (dir, db, task, other_task) = fixture();
     let initial = db.steps(&task).unwrap().remove(0);
-    let (initial_attempt, worker, _) = begin(&db, &initial).unwrap();
+    let (initial_attempt, worker, _) = begin(&db, &initial, &admission_pressure).unwrap();
     db.steer(
         &task,
         "completed-feedback",
@@ -47,7 +48,7 @@ fn retry_prompt_preserves_acknowledged_operator_feedback_without_redelivery() {
         .rows("SELECT * FROM steps WHERE id=?", &[&followup])
         .unwrap()
         .remove(0);
-    let (attempt, same_worker, _) = begin(&db, &row).unwrap();
+    let (attempt, same_worker, _) = begin(&db, &row, &admission_pressure).unwrap();
     assert_eq!(same_worker, worker);
     assert!(invocation_context(&db,&task,&followup,&worker,&attempt,vec![]).unwrap()["acknowledged_operator_feedback"]["records"].as_array().unwrap().is_empty());
     // Simulated workers do not allocate Git workspaces; preserve a temporary
@@ -146,7 +147,7 @@ fn retry_prompt_preserves_acknowledged_operator_feedback_without_redelivery() {
         .rows("SELECT * FROM steps WHERE id=?", &[&followup])
         .unwrap()
         .remove(0);
-    let (retry, same_worker, token) = begin(&db, &row).unwrap();
+    let (retry, same_worker, token) = begin(&db, &row, &admission_pressure).unwrap();
     assert_eq!(same_worker, worker);
     assert_ne!(retry, attempt);
     let context = invocation_context(&db, &task, &followup, &worker, &retry, vec![]).unwrap();
