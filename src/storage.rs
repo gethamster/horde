@@ -157,7 +157,11 @@ pub fn status(db: &Store) -> Result<Value> {
         .unwrap_or(Value::Null);
     Ok(value)
 }
-pub fn admission(db: &Store, task: &str) -> Result<bool> {
+pub fn admission(
+    db: &Store,
+    task: &str,
+    pressure: &tokio::sync::watch::Receiver<Value>,
+) -> Result<bool> {
     let row = db.task(task)?;
     let mut paths = vec![
         db.root.clone(),
@@ -167,7 +171,10 @@ pub fn admission(db: &Store, task: &str) -> Result<bool> {
     paths.sort();
     paths.dedup();
     let report = report(db, paths)?;
-    if report["pressure"] == true || status(db)?["pressure"] == true {
+    if report["pressure"] == true
+        || pressure.has_changed().is_err()
+        || pressure.borrow()["state"] != "healthy"
+    {
         crate::project_runtime::queue(
             db,
             task,

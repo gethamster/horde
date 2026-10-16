@@ -114,11 +114,15 @@ pub fn ready(db: &Store, oid: &str) -> Result<Vec<Value>> {
     }
     Ok(result)
 }
-fn begin(db: &Store, step: &Value) -> Result<(String, String, String)> {
+fn begin(
+    db: &Store,
+    step: &Value,
+    pressure: &tokio::sync::watch::Receiver<Value>,
+) -> Result<(String, String, String)> {
     let tid = step["id"].as_str().context("step")?;
     let oid = step["task"].as_str().context("task")?;
     anyhow::ensure!(
-        crate::storage::admission(db, oid)?,
+        crate::storage::admission(db, oid, pressure)?,
         "disk admission unavailable"
     );
     let previous = db.rows(
@@ -726,7 +730,7 @@ impl Scheduler {
             return Ok(());
         }
         // Stop new advisory calls too, while still reaping and cancelling attempts.
-        if crate::storage::status(db)?["pressure"] != true {
+        if self.pressure.has_changed().is_ok() && self.pressure.borrow()["state"] == "healthy" {
             let _ = self.decisions.tick(db).await;
             let _ = self.reviews.scan(db);
             let _ = self.reviews.tick(db).await;
@@ -746,7 +750,7 @@ impl Scheduler {
             if ready.is_empty() {
                 continue;
             }
-            if !crate::storage::admission(db, oid)? {
+            if !crate::storage::admission(db, oid, &self.pressure)? {
                 continue;
             }
             match crate::federation::route_queued(db, oid) {
@@ -797,7 +801,7 @@ impl Scheduler {
                 .filter(|(o, _, _, _)| o == oid)
                 .count();
             for mut row in ready {
-                if !crate::storage::admission(db, oid)? {
+                if !crate::storage::admission(db, oid, &self.pressure)? {
                     break;
                 }
                 if !crate::project_runtime::eligible(db, oid)? {
@@ -913,11 +917,11 @@ impl Scheduler {
                         continue;
                     }
                 }
-                let (attempt, wid, token) = match begin(db, &row) {
+                let (attempt, wid, token) = match begin(db, &row, &self.pressure) {
                     Ok(started) => started,
                     Err(error) => {
                         crate::project_runtime::release_remote(db, &tid).await?;
-                        if !crate::storage::admission(db, oid)? {
+                        if !crate::storage::admission(db, oid, &self.pressure)? {
                             break;
                         }
                         return Err(error);
@@ -1295,9 +1299,11 @@ mod coordination_regressions {
     include!("../tests/runtime_feedback_retry/mod.rs");
     #[test]
     fn terminal_child_wakes_caller_once_across_reopen() {
+        let (_admission_sender, admission_pressure) =
+            tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
         let (dir, db, parent, child) = fixture();
         let step = db.steps(&parent).unwrap()[0].clone();
-        let (attempt, worker, _) = begin(&db, &step).unwrap();
+        let (attempt, worker, _) = begin(&db, &step, &admission_pressure).unwrap();
         db.finish(
             step["id"].as_str().unwrap(),
             &attempt,
@@ -1327,10 +1333,12 @@ mod coordination_regressions {
     }
     #[test]
     fn feedback_followup_broadcast_does_not_spawn_recursive_followups() {
+        let (_admission_sender, admission_pressure) =
+            tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
         let (_dir, db, parent, _) = fixture();
         let step = db.steps(&parent).unwrap()[0].clone();
         let original_step = step["id"].as_str().unwrap().to_owned();
-        let (attempt, worker, _) = begin(&db, &step).unwrap();
+        let (attempt, worker, _) = begin(&db, &step, &admission_pressure).unwrap();
         db.finish(
             step["id"].as_str().unwrap(),
             &attempt,
@@ -1374,7 +1382,7 @@ mod coordination_regressions {
             .rows("SELECT * FROM steps WHERE id=?", &[&followup])
             .unwrap()
             .remove(0);
-        let (attempt, _, _) = begin(&db, &step).unwrap();
+        let (attempt, _, _) = begin(&db, &step, &admission_pressure).unwrap();
         db.send(
             &parent,
             &worker,
@@ -1433,9 +1441,11 @@ mod coordination_regressions {
     }
     #[test]
     fn earlier_top_level_message_stays_wakeable_after_sender_moves_to_followup() {
+        let (_admission_sender, admission_pressure) =
+            tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
         let (_dir, db, parent, _) = fixture();
         let step = db.steps(&parent).unwrap()[0].clone();
-        let (attempt, worker, _) = begin(&db, &step).unwrap();
+        let (attempt, worker, _) = begin(&db, &step, &admission_pressure).unwrap();
         db.finish(
             step["id"].as_str().unwrap(),
             &attempt,
@@ -1559,6 +1569,8 @@ mod scheduling_limits {
 
     #[test]
     fn disk_pressure_holds_launch_without_consuming_capacity() {
+        let (_admission_sender, admission_pressure) =
+            tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
         let temp = tempfile::tempdir().unwrap();
         let db = Store::open_with_config_dir(temp.path(), &temp.path().join("config")).unwrap();
         let row = queued_step(&db, temp.path());
@@ -1568,7 +1580,12 @@ mod scheduling_limits {
             &json!({"min_free_bytes":1024_u64.pow(5)}),
         )
         .unwrap();
-        assert!(begin(&db, &row).unwrap_err().to_string().contains("disk"));
+        assert!(
+            begin(&db, &row, &admission_pressure)
+                .unwrap_err()
+                .to_string()
+                .contains("disk")
+        );
         assert_eq!(crate::project_runtime::host_active(&db).unwrap(), 0);
         assert!(
             db.rows(
@@ -1584,8 +1601,106 @@ mod scheduling_limits {
             &json!({"min_free_bytes":1048576}),
         )
         .unwrap();
-        begin(&db, &row).unwrap();
+        begin(&db, &row, &admission_pressure).unwrap();
         assert_eq!(crate::project_runtime::host_active(&db).unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn shared_pressure_keeps_scheduler_and_admission_off_global_probe() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // Instrument the real all-host inventory query, modeling a slow storage
+        // measurement without requiring a stalled mount on the test machine.
+        unsafe extern "C" fn slow_global_probe(
+            _: u32,
+            state: *mut std::ffi::c_void,
+            _: *mut std::ffi::c_void,
+            sql: *mut std::ffi::c_void,
+        ) -> i32 {
+            let sql = unsafe { std::ffi::CStr::from_ptr(sql.cast()) }.to_bytes();
+            if sql.starts_with(b"SELECT DISTINCT t.id,t.repo,w.workspace FROM attempts") {
+                unsafe { &*state.cast::<AtomicUsize>() }.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            0
+        }
+        tokio::task::LocalSet::new().run_until(async {
+            let temp = tempfile::tempdir().unwrap();
+            let db = Store::open_with_config_dir(temp.path(), &temp.path().join("config")).unwrap();
+            crate::management::set(&db, "concurrency", "32").unwrap();
+            let (sender, pressure) = tokio::sync::watch::channel(json!({"state":"healthy","id":"sample"}));
+            for _ in 0..32 {
+                let row = queued_step(&db, temp.path());
+                begin(&db, &row, &pressure).unwrap();
+            }
+            assert_eq!(crate::project_runtime::host_active(&db).unwrap(), 32);
+            // Keep all currently running steps and their workspaces registered.
+            let mut scheduler = Scheduler {
+                pressure: pressure.clone(), running: HashMap::new(),
+                decisions: crate::decision::shadow::Queue::default(),
+                reviews: crate::decision::review::Queue::default(),
+                previews: crate::preview::Queue::default(), limit:32,
+            };
+            let probes = Box::new(AtomicUsize::new(0));
+            unsafe {
+                assert_eq!(rusqlite::ffi::sqlite3_trace_v2(db.conn.handle(), rusqlite::ffi::SQLITE_TRACE_STMT, Some(slow_global_probe), (&*probes as *const AtomicUsize).cast_mut().cast()), 0);
+            }
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/token", listener.local_addr().unwrap());
+            let server = tokio::task::spawn_local(async move {
+                for _ in 0..32 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    tokio::task::spawn_local(async move {
+                        let mut request = Vec::new();
+                        while !request.ends_with(b"\r\n\r\n") {
+                            let mut byte=[0]; socket.read_exact(&mut byte).await.unwrap();
+                            request.push(byte[0]); assert!(request.len()<4096);
+                        }
+                        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await.unwrap();
+                    });
+                }
+            });
+            let client=reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build().unwrap();
+            let requests=(0..32).map(|_| async {
+                let response=client.get(&url).send().await?;
+                anyhow::ensure!(response.status().is_success(), "mock metadata failed");
+                anyhow::ensure!(response.text().await?=="ok", "mock metadata body changed");
+                Ok::<_,anyhow::Error>(())
+            });
+            let work=async {
+                // The canonical admission path still measures the candidate's
+                // own volumes, then uses the same monitor as active work.
+                scheduler.tick(&db,true).await.unwrap();
+                let candidate = queued_step(&db, temp.path());
+                assert!(crate::storage::admission(&db,candidate["task"].as_str().unwrap(),&pressure).unwrap());
+                candidate
+            };
+            let started=std::time::Instant::now();
+            let (responses,candidate)=tokio::join!(futures_util::future::join_all(requests),work);
+            let elapsed=started.elapsed();
+            assert!(responses.iter().all(Result::is_ok), "{responses:?}");
+            assert_eq!(probes.load(Ordering::SeqCst),0,"scheduler/admission repeated the global measurement");
+            server.await.unwrap();
+            // Confirm that the instrumentation catches an actual global probe.
+            crate::storage::status(&db).unwrap();
+            assert_eq!(probes.load(Ordering::SeqCst),1);
+            unsafe { rusqlite::ffi::sqlite3_trace_v2(db.conn.handle(),0,None,std::ptr::null_mut()); }
+            eprintln!("32 HTTP requests with scheduler and candidate admission: {}ms; global probes=0",elapsed.as_millis());
+            let task = candidate["task"].as_str().unwrap();
+            for state in [json!(null),json!({"state":"cleanup_requested"}),json!({"state":"paused"})] {
+                sender.send_replace(state);
+                scheduler.tick(&db,true).await.unwrap();
+                assert!(!crate::storage::admission(&db,task,&pressure).unwrap());
+                assert!(begin(&db,&candidate,&pressure).is_err());
+            }
+            sender.send_replace(json!({"state":"healthy"}));
+            assert!(crate::storage::admission(&db,task,&pressure).unwrap());
+            drop(sender);
+            scheduler.tick(&db,true).await.unwrap();
+            assert!(!crate::storage::admission(&db,task,&pressure).unwrap());
+            assert!(begin(&db,&candidate,&pressure).is_err());
+            assert_eq!(crate::project_runtime::host_active(&db).unwrap(),32);
+        }).await;
     }
 
     #[tokio::test]
@@ -1625,6 +1740,8 @@ mod scheduling_limits {
 
     #[tokio::test]
     async fn working_task_waits_for_dependencies_before_rechecking_placement() {
+        let (_admission_sender, admission_pressure) =
+            tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
         tokio::task::LocalSet::new()
             .run_until(async {
                 let temp = tempfile::tempdir().unwrap();
@@ -1633,7 +1750,7 @@ mod scheduling_limits {
                 let row = queued_step(&db, temp.path());
                 let task = row["task"].as_str().unwrap();
                 let step = row["id"].as_str().unwrap();
-                let (attempt, worker, _) = begin(&db, &row).unwrap();
+                let (attempt, worker, _) = begin(&db, &row, &admission_pressure).unwrap();
                 crate::storage::dispatch(
                     &db,
                     "runtime_storage_configure",
@@ -1680,6 +1797,8 @@ mod scheduling_limits {
 
     #[tokio::test]
     async fn failed_dependencies_still_skip_and_settle_under_disk_pressure() {
+        let (_admission_sender, admission_pressure) =
+            tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
         tokio::task::LocalSet::new()
             .run_until(async {
                 let temp = tempfile::tempdir().unwrap();
@@ -1687,7 +1806,7 @@ mod scheduling_limits {
                     Store::open_with_config_dir(temp.path(), &temp.path().join("config")).unwrap();
                 let row = queued_step(&db, temp.path());
                 let task = row["task"].as_str().unwrap();
-                let (attempt, worker, _) = begin(&db, &row).unwrap();
+                let (attempt, worker, _) = begin(&db, &row, &admission_pressure).unwrap();
                 db.finish(
                     row["id"].as_str().unwrap(),
                     &attempt,
@@ -1730,6 +1849,8 @@ mod scheduling_limits {
 
     #[test]
     fn launch_rechecks_controller_reservations_in_the_admission_transaction() {
+        let (_admission_sender, admission_pressure) =
+            tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
         let temp = tempfile::tempdir().unwrap();
         let db = Store::open(temp.path()).unwrap();
         let row = queued_step(&db, temp.path());
@@ -1748,7 +1869,7 @@ mod scheduling_limits {
             .unwrap()
         );
         assert!(
-            begin(&db, &row)
+            begin(&db, &row, &admission_pressure)
                 .unwrap_err()
                 .to_string()
                 .contains("admission")
@@ -1758,11 +1879,13 @@ mod scheduling_limits {
 
     #[test]
     fn uncertain_process_holds_host_capacity_after_scheduler_restart() {
+        let (_admission_sender, admission_pressure) =
+            tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
         let temp = tempfile::tempdir().unwrap();
         let db = Store::open(temp.path()).unwrap();
         crate::management::set(&db, "concurrency", "1").unwrap();
         let old = queued_step(&db, temp.path());
-        let (attempt, _, _) = begin(&db, &old).unwrap();
+        let (attempt, _, _) = begin(&db, &old, &admission_pressure).unwrap();
         db.conn
             .execute(
                 "UPDATE attempts SET state='uncertain' WHERE id=?",
@@ -1771,7 +1894,7 @@ mod scheduling_limits {
             .unwrap();
         let next = queued_step(&db, temp.path());
         assert!(
-            begin(&db, &next)
+            begin(&db, &next, &admission_pressure)
                 .unwrap_err()
                 .to_string()
                 .contains("host capacity")

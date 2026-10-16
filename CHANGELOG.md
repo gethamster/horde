@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.41 - 2026-10-16
+
+- Reuse the shared disk-pressure monitor in scheduling and admission instead of
+  repeating all-host measurements on the daemon event loop. Keep fresh checks
+  of each new task’s own volumes and hold admission when monitor health is unknown.
+
 ## 0.6.40 - 2026-10-16
 
 - Measure host disk pressure once per monitor cycle off the daemon event loop,
