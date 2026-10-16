@@ -155,6 +155,12 @@ status retains its outcome. An interrupted hook is not automatically rerun for
 the same incident. Configure a command appropriate to the tools and caches on
 that host. An empty `cleanup_command` disables the hook.
 
+The existing host monitor measures all watched filesystems once per cycle on
+a blocking worker thread, then rests for one second. Attempts consume the shared health result and retain
+their existing process holds; a missing or failed monitor holds work until a
+healthy measurement arrives. Storage contention does not block the daemon's
+network event loop.
+
 Worker cleanup requests are cooperative: workers act at a mailbox check, and a
 suspended worker cannot perform cleanup until resumed. Arbitrary programs do not
 automatically understand the pressure file. Only locally owned process groups

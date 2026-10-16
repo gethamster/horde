@@ -96,10 +96,12 @@ pub(crate) async fn supervise<F: Future<Output = Result<Value>>>(
     task: &str,
     attempt: &str,
     worker: &str,
+    pressure: tokio::sync::watch::Receiver<Value>,
     work: F,
 ) -> Result<Value> {
     let control = control::Control::new(&db.root, attempt);
     control::scope(control.clone(), async {
+        control.set_paused(pressure.has_changed().is_err() || pressure.borrow()["state"] == "paused")?;
         let mut ticker = tokio::time::interval(Duration::from_millis(250));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let work = async { control::checkpoint().await; work.await };
@@ -109,8 +111,8 @@ pub(crate) async fn supervise<F: Future<Output = Result<Value>>>(
             tokio::select! {
                 biased;
                 _ = ticker.tick() => {
-                    let incident = match refresh(db) {
-                        Ok(incident) => incident,
+                    let incident = match pressure.has_changed() {
+                        Ok(_) => pressure.borrow().clone(),
                         Err(error) => {
                             eprintln!("Storage health unavailable; holding attempt {attempt}: {error:#}");
                             json!({"state":"paused","id":"health-unavailable"})
@@ -192,29 +194,38 @@ async fn cleanup_hook(db: &Store, policy: Policy, incident: Value) -> Result<()>
     management::event(db, "storage.cleanup_hook_finished", record)
 }
 /// The cleanup lane remains runnable while worker process groups are suspended.
-pub(crate) async fn monitor(root: std::path::PathBuf) {
+pub(crate) async fn monitor(root: std::path::PathBuf, pressure: tokio::sync::watch::Sender<Value>) {
     let mut hook = Hook(None);
     loop {
-        let result = (|| -> Result<()> {
-            let db = Store::open(&root)?;
+        let sample_root = root.clone();
+        let hook_ready = hook.0.as_ref().is_none_or(|handle| handle.is_finished());
+        let result = tokio::task::spawn_blocking(move || -> Result<_> {
+            let db = Store::open(&sample_root)?;
             let incident = refresh(&db)?;
             let policy = super::policy(&db)?;
-            if hook.0.as_ref().is_none_or(|handle| handle.is_finished())
-                && claim_hook(&db, &incident, &policy)?
-            {
-                let root = root.clone();
-                hook.0 = Some(tokio::task::spawn_local(async move {
-                    let result =
-                        async { cleanup_hook(&Store::open(&root)?, policy, incident).await }.await;
-                    if let Err(error) = result {
-                        eprintln!("Storage cleanup hook: {error:#}");
-                    }
-                }));
+            let claimed = hook_ready && claim_hook(&db, &incident, &policy)?;
+            Ok((incident, policy, claimed))
+        })
+        .await;
+        match result {
+            Ok(Ok((incident, policy, claimed))) => {
+                pressure.send_replace(incident.clone());
+                if claimed {
+                    let root = root.clone();
+                    hook.0 = Some(tokio::task::spawn_local(async move {
+                        let result =
+                            async { cleanup_hook(&Store::open(&root)?, policy, incident).await }
+                                .await;
+                        if let Err(error) = result {
+                            eprintln!("Storage cleanup hook: {error:#}");
+                        }
+                    }));
+                }
             }
-            Ok(())
-        })();
-        if let Err(error) = result {
-            eprintln!("Storage pressure monitor: {error:#}");
+            other => {
+                pressure.send_replace(json!({"state":"paused","id":"health-unavailable"}));
+                eprintln!("Storage pressure monitor: {other:?}");
+            }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -223,6 +234,188 @@ pub(crate) async fn monitor(root: std::path::PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture() -> (tempfile::TempDir, Store, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open_with_config_dir(dir.path(), &dir.path().join("config")).unwrap();
+        let plan = crate::template::compile(
+            "simulated",
+            &crate::template::load_templates(dir.path()).unwrap(),
+            std::collections::BTreeMap::from([("task".into(), "pressure".into())]),
+        )
+        .unwrap();
+        let task = db
+            .submit(
+                "pressure",
+                dir.path(),
+                &crate::config::Settings::default(),
+                &plan,
+            )
+            .unwrap();
+        let worker = db.register(&task, None).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (dir, db, task, worker)
+    }
+
+    #[tokio::test]
+    async fn shared_pressure_holds_and_resumes_owned_work_and_fails_closed() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (dir, db, task, worker) = fixture();
+                let counter = dir.path().join("counter");
+                let size = || std::fs::metadata(&counter).map(|m| m.len()).unwrap_or(0);
+                let (sender, receiver) = tokio::sync::watch::channel(
+                    json!({"state":"paused","id":"health-unavailable"}),
+                );
+                let root = dir.path().to_owned();
+                let running = tokio::task::spawn_local(async move {
+                    supervise(&db, &task, "shared-pressure", &worker, receiver, async {
+                        let mut command = crate::executor::clean_command("sh");
+                        command
+                            .current_dir(root)
+                            .args(["-c", "while :; do printf x >> counter; sleep 0.01; done"]);
+                        crate::executor::run_process(command, None, 30, None).await
+                    })
+                    .await
+                });
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                assert_eq!(size(), 0, "unknown initial health must not launch work");
+                for _ in 0..2 {
+                    sender.send_replace(json!({"state":"healthy","id":"sample"}));
+                    let before = size();
+                    tokio::time::timeout(Duration::from_secs(3), async {
+                        while size() <= before {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    sender.send_replace(json!({"state":"paused","id":"pressure"}));
+                    tokio::time::sleep(Duration::from_millis(350)).await;
+                    let stopped = size();
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    assert_eq!(
+                        size(),
+                        stopped,
+                        "the existing process group must stop on shared pressure"
+                    );
+                }
+                sender.send_replace(json!({"state":"healthy","id":"sample"}));
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                drop(sender);
+                tokio::time::sleep(Duration::from_millis(350)).await;
+                let stopped = size();
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                assert_eq!(
+                    size(),
+                    stopped,
+                    "a closed monitor must not retain its last healthy sample"
+                );
+                running.abort();
+                let _ = running.await;
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn failed_monitor_measurement_cannot_reuse_persisted_healthy_state() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (dir, db, _, _) = fixture();
+                let healthy = refresh(&db).unwrap();
+                assert_eq!(healthy["state"], "healthy");
+                management::set(&db, "storage.policy", "invalid JSON").unwrap();
+                let (sender, mut receiver) = tokio::sync::watch::channel(healthy.clone());
+                let monitor = tokio::task::spawn_local(monitor(dir.path().to_owned(), sender));
+                tokio::time::timeout(Duration::from_secs(3), receiver.changed())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(receiver.borrow()["state"], "paused");
+                assert_eq!(
+                    saved(&db).unwrap(),
+                    healthy,
+                    "the failed probe could not update the old durable state"
+                );
+                db.conn
+                    .execute(
+                        "DELETE FROM runtime_settings WHERE key='storage.policy'",
+                        [],
+                    )
+                    .unwrap();
+                tokio::time::timeout(Duration::from_secs(3), receiver.changed())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(receiver.borrow()["state"], "healthy");
+                monitor.abort();
+                let _ = monitor.await;
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn thirty_two_http_workers_remain_responsive_during_a_blocked_storage_measurement() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tokio::task::LocalSet::new().run_until(async {
+            let (dir, db, task, worker) = fixture();
+            let healthy = refresh(&db).unwrap();
+            db.conn.pragma_update(None, "journal_mode", "DELETE").unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/token", listener.local_addr().unwrap());
+            let server = tokio::task::spawn_local(async move {
+                for _ in 0..32 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    tokio::task::spawn_local(async move {
+                        let mut request = Vec::new();
+                        while !request.ends_with(b"\r\n\r\n") {
+                            let mut byte = [0];
+                            socket.read_exact(&mut byte).await.unwrap();
+                            request.push(byte[0]);
+                            assert!(request.len() < 4096);
+                        }
+                        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await.unwrap();
+                    });
+                }
+            });
+            let path = dir.path().join("state.sqlite3");
+            let (ready, locked) = std::sync::mpsc::channel();
+            let blocker = std::thread::spawn(move || {
+                let connection = rusqlite::Connection::open(path).unwrap();
+                connection.execute_batch("BEGIN EXCLUSIVE").unwrap();
+                ready.send(()).unwrap();
+                std::thread::sleep(Duration::from_secs(2));
+                connection.execute_batch("ROLLBACK").unwrap();
+            });
+            locked.recv_timeout(Duration::from_secs(3)).unwrap();
+            let (sender, receiver) = tokio::sync::watch::channel(healthy);
+            let monitor = tokio::task::spawn_local(monitor(dir.path().to_owned(), sender));
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(1)).build().unwrap();
+            let started = std::time::Instant::now();
+            let requests = (0..32).map(|number| {
+                let client = &client; let url = &url; let db = &db; let task = &task; let worker = &worker;
+                let receiver = receiver.clone();
+                async move {
+                    supervise(db, task, &format!("http-{number}"), worker, receiver, async {
+                        let response = client.get(url).send().await?;
+                        anyhow::ensure!(response.status().is_success(), "mock metadata failed");
+                        anyhow::ensure!(response.text().await? == "ok", "mock metadata body changed");
+                        Ok(json!({"completed":true}))
+                    }).await
+                }
+            });
+            let results = tokio::time::timeout(Duration::from_secs(1), futures_util::future::join_all(requests)).await;
+            let elapsed = started.elapsed();
+            blocker.join().unwrap();
+            monitor.abort(); let _ = monitor.await;
+            let results = results.expect("blocked storage must not stall current-thread HTTP work");
+            assert!(results.iter().all(|result| result.as_ref().is_ok_and(|value| value["completed"] == true)), "{results:?}");
+            server.await.unwrap();
+            eprintln!("32 supervised HTTP completions while storage is locked: {}ms", elapsed.as_millis());
+        }).await;
+    }
+
     #[test]
     fn hysteresis_and_failed_probe_hold_until_healthy() {
         let policy = Policy {

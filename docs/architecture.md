@@ -189,7 +189,10 @@ The daemon applies its user-level concurrency ceiling across tasks; a project's 
 Host-owned storage policy holds new invocations when the data, workspace, or
 repository filesystem is below its warning threshold. At critical pressure, the
 daemon suspends live owned process groups and gates subsequent tool calls. A
-failed space check also holds work. Separate recovery headroom prevents oscillation;
+failed space check also holds work. One host monitor measures storage once per
+monitor cycle off the daemon event loop and shares its latest result with all attempts.
+Attempts hold on an unavailable monitor instead of remeasuring every active
+workspace themselves. Separate recovery headroom prevents oscillation;
 command and progress budgets exclude suspended time. Attempts and reservations stay
 active, and the existing cancellation path remains available. Durable cleanup
 requests are advisory; authoritative pressure state belongs to the host. An optional
