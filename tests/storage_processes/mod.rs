@@ -363,6 +363,45 @@ fn unavailable_identity_is_inconclusive_for_a_live_process() {
     assert!(!verify_identity(pid, "unavailable", None).unwrap());
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_owned_groups_use_proc_identity_and_preserve_legacy_verification() {
+    let dir = tempfile::tempdir().unwrap();
+    let control = Control::new(dir.path(), "linux-process-identity");
+    let mut child = child(dir.path());
+    let pid = child.id();
+    let identity = crate::environment::process_identity(pid).unwrap();
+    assert!(identity.starts_with("linux-proc-v1:"));
+    assert_eq!(crate::environment::process_identity(pid), Some(identity));
+    let old = crate::executor::clean_command("ps")
+        .args(["-p", &pid.to_string(), "-o", "lstart=", "-o", "pgid="])
+        .output()
+        .unwrap();
+    assert!(old.status.success());
+    let legacy = crate::store::hash(&old.stdout);
+    assert_eq!(
+        crate::environment::process_identity_for(pid, &legacy),
+        Some(legacy.clone())
+    );
+    let guard = blocking_scope(Some(control.clone()), || register_process(pid)).unwrap();
+    // A receipt from the previous runtime must still prove this exact process,
+    // including pressure signals and cancellation after an upgrade.
+    control
+        .state
+        .lock()
+        .unwrap()
+        .processes
+        .get_mut(&pid)
+        .unwrap()
+        .identity = legacy;
+    control.set_paused(true).unwrap();
+    wait_for_stop(&child).await;
+    control.set_paused(false).unwrap();
+    drop(guard);
+    child.wait().unwrap();
+    assert!(crate::environment::process_identity(pid).is_none());
+}
+
 #[test]
 fn registration_after_child_exit_does_not_create_an_owned_process() {
     let dir = tempfile::tempdir().unwrap();

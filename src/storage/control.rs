@@ -90,7 +90,7 @@ impl Control {
         if !verify_identity(
             pid,
             &process.identity,
-            crate::environment::process_identity(pid),
+            crate::environment::process_identity_for(pid, &process.identity),
         )? {
             return Ok(());
         }
@@ -180,7 +180,8 @@ impl Drop for ProcessGuard {
         let mut state = control.state.lock().unwrap();
         if let Some(process) = state.processes.remove(&self.pid) {
             // Cancellation of a paused operation must kill its descendants too.
-            if crate::environment::process_identity(self.pid).as_deref() == Some(&process.identity)
+            if crate::environment::process_identity_for(self.pid, &process.identity).as_deref()
+                == Some(&process.identity)
                 && unsafe { libc::getpgid(self.pid as i32) } == self.pid as i32
             {
                 unsafe {

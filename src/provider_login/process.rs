@@ -119,7 +119,9 @@ pub(super) fn recover(root: &Path) -> Result<()> {
             "invalid login process pid"
         );
         if crate::executor::process_alive(receipt.pid as i32) {
-            if let Some(identity) = crate::environment::process_identity(receipt.pid) {
+            if let Some(identity) =
+                crate::environment::process_identity_for(receipt.pid, &receipt.identity)
+            {
                 if identity == receipt.identity {
                     unsafe {
                         libc::kill(-(receipt.pid as i32), libc::SIGKILL);

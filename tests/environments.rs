@@ -339,6 +339,16 @@ volumes:
 
 #[test]
 fn daemon_restart_reaps_owned_app_and_test_process_groups() {
+    restart_reaps_owned_app_and_test_process_groups(false);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_restart_reaps_legacy_app_and_test_process_identities() {
+    restart_reaps_owned_app_and_test_process_groups(true);
+}
+
+fn restart_reaps_owned_app_and_test_process_groups(legacy_identities: bool) {
     use std::{
         process::{Command, Stdio},
         time::{Duration, Instant},
@@ -434,6 +444,23 @@ fn daemon_restart_reaps_owned_app_and_test_process_groups() {
     let mut unrelated = ChildGuard(Command::new("sleep").arg("300").spawn().unwrap());
     daemon.0.kill().unwrap();
     daemon.0.wait().unwrap();
+    if legacy_identities {
+        for pid in [app_pid, test_pid] {
+            let old = horde::executor::clean_command("ps")
+                .args(["-p", &pid.to_string(), "-o", "lstart=", "-o", "pgid="])
+                .output()
+                .unwrap();
+            assert!(old.status.success());
+            let identity = horde::store::hash(&old.stdout);
+            f.db.conn.execute("UPDATE app_process_identity SET identity=? WHERE environment IN (SELECT id FROM app_environments WHERE pid=?)", rusqlite::params![identity,pid]).unwrap();
+            f.db.conn
+                .execute(
+                    "UPDATE app_process_groups SET identity=? WHERE pid=?",
+                    rusqlite::params![identity, pid],
+                )
+                .unwrap();
+        }
+    }
     let _restarted = spawn();
     let deadline = Instant::now() + Duration::from_secs(60);
     while f
