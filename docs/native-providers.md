@@ -55,6 +55,10 @@ Leave `api_key_env`, `account`, and `program` unset.
 Each model probe and inference request obtains a fresh bearer from the metadata
 server, so a long task does not pin an expiring token. Credentials never enter
 workflow settings, worker command environments, or account export bundles.
+Metadata connection failures receive up to three attempts, with 100 ms and
+200 ms delays, so a brief disconnect can recover within the current tool
+conversation. Each attempt retains the five-second request timeout. HTTP errors
+and invalid metadata responses fail immediately.
 
 Google's OpenAI endpoint has no `/models` catalog. Horde verifies the configured
 model with a small real inference and requires the response's model identity to
