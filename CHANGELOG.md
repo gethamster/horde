@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.6.44 - 2026-10-16
+
+- Keep large Vertex tool output in verified, paged archives so repeated file
+  reads and command results do not fill the model conversation. Preserve full
+  output, command status, and the original attempt without repeating commands
+  or requiring another model for context pruning.
+
 ## 0.6.43 - 2026-10-16
 
 - Avoid opening the workflow database when a finished process has no pause

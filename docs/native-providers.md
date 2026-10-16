@@ -134,6 +134,24 @@ template for the tokenized prompt prefix to match. Horde cannot guarantee that
 server-side template behavior or a particular cache speedup. Different invocations
 may have different context and tools and therefore start a new prefix.
 
+## Large Vertex tool results
+
+Vertex tool results larger than 8 KiB enter the conversation as an explicit
+partial preview and SHA-256 archive references. Horde retains the complete
+redacted JSON result in verified artifact parts of at most 4 MiB. Command exit
+status and success remain visible alongside the preview. The worker can use
+`retrieve_native_context` to read the original bytes in 8 KiB pages, including
+when optional decision-model pruning is disabled. Retrieval checks the owning
+task and attempt and verifies the stored hash. It never repeats a command.
+
+Projection happens before appending the tool response, so subsequent requests
+retain the same encoded message. It does not change command execution, claims,
+completion acceptance, deadlines, or the provider model. Completion results and
+retrieval pages are not projected again. Archival runs on the blocking executor;
+an archive must pass readback before its reference enters the conversation.
+This bounds individual large results; it does not claim to fit arbitrarily long
+conversations or large assistant-generated patches into a model's context window.
+
 ## Optional Jev context pruning
 
 The operator can enable Jev decisions for the native executor in the user-level

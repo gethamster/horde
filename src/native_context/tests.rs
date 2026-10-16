@@ -95,6 +95,98 @@ fn project_task(
         .unwrap();
     attempt_for_task(db, task)
 }
+
+#[test]
+fn large_tool_results_keep_exact_output_in_verified_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(dir.path()).unwrap();
+    let (task, step, attempt) = task(&db, &Settings::default());
+    let original = json!({"exit_code":7,"success":false,"latency_ms":123,
+        "stdout":format!("{}evidence-tail", "界".repeat(1_600_000)),
+        "stderr":"the command failed; do not report success"})
+    .to_string();
+    let projected = tool_result(
+        &db,
+        &task,
+        &step,
+        &attempt,
+        "command-once",
+        original.clone(),
+    )
+    .unwrap();
+    assert!(projected.len() < PAGE_BYTES);
+    let result: Value = serde_json::from_str(&projected).unwrap();
+    assert_eq!(result["exit_code"], 7);
+    assert_eq!(result["success"], false);
+    assert_eq!(result["latency_ms"], 123);
+    let parts = result["archived_tool_result"]["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 2);
+    let mut restored = Vec::new();
+    for part in parts {
+        let hash = part["hash"].as_str().unwrap();
+        assert_eq!(part["offset"], restored.len());
+        let bytes = std::fs::read(db.root.join("artifacts").join(hash)).unwrap();
+        assert!(bytes.len() <= MAX_ARCHIVE_BYTES);
+        assert_eq!(crate::store::hash(&bytes), hash);
+        assert_eq!(part["bytes"], bytes.len());
+        let page = retrieve(&db, &task, &attempt, hash, 0, PAGE_BYTES).unwrap();
+        assert!(page["content"].as_str().unwrap().len() <= PAGE_BYTES);
+        restored.extend(bytes);
+    }
+    assert_eq!(restored, original.as_bytes());
+    assert!(
+        db.rows("SELECT decision FROM native_context_epochs", &[])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        retrieve(
+            &db,
+            &task,
+            "different-attempt",
+            parts[0]["hash"].as_str().unwrap(),
+            0,
+            PAGE_BYTES
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn small_tool_results_remain_unchanged_and_create_no_archive() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(dir.path()).unwrap();
+    let (task, step, attempt) = task(&db, &Settings::default());
+    let original = json!({"success":true,"stdout":"done"}).to_string();
+    let before = db
+        .rows("SELECT hash FROM artifact_links WHERE task=?", &[&task])
+        .unwrap();
+    assert_eq!(
+        tool_result(&db, &task, &step, &attempt, "small", original.clone()).unwrap(),
+        original
+    );
+    assert_eq!(
+        db.rows("SELECT hash FROM artifact_links WHERE task=?", &[&task])
+            .unwrap(),
+        before
+    );
+}
+
+#[test]
+fn projected_tool_result_cannot_outlive_missing_or_changed_archive_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(dir.path()).unwrap();
+    let (task, step, attempt) = task(&db, &Settings::default());
+    let original = json!({"stdout":"x".repeat(PAGE_BYTES * 2)}).to_string();
+    let result: Value =
+        serde_json::from_str(&tool_result(&db, &task, &step, &attempt, "large", original).unwrap())
+            .unwrap();
+    let hash = result["archived_tool_result"]["parts"][0]["hash"]
+        .as_str()
+        .unwrap();
+    std::fs::write(db.root.join("artifacts").join(hash), b"changed").unwrap();
+    assert!(retrieve(&db, &task, &attempt, hash, 0, PAGE_BYTES).is_err());
+}
 #[test]
 fn only_old_completed_read_only_groups_are_candidates() {
     let mut messages = prefix();
