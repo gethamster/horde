@@ -158,7 +158,11 @@ that host. An empty `cleanup_command` disables the hook.
 Worker cleanup requests are cooperative: workers act at a mailbox check, and a
 suspended worker cannot perform cleanup until resumed. Arbitrary programs do not
 automatically understand the pressure file. Only locally owned process groups
-with verified live leaders are suspended. Docker containers keep running independently of their CLI; an
+with verified live leaders are suspended. Linux process identities use the kernel's
+boot identity, PID, start ticks, and process group from `/proc`; normal process
+registration and cleanup do not launch `ps`. Recovery still verifies identities
+already recorded by older releases in their original format. Other platforms
+retain their existing process checks. Docker containers keep running independently of their CLI; an
 in-flight remote provider request also cannot be suspended, and its transport
 timeout can still fail the attempt during a hold. Other host processes
 can continue consuming disk, so these controls are not a filesystem quota.

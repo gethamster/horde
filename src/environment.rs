@@ -838,7 +838,7 @@ async fn reconcile_inner(db: &Store, startup: bool) -> Result<()> {
         for group in db.rows("SELECT pid,identity FROM app_process_groups WHERE environment=?",&[&eid])? {
             let pid=group["pid"].as_i64().context("process group")? as i32;
             if crate::executor::process_alive(pid) {
-                if process_identity(pid as u32).is_some_and(|identity|group["identity"]==identity){unsafe{libc::kill(-pid,libc::SIGKILL);}}
+                if group["identity"].as_str().is_some_and(|expected| process_identity_for(pid as u32, expected).as_deref()==Some(expected)){unsafe{libc::kill(-pid,libc::SIGKILL);}}
                 else {group_held=true;}
             }else{unsafe{libc::kill(-pid,libc::SIGKILL);}}
         }
@@ -859,7 +859,9 @@ async fn reconcile_inner(db: &Store, startup: bool) -> Result<()> {
                     &[&eid],
                 )?;
                 if identities.first().is_some_and(|v| {
-                    process_identity(pid as u32).is_some_and(|identity| v["identity"] == identity)
+                    v["identity"].as_str().is_some_and(|expected| {
+                        process_identity_for(pid as u32, expected).as_deref() == Some(expected)
+                    })
                 }) {
                     unsafe {
                         libc::kill(-(pid as i32), libc::SIGKILL);
@@ -939,6 +941,75 @@ pub fn available(db: &Store, oid: &str) -> Result<bool> {
 }
 
 pub(crate) fn process_identity(pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
+        let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+        linux_process_identity(pid, &stat, &boot)
+    }
+    #[cfg(not(target_os = "linux"))]
+    ps_process_identity(pid)
+}
+
+/// Existing application and pause receipts can outlive a runtime upgrade. Only
+/// their unversioned identities use the historical ps format during verification.
+pub(crate) fn process_identity_for(pid: u32, _expected: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    if _expected.len() == 64 && _expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return ps_process_identity(pid);
+    }
+    process_identity(pid)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_process_identity(pid: u32, stat: impl AsRef<[u8]>, boot: &str) -> Option<String> {
+    if pid <= 1 || pid > i32::MAX as u32 {
+        return None;
+    }
+    // comm is parenthesized but can itself contain spaces, newlines, and closing
+    // parentheses. The final closing parenthesis precedes the numeric fields.
+    let stat = stat.as_ref();
+    let open = stat.windows(2).position(|bytes| bytes == b" (")?;
+    if std::str::from_utf8(&stat[..open])
+        .ok()?
+        .parse::<u32>()
+        .ok()?
+        != pid
+    {
+        return None;
+    }
+    let close = stat.windows(2).rposition(|bytes| bytes == b") ")?;
+    if close < open + 2 {
+        return None;
+    }
+    let fields = std::str::from_utf8(&stat[close + 2..])
+        .ok()?
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>();
+    let group = fields.get(2)?.parse::<u32>().ok()?;
+    let start = fields.get(19)?.parse::<u64>().ok()?;
+    if group == 0 || group > i32::MAX as u32 {
+        return None;
+    }
+    let boot = boot.trim();
+    if boot.len() != 36
+        || !boot.bytes().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+    {
+        return None;
+    }
+    Some(format!(
+        "linux-proc-v1:{}",
+        crate::store::hash(json!([boot, pid, start, group]).to_string().as_bytes())
+    ))
+}
+
+fn ps_process_identity(pid: u32) -> Option<String> {
     let out = clean_command("ps")
         .args(["-p", &pid.to_string(), "-o", "lstart=", "-o", "pgid="])
         .output()
@@ -1063,6 +1134,66 @@ async fn invocation_command(
         values,
     )
     .await
+}
+
+#[cfg(test)]
+mod process_identity_tests {
+    use super::*;
+    const BOOT: &str = "1b409fd7-159b-413e-b931-a318d285b5cb";
+
+    fn stat(pid: u32, name: &str, group: u32, start: u64) -> String {
+        let mut fields = vec!["0".to_owned(); 20];
+        fields[0] = "S".into();
+        fields[2] = group.to_string();
+        fields[19] = start.to_string();
+        format!("{pid} ({name}) {}", fields.join(" "))
+    }
+
+    #[test]
+    fn linux_identity_uses_boot_pid_start_ticks_and_group_not_process_name() {
+        let identity = linux_process_identity(42, stat(42, "first", 42, 12345), BOOT).unwrap();
+        assert!(identity.starts_with("linux-proc-v1:"));
+        assert_eq!(
+            linux_process_identity(42, stat(42, "name ) with (spaces)\nand )", 42, 12345), BOOT),
+            Some(identity.clone())
+        );
+        let mut non_utf8_name = stat(42, "first", 42, 12345).into_bytes();
+        non_utf8_name[4] = 0xff;
+        assert_eq!(
+            linux_process_identity(42, &non_utf8_name, BOOT),
+            Some(identity.clone())
+        );
+        for other in [
+            linux_process_identity(42, stat(42, "first", 42, 12346), BOOT),
+            linux_process_identity(42, stat(42, "first", 43, 12345), BOOT),
+            linux_process_identity(43, stat(43, "first", 42, 12345), BOOT),
+            linux_process_identity(
+                42,
+                stat(42, "first", 42, 12345),
+                "2b409fd7-159b-413e-b931-a318d285b5cb",
+            ),
+        ] {
+            assert_ne!(other.unwrap(), identity);
+        }
+    }
+
+    #[test]
+    fn linux_identity_rejects_incomplete_or_mismatched_kernel_records() {
+        for (pid, record, boot) in [
+            (42, stat(43, "other pid", 42, 12345), BOOT),
+            (0, stat(0, "invalid pid", 42, 12345), BOOT),
+            (42, stat(42, "invalid group", 0, 12345), BOOT),
+            (42, "42 (truncated) S 1 42".into(), BOOT),
+            (
+                42,
+                stat(42, "no start", 42, 12345).replace("12345", "invalid"),
+                BOOT,
+            ),
+            (42, stat(42, "normal", 42, 12345), "not-a-boot-id"),
+        ] {
+            assert!(linux_process_identity(pid, &record, boot).is_none());
+        }
+    }
 }
 
 #[cfg(test)]

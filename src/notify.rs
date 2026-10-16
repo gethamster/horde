@@ -70,12 +70,11 @@ pub async fn tick(db: &Store) -> Result<()> {
     Ok(())
 }
 
-const PENDING_QUERY: &str = "SELECT t.id,t.status,t.objective,t.repo,t.settings,e.latest,\
-    COALESCE(r.seq,0) AS cursor FROM \
-    (SELECT task,MAX(seq) AS latest FROM events WHERE task IS NOT NULL GROUP BY task) e \
-    JOIN tasks t ON t.id=e.task \
+const PENDING_QUERY: &str = "SELECT t.id,t.status,t.objective,t.repo,t.settings,\
+    (SELECT MAX(seq) FROM events e WHERE e.task=t.id) AS latest,\
+    COALESCE(r.seq,0) AS cursor FROM tasks t \
     LEFT JOIN event_receipts r ON r.task=t.id AND r.consumer=? \
-    WHERE e.latest>COALESCE(r.seq,0) ORDER BY e.latest";
+    WHERE latest>COALESCE(r.seq,0) ORDER BY latest";
 
 fn pending(db: &Store) -> Result<Vec<Pending>> {
     db.rows(PENDING_QUERY, &[&CONSUMER])?
@@ -301,7 +300,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pending_history_is_scanned_once_and_keeps_each_task_cursor() {
+    fn pending_history_uses_task_seeks_and_keeps_each_task_cursor() {
         let dir = tempfile::tempdir().unwrap();
         let db = Store::open(dir.path()).unwrap();
         let settings = serde_json::to_string(&Settings::default()).unwrap();
@@ -320,12 +319,28 @@ mod tests {
         assert_eq!(result[1].cursor, 0);
         assert_eq!(result[2].cursor, 200);
         assert_eq!(result[2].latest, 10200);
-        let mut query = db.conn.prepare(PENDING_QUERY).unwrap();
-        {
+        let measure = || {
+            let mut query = db.conn.prepare(PENDING_QUERY).unwrap();
             let mut rows = query.query([CONSUMER]).unwrap();
             while rows.next().unwrap().is_some() {}
-        }
-        // A correlated MAX walks this late history again for every old task.
-        assert!(query.get_status(rusqlite::StatementStatus::VmStep) < 500_000);
+            drop(rows);
+            query.get_status(rusqlite::StatementStatus::VmStep)
+        };
+        let before = measure();
+        db.conn.execute_batch("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000) INSERT INTO events(task,kind,data,created) SELECT 'task-199','test','{}',0 FROM n;").unwrap();
+        let after = measure();
+        // Work follows the task count, not the accumulated event history.
+        assert!(after < 25_000, "notification query used {after} VM steps");
+        assert!(
+            after <= before + 1000,
+            "history growth: {before} -> {after}"
+        );
+        let result = pending(&db).unwrap();
+        assert_eq!(
+            result.iter().map(|p| p.task.as_str()).collect::<Vec<_>>(),
+            ["task-000", "task-001", "task-199"]
+        );
+        assert_eq!(result[2].cursor, 200);
+        assert_eq!(result[2].latest, 110201);
     }
 }

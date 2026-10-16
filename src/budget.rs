@@ -219,6 +219,7 @@ where
     let mut last_progress = active_start;
     let mut last_ms = started_ms;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let budget = Duration::from_secs(budget_s);
     // The sample the deadline takes before ruling, while it is in flight. The work
     // keeps being polled underneath it, so a slow sample delays the verdict and never

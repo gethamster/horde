@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 /// Status of the per-task synthetic worker row that carries operator steering messages.
 /// Operator rows never receive mail, never wake, and are hidden from worker listings.
 pub const OPERATOR_STATUS: &str = "operator";
@@ -105,7 +105,7 @@ impl Store {
         }
         // Hold the daemon lock through migration so an older scheduler cannot
         // dispatch work while the new ownership schema is being installed.
-        let _migration_lock = if (5..=10).contains(&version) {
+        let _migration_lock = if (5..i64::from(SCHEMA_VERSION)).contains(&version) {
             use fs2::FileExt;
             let lock = std::fs::OpenOptions::new()
                 .create(true)
@@ -216,7 +216,15 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         crate::accounts::migrate(&conn)?;
         crate::project_runtime::migrate(&conn)?;
         if version != i64::from(SCHEMA_VERSION) {
+            conn.execute_batch(
+                "BEGIN IMMEDIATE;
+CREATE INDEX IF NOT EXISTS events_attempt_seq ON events(json_extract(data,'$.attempt'),seq);
+CREATE INDEX IF NOT EXISTS events_task_kind_seq ON events(task,kind,seq);
+CREATE INDEX IF NOT EXISTS events_task_seq ON events(task,seq);
+",
+            )?;
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            conn.execute_batch("COMMIT")?;
         }
         Ok(Self {
             conn,
@@ -829,6 +837,108 @@ INSERT OR IGNORE INTO notifications(worker) SELECT id FROM workers;
         Ok(serde_json::from_str(
             row["spec"].as_str().context("step spec")?,
         )?)
+    }
+}
+
+#[cfg(test)]
+mod event_index_migration_tests {
+    use super::*;
+
+    #[test]
+    fn schema_eleven_upgrade_retains_history_receipts_and_existing_attempt_index() {
+        use fs2::FileExt;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(dir.path()).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO tasks VALUES('task','test','.','succeeded','{}','{}',0)",
+                [],
+            )
+            .unwrap();
+        db.event("task", "step.progress", json!({"attempt":"native-attempt"}))
+            .unwrap();
+        db.conn
+            .execute("INSERT INTO event_receipts VALUES('task','notify',1)", [])
+            .unwrap();
+        let events = db.rows("SELECT * FROM events", &[]).unwrap();
+        let receipts = db.rows("SELECT * FROM event_receipts", &[]).unwrap();
+        db.conn.execute_batch("DROP INDEX events_task_kind_seq; DROP INDEX events_task_seq; PRAGMA user_version=11;").unwrap();
+        drop(db);
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.path().join("daemon.lock"))
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        assert!(
+            Store::open(dir.path())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("stop the running Horde daemon")
+        );
+        drop(lock);
+        let db = Store::open(dir.path()).unwrap();
+        assert_eq!(db.rows("SELECT * FROM events", &[]).unwrap(), events);
+        assert_eq!(
+            db.rows("SELECT * FROM event_receipts", &[]).unwrap(),
+            receipts
+        );
+        assert_eq!(
+            db.conn
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        let indexes = db.rows("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'events_%' ORDER BY name", &[]).unwrap();
+        assert_eq!(
+            indexes,
+            vec![
+                json!({"name":"events_attempt_seq"}),
+                json!({"name":"events_task_kind_seq"}),
+                json!({"name":"events_task_seq"})
+            ]
+        );
+        // Current-store opens must remain read-only even under another connection's
+        // write transaction; the index setup belongs exclusively to migration.
+        db.atomic(|| {
+            let reopened = Store::open(dir.path())?;
+            assert_eq!(reopened.rows("SELECT * FROM events", &[])?, events);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn invalid_legacy_event_json_fails_migration_without_advancing_schema_or_losing_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Store::open(dir.path()).unwrap();
+        db.conn.execute_batch("DROP INDEX events_attempt_seq; DROP INDEX events_task_kind_seq; DROP INDEX events_task_seq; PRAGMA user_version=11;
+INSERT INTO events(task,kind,data,created) VALUES(NULL,'test','invalid-json',0);").unwrap();
+        drop(db);
+        assert!(Store::open(dir.path()).is_err());
+        let conn = Connection::open(dir.path().join("state.sqlite3")).unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            11
+        );
+        assert_eq!(
+            conn.query_row("SELECT data FROM events", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "invalid-json"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'events_%'",
+                [],
+                |row| row.get::<_, u32>(0)
+            )
+            .unwrap(),
+            0
+        );
     }
 }
 

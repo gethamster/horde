@@ -18,12 +18,36 @@ pub async fn vertex_access_token() -> Result<String> {
 }
 
 async fn metadata_access_token(client: &reqwest::Client, url: &str) -> Result<String> {
-    let response = client
-        .get(url)
-        .header("Metadata-Flavor", "Google")
-        .send()
-        .await
-        .map_err(|_| anyhow::anyhow!("Vertex ADC metadata is unavailable"))?;
+    let mut retries = 0;
+    let response = loop {
+        let started = std::time::Instant::now();
+        match client
+            .get(url)
+            .header("Metadata-Flavor", "Google")
+            .send()
+            .await
+        {
+            Ok(response) => break response,
+            Err(error) => {
+                let timeout = error.is_timeout();
+                let connect = error.is_connect();
+                let source = anyhow::Error::new(error.without_url());
+                eprintln!(
+                    "Vertex ADC metadata attempt {} failed after {}ms (timeout={timeout}, connect={connect}): {source:#}",
+                    retries + 1,
+                    started.elapsed().as_millis(),
+                );
+                if retries == 2 {
+                    anyhow::bail!("Vertex ADC metadata is unavailable");
+                }
+                // A brief metadata connection failure must not discard an ongoing
+                // model conversation. Retry transport only, before any response
+                // validation, without retaining credentials between requests.
+                tokio::time::sleep(std::time::Duration::from_millis(100 << retries)).await;
+                retries += 1;
+            }
+        }
+    };
     ensure!(
         response.status().is_success(),
         "Vertex ADC metadata returned {}",
@@ -58,6 +82,103 @@ async fn metadata_access_token(client: &reqwest::Client, url: &str) -> Result<St
 mod vertex_tests {
     use super::*;
     use std::io::{Read, Write};
+
+    fn metadata_server(
+        responses: Vec<Option<(u16, bool, String)>>,
+    ) -> (String, std::thread::JoinHandle<usize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let count = responses.len();
+            for response in responses {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut headers = Vec::new();
+                while !headers.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    headers.push(byte[0]);
+                }
+                assert!(
+                    String::from_utf8(headers)
+                        .unwrap()
+                        .to_ascii_lowercase()
+                        .contains("metadata-flavor: google")
+                );
+                if let Some((status, flavor, body)) = response {
+                    write!(socket,"HTTP/1.1 {status} OK\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{body}",body.len(),if flavor {"Metadata-Flavor: Google\r\n"} else {""}).unwrap();
+                }
+            }
+            count
+        });
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn metadata_transport_failure_recovers_without_restarting_the_native_step() {
+        let (url, server) = metadata_server(vec![
+            None,
+            Some((
+                200,
+                true,
+                json!({"access_token":"recovered","token_type":"Bearer","expires_in":3600})
+                    .to_string(),
+            )),
+        ]);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        assert_eq!(
+            metadata_access_token(&client, &url).await.unwrap(),
+            "recovered"
+        );
+        assert_eq!(server.join().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn metadata_transport_retries_stop_after_three_requests() {
+        let (url, server) = metadata_server(vec![None, None, None]);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        assert_eq!(
+            metadata_access_token(&client, &url)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "Vertex ADC metadata is unavailable"
+        );
+        assert_eq!(server.join().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn metadata_responses_fail_immediately_without_transport_retry() {
+        for (status, flavor, body, expected) in [
+            (403, true, "{}", "403"),
+            (503, true, "{}", "503"),
+            (200, false, "{}", "identity is missing"),
+            (200, true, "invalid json", "response is invalid"),
+            (200, true, "{}", "invalid or expired"),
+        ] {
+            let (url, server) = metadata_server(vec![
+                Some((status, flavor, body.to_owned())),
+                Some((
+                    200,
+                    true,
+                    json!({"access_token":"next-request","token_type":"Bearer","expires_in":3600})
+                        .to_string(),
+                )),
+            ]);
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            assert!(
+                metadata_access_token(&client, &url)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected)
+            );
+            assert_eq!(
+                metadata_access_token(&client, &url).await.unwrap(),
+                "next-request"
+            );
+            assert_eq!(server.join().unwrap(), 2);
+        }
+    }
 
     #[tokio::test]
     async fn attached_identity_is_resolved_again_and_invalid_metadata_fails_closed() {
