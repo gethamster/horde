@@ -474,12 +474,16 @@ pub async fn blocking<T: Send + 'static>(
     let control = COMMAND_CONTROL
         .try_with(|c| CommandControl {
             deadline: c.deadline.clone(),
-            cancelled,
+            cancelled: cancelled.clone(),
             pressure: c.pressure.clone(),
         })
         .ok();
     let pressure = pressure::current();
     tokio::task::spawn_blocking(move || {
+        anyhow::ensure!(
+            !cancelled.load(std::sync::atomic::Ordering::SeqCst),
+            "step cancelled"
+        );
         BLOCKING_CONTROL.with(|slot| *slot.borrow_mut() = control);
         let result = pressure::blocking_scope(pressure, work);
         BLOCKING_CONTROL.with(|slot| *slot.borrow_mut() = None);

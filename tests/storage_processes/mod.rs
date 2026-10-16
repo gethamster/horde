@@ -488,3 +488,183 @@ fn fixture_reaps_child_when_identity_mismatch_assertion_unwinds() {
     );
     assert!(control.state.lock().unwrap().processes.is_empty());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn executor_launches_do_not_block_current_thread_http_responses() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::task::LocalSet::new().run_until(async {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::Store::open(dir.path()).unwrap();
+        let control = Control::new(dir.path(), "parallel-launches");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::task::spawn_local(async move {
+            for _ in 0..32 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::task::spawn_local(async move {
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte).await.unwrap();
+                        request.extend_from_slice(&byte);
+                    }
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await.unwrap();
+                });
+            }
+        });
+        let started = Instant::now();
+        let mut launches = Vec::new();
+        for _ in 0..32 {
+            let control = control.clone();
+            launches.push(tokio::task::spawn_local(scope(control, async {
+                let mut command = crate::executor::clean_command("sh");
+                command.args(["-c", "exit 0"]);
+                // The parent waits for pre_exec/exec. Model a slow launch handshake,
+                // rather than delaying an already-running process or the HTTP server.
+                unsafe { command.pre_exec(|| { libc::usleep(100_000); Ok(()) }); }
+                let result = crate::executor::run_process(command, None, 5, None).await.unwrap();
+                assert_eq!(result["success"], true);
+            })));
+        }
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let requests = (0..32).map(|_| async {
+            let response = client.get(format!("http://{address}/")).send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.text().await.unwrap(), "ok");
+        });
+        futures_util::future::join_all(requests).await;
+        let elapsed = started.elapsed();
+        for launch in launches { launch.await.unwrap(); }
+        server.await.unwrap();
+        assert!(control.state.lock().unwrap().processes.is_empty());
+        eprintln!("32 HTTP responses during 32 slow process launches: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "launches stalled the reactor: {elapsed:?}");
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelling_during_executor_launch_drops_group_and_storage_ownership() {
+    use std::os::fd::AsRawFd;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::task::LocalSet::new().run_until(async {
+        let dir = tempfile::tempdir().unwrap();
+        crate::store::Store::open(dir.path()).unwrap();
+        let control = Control::new(dir.path(), "cancel-launch");
+        let (parent, gate) = std::os::unix::net::UnixStream::pair().unwrap();
+        parent.set_nonblocking(true).unwrap();
+        let mut parent = tokio::net::UnixStream::from_std(parent).unwrap();
+        let root = dir.path().to_owned();
+        let handle = tokio::task::spawn_local(scope(control.clone(), async move {
+            let mut command = crate::executor::clean_command("sh");
+            command.args(["-c", "sh -c 'while :; do printf x >> counter; sleep 0.01; done' & echo $$ $! > pids; wait"])
+                .current_dir(root);
+            unsafe { command.pre_exec(move || {
+                let fd = gate.as_raw_fd();
+                let byte = [1u8];
+                if libc::write(fd, byte.as_ptr().cast(), 1) != 1 { return Err(std::io::Error::last_os_error()); }
+                let mut release = [0u8];
+                if libc::read(fd, release.as_mut_ptr().cast(), 1) != 1 { return Err(std::io::Error::last_os_error()); }
+                Ok(())
+            }); }
+            crate::executor::run_process(command, None, 30, None).await
+        }));
+        let mut byte = [0];
+        tokio::time::timeout(Duration::from_secs(5), parent.read_exact(&mut byte)).await.unwrap().unwrap();
+        // The async checkpoint passed, but spawn has not returned. Keep registration
+        // blocked after exec so cancellation happens before the blocking result exists.
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+        let (unlock_tx, unlock_rx) = std::sync::mpsc::channel();
+        let held = control.clone();
+        let registration = std::thread::spawn(move || {
+            let state = held.state.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            let released = unlock_rx.recv_timeout(Duration::from_secs(10));
+            drop(state);
+            released.unwrap();
+        });
+        locked_rx.await.unwrap();
+        parent.write_all(&[1]).await.unwrap();
+        let progress = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let pids: Vec<i32> = std::fs::read_to_string(dir.path().join("pids"))
+                    .unwrap_or_default().split_whitespace().filter_map(|p| p.parse().ok()).collect();
+                if counter(dir.path()) > 0 && pids.len() == 2 { break pids; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await;
+        handle.abort();
+        let cancelled = handle.await;
+        unlock_tx.send(()).unwrap();
+        registration.join().unwrap();
+        let pids = progress.unwrap();
+        assert!(cancelled.unwrap_err().is_cancelled());
+        let leader = pids[0];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !process_absent(leader as u32) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let stopped = process_absent(leader as u32);
+        let before = counter(dir.path());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let after = counter(dir.path());
+        // Always clean up our group even when the assertions below find a regression.
+        unsafe { libc::kill(-leader, libc::SIGKILL); }
+        assert!(stopped, "cancelled launch leader was not killed/reaped");
+        assert_eq!(before, after, "descendant survived cancellation during launch");
+        assert!(control.state.lock().unwrap().processes.is_empty());
+        let db = crate::store::Store::open(dir.path()).unwrap();
+        let receipts: i64 = db.conn.query_row("SELECT count(*) FROM runtime_settings WHERE key LIKE 'storage.pause:cancel-launch:%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(receipts, 0);
+    }).await;
+}
+
+#[test]
+fn cancelled_queued_executor_launch_never_starts_a_process() {
+    use std::os::unix::ffi::OsStrExt;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("late-launch");
+    runtime.block_on(async {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let occupied = tokio::task::spawn_blocking(move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        started_rx.await.unwrap();
+        let path = std::ffi::CString::new(marker.as_os_str().as_bytes()).unwrap();
+        let mut command = crate::executor::clean_command("sh");
+        command.args(["-c", "exit 0"]);
+        unsafe {
+            command.pre_exec(move || {
+                // Record the actual pre-exec side effect before any late guard can
+                // kill the child, so immediate post-spawn cleanup cannot mask it.
+                let fd = libc::open(
+                    path.as_ptr(),
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+                    0o600,
+                );
+                if fd < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::close(fd);
+                Ok(())
+            });
+        }
+        let mut launch = Box::pin(crate::executor::run_process(command, None, 5, None));
+        assert!(futures_util::poll!(launch.as_mut()).is_pending());
+        drop(launch);
+        release_tx.send(()).unwrap();
+        occupied.await.unwrap();
+        // Drain the single-thread blocking queue after the cancelled launch job.
+        tokio::task::spawn_blocking(|| ()).await.unwrap();
+        assert!(
+            !marker.exists(),
+            "cancelled queued command reached pre_exec"
+        );
+    });
+}
