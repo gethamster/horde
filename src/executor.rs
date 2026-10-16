@@ -1151,6 +1151,35 @@ fn ensure_native_account(
     Ok(())
 }
 
+fn vertex_retry_delay(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    attempt: u32,
+    remaining: std::time::Duration,
+) -> Option<std::time::Duration> {
+    use std::time::{Duration, SystemTime};
+    if ![429, 500, 503].contains(&status.as_u16()) || !(1..3).contains(&attempt) {
+        return None;
+    }
+    let requested = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .parse::<u64>()
+                .ok()
+                .map(Duration::from_secs)
+                .or_else(|| {
+                    httpdate::parse_http_date(value)
+                        .ok()
+                        .map(|date| date.duration_since(SystemTime::now()).unwrap_or_default())
+                })
+        })
+        .unwrap_or_default();
+    let delay = Duration::from_secs(1 << (attempt - 1)).max(requested);
+    (delay < remaining).then_some(delay)
+}
+
 async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
     let mut generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
     let project = crate::projects::task_project(i.db, i.task)?;
@@ -1159,7 +1188,7 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
     if vertex {
         config.validate_vertex()?;
     }
-    let mut key = if vertex {
+    let key = if vertex {
         String::new()
     } else if chatgpt {
         crate::account_auth::invocation_chatgpt_token(
@@ -1179,6 +1208,35 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
     }
     crate::capacity::ensure_generation(i.db, config, generation.as_deref())?;
     let catalog = probe_with_key(config, &key).await?;
+    native_conversation(
+        i,
+        config,
+        generation,
+        key,
+        catalog,
+        crate::account_auth::vertex_access_token,
+    )
+    .await
+}
+
+// Preflight keeps endpoint/authentication validation at the native entrypoint.
+// The conversation receives the same per-request resolver so transport fixtures
+// can exercise real HTTP retries without weakening production ADC boundaries.
+async fn native_conversation<F, Fut>(
+    i: &Invocation<'_>,
+    config: &ExecutorConfig,
+    mut generation: Option<String>,
+    mut key: String,
+    catalog: Value,
+    mut vertex_token: F,
+) -> Result<Value>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String>>,
+{
+    let project = crate::projects::task_project(i.db, i.task)?;
+    let chatgpt = config.kind == "chatgpt";
+    let vertex = config.kind == "vertex";
     let model = catalog["model"].as_str().context("resolved model")?;
     i.db.event(
         i.task,
@@ -1311,7 +1369,7 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
             crate::storage::control::checkpoint().await;
             request_attempt += 1;
             if vertex {
-                key = crate::account_auth::vertex_access_token().await?;
+                key = vertex_token().await?;
             }
             if chatgpt {
                 key = crate::account_auth::invocation_chatgpt_token(
@@ -1371,6 +1429,31 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
             )?;
             let status = response.status();
             if !chatgpt && !status.is_success() {
+                if vertex {
+                    let timing = crate::budget::status(i.db, i.attempt)?;
+                    let remaining = timing["remaining_s"]
+                        .as_f64()
+                        .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
+                        .unwrap_or_else(|| {
+                            std::time::Duration::from_secs(i.settings.timeout_seconds)
+                                .saturating_sub(start.elapsed())
+                        });
+                    if let Some(delay) =
+                        vertex_retry_delay(status, response.headers(), request_attempt, remaining)
+                    {
+                        i.db.event(i.task, "executor.progress", json!({
+                            "step":i.step,"attempt":i.attempt,"kind":"provider_retry",
+                            "model":model,"status":status.as_u16(),"request_attempt":request_attempt,
+                            "delay_ms":delay.as_millis() as u64,
+                            "remaining_budget_ms":remaining.as_millis() as u64,
+                        }))?;
+                        // No successful model response or tool call has been
+                        // processed. Keep this exact conversation and task.
+                        drop(response);
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                }
                 bail!(
                     "{} returned {status}; retry or fallback requires workflow policy",
                     if vertex {
@@ -1797,6 +1880,364 @@ pub async fn probe_tools_with_key(config: &ExecutorConfig, key: &str) -> Result<
 #[cfg(test)]
 mod tool_event_tests {
     use super::*;
+
+    #[test]
+    fn vertex_retries_only_temporary_statuses_with_three_total_requests() {
+        use reqwest::{StatusCode, header::HeaderMap};
+        use std::time::Duration;
+        let headers = HeaderMap::new();
+        for status in [429, 500, 503] {
+            let status = StatusCode::from_u16(status).unwrap();
+            for (attempt, expected) in [(1, Some(1)), (2, Some(2)), (3, None), (4, None)] {
+                assert_eq!(
+                    vertex_retry_delay(status, &headers, attempt, Duration::from_secs(30)),
+                    expected.map(Duration::from_secs),
+                );
+            }
+        }
+        for status in [200, 400, 401, 402, 403, 404, 408, 502, 504] {
+            assert_eq!(
+                vertex_retry_delay(
+                    StatusCode::from_u16(status).unwrap(),
+                    &headers,
+                    1,
+                    Duration::from_secs(30),
+                ),
+                None,
+            );
+        }
+    }
+
+    #[test]
+    fn vertex_retry_after_cannot_outwait_the_existing_progress_budget() {
+        use reqwest::{
+            StatusCode,
+            header::{HeaderMap, HeaderValue, RETRY_AFTER},
+        };
+        use std::time::Duration;
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("12"));
+        assert_eq!(
+            vertex_retry_delay(
+                StatusCode::TOO_MANY_REQUESTS,
+                &headers,
+                1,
+                Duration::from_secs(13)
+            ),
+            Some(Duration::from_secs(12)),
+        );
+        for remaining in [0, 1, 11, 12] {
+            assert_eq!(
+                vertex_retry_delay(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    &headers,
+                    1,
+                    Duration::from_secs(remaining)
+                ),
+                None,
+            );
+        }
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("18446744073709551615"),
+        );
+        assert_eq!(
+            vertex_retry_delay(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &headers,
+                1,
+                Duration::from_secs(600)
+            ),
+            None,
+        );
+        for value in ["0", "invalid", "-1"] {
+            headers.insert(RETRY_AFTER, HeaderValue::from_str(value).unwrap());
+            assert_eq!(
+                vertex_retry_delay(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    &headers,
+                    1,
+                    Duration::from_secs(2)
+                ),
+                Some(Duration::from_secs(1)),
+            );
+        }
+    }
+
+    #[test]
+    fn vertex_retry_after_accepts_http_dates_without_shortening_backoff() {
+        use reqwest::{
+            StatusCode,
+            header::{HeaderMap, HeaderValue, RETRY_AFTER},
+        };
+        use std::time::{Duration, SystemTime};
+        let mut headers = HeaderMap::new();
+        let date = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(30));
+        headers.insert(RETRY_AFTER, HeaderValue::from_str(&date).unwrap());
+        let delay = vertex_retry_delay(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &headers,
+            1,
+            Duration::from_secs(31),
+        )
+        .unwrap();
+        assert!((Duration::from_secs(28)..=Duration::from_secs(30)).contains(&delay));
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Thu, 01 Jan 1970 00:00:00 GMT"),
+        );
+        assert_eq!(
+            vertex_retry_delay(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &headers,
+                2,
+                Duration::from_secs(3)
+            ),
+            Some(Duration::from_secs(2)),
+        );
+    }
+
+    #[tokio::test]
+    async fn vertex_http_retries_preserve_tools_conversation_and_attempt() {
+        vertex_http_conversation_case(false).await;
+    }
+
+    #[tokio::test]
+    async fn vertex_http_retry_exhaustion_keeps_the_original_error_and_work() {
+        vertex_http_conversation_case(true).await;
+    }
+
+    async fn vertex_http_conversation_case(exhaust: bool) {
+        use std::{
+            collections::BTreeMap,
+            io::{Read, Write},
+            sync::{Arc, Mutex},
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let model = "google/gemini-3.8-flash";
+        let server = std::thread::spawn(move || {
+            for (index, status) in if exhaust {
+                [200, 429, 429, 429]
+            } else {
+                [200, 429, 500, 200]
+            }
+            .into_iter()
+            .enumerate()
+            {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let mut headers = vec![];
+                while !headers.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    headers.push(byte[0]);
+                }
+                let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+                assert!(headers.starts_with("post /v1/chat/completions "));
+                assert!(headers.contains(&format!(
+                    "authorization: bearer synthetic-token-{}",
+                    index + 1
+                )));
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length: ")
+                            .map(|n| n.parse::<usize>().unwrap())
+                    })
+                    .unwrap();
+                let mut body = vec![0; length];
+                socket.read_exact(&mut body).unwrap();
+                recorded.lock().unwrap().push(body);
+                let message = if index == 0 {
+                    json!({"role":"assistant","content":null,"tool_calls":[{"id":"command-once","type":"function","extra_content":{"google":{"thought_signature":"opaque-signature"}},"function":{"name":"command","arguments":json!({"argv":["sh","-c","printf x >> marker.txt"]}).to_string()}}]})
+                } else {
+                    json!({"role":"assistant","content":null,"tool_calls":[{"id":"finish","type":"function","function":{"name":"complete_step","arguments":json!({"result":"done","accepted":true,"artifacts":[]}).to_string()}}]})
+                };
+                let body = if status == 200 {json!({"model":model,"choices":[{"message":message}],"usage":{"completion_tokens":1}})} else {json!({"error":"synthetic temporary capacity failure"})}.to_string();
+                write!(socket,"HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&repo)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let base = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let db = Store::open_with_config_dir(&dir.path().join("data"), &dir.path().join("config"))
+            .unwrap();
+        let settings = Settings {
+            allow_commands: true,
+            ..Default::default()
+        };
+        let plan = crate::template::compile(
+            "simulated",
+            &crate::template::load_templates(Path::new("absent")).unwrap(),
+            BTreeMap::from([("task".into(), "append once".into())]),
+        )
+        .unwrap();
+        let task = db.submit("append once", &repo, &settings, &plan).unwrap();
+        let step = db.steps(&task).unwrap()[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            Command::new("git")
+                .args(["branch", &format!("horde/{task}")])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let worker = db.register(&task, Some(&step)).unwrap();
+        let wid = worker["id"].as_str().unwrap();
+        let attempt = crate::store::id();
+        db.conn
+            .execute(
+                "UPDATE workers SET workspace=?,base=? WHERE id=?",
+                rusqlite::params![repo.to_str(), base, wid],
+            )
+            .unwrap();
+        db.conn
+            .execute("UPDATE steps SET state='running' WHERE id=?", [&step])
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO attempts(id,step,worker,state,started) VALUES(?,?,?,'running',?)",
+                rusqlite::params![attempt, step, wid, now()],
+            )
+            .unwrap();
+        db.claim(&task, wid, &["marker.txt".into()]).unwrap();
+        let spec:Step = serde_json::from_value(json!({"id":"native","tools":["command"],"scope":["marker.txt"],"instructions":"append once"})).unwrap();
+        let invocation = Invocation {
+            db: &db,
+            task: &task,
+            step: &step,
+            attempt: &attempt,
+            worker: wid,
+            token: worker["token"].as_str().unwrap(),
+            workspace: &repo,
+            spec: &spec,
+            settings: &settings,
+            context: json!({}),
+        };
+        let config = ExecutorConfig {
+            kind: "vertex".into(),
+            auth_mode: "adc".into(),
+            base_url: format!("http://{address}/v1"),
+            model: Some(model.into()),
+            ..Default::default()
+        };
+        let mut resolutions = 0;
+        let result = native_conversation(
+            &invocation,
+            &config,
+            None,
+            String::new(),
+            json!({"model":model,"catalog_verified":false,"verification":"inference"}),
+            || {
+                resolutions += 1;
+                std::future::ready(Ok(format!("synthetic-token-{resolutions}")))
+            },
+        )
+        .await;
+        assert_eq!(resolutions, 4);
+        if exhaust {
+            assert_eq!(
+                result.as_ref().unwrap_err().to_string(),
+                "Vertex returned 429 Too Many Requests; retry or fallback requires workflow policy"
+            );
+        } else {
+            assert_eq!(result.as_ref().unwrap()["accepted"], true);
+            assert_eq!(
+                result.as_ref().unwrap()["usage"]["requests"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+        }
+        db.finish(&step, &attempt, wid, result).unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join("marker.txt")).unwrap(),
+            "x"
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[1], requests[2]);
+        assert_eq!(requests[2], requests[3]);
+        let retry: Value = serde_json::from_slice(&requests[1]).unwrap();
+        assert_eq!(retry["messages"][2]["content"], Value::Null);
+        assert_eq!(
+            retry["messages"][2]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+            "opaque-signature"
+        );
+        assert_eq!(retry["messages"][3]["role"], "tool");
+        assert_eq!(retry["messages"][3]["tool_call_id"], "command-once");
+        let attempts = db.rows("SELECT id,state FROM attempts", &[]).unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0]["id"], attempt);
+        assert_eq!(
+            attempts[0]["state"],
+            if exhaust { "failed" } else { "succeeded" }
+        );
+        let tools = db
+            .rows(
+                "SELECT data FROM events WHERE task=? AND kind='tool.completed'",
+                &[&task],
+            )
+            .unwrap();
+        assert_eq!(tools.len(), if exhaust { 1 } else { 2 });
+        assert!(tools.iter().all(|row| {
+            serde_json::from_str::<Value>(row["data"].as_str().unwrap()).unwrap()["success"] == true
+        }));
+        let retries = db.rows("SELECT data FROM events WHERE task=? AND kind='executor.progress' AND json_extract(data,'$.kind')='provider_retry'",&[&task]).unwrap();
+        assert_eq!(retries.len(), 2);
+        assert!(
+            db.rows(
+                "SELECT seq FROM events WHERE task=? AND kind='step.progress'",
+                &[&task]
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
 
     #[tokio::test]
     async fn vertex_probe_uses_inference_and_rejects_model_substitution() {

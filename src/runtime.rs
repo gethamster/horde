@@ -737,6 +737,12 @@ impl Scheduler {
             if db.task(oid)?["status"] != "running" {
                 continue;
             }
+            // Placement and admission cannot launch anything while this task's
+            // pending steps still depend on work that is already running.
+            let ready = ready(db, oid)?;
+            if ready.is_empty() {
+                continue;
+            }
             if !crate::storage::admission(db, oid)? {
                 continue;
             }
@@ -787,7 +793,7 @@ impl Scheduler {
                 .values()
                 .filter(|(o, _, _, _)| o == oid)
                 .count();
-            for mut row in ready(db, oid)? {
+            for mut row in ready {
                 if !crate::storage::admission(db, oid)? {
                     break;
                 }
@@ -1600,6 +1606,105 @@ mod scheduling_limits {
                 };
                 scheduler.tick(&db, true).await.unwrap();
                 assert_eq!(db.task(task).unwrap()["status"], "succeeded");
+                assert!(scheduler.running.is_empty());
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn working_task_waits_for_dependencies_before_rechecking_placement() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let temp = tempfile::tempdir().unwrap();
+                let db =
+                    Store::open_with_config_dir(temp.path(), &temp.path().join("config")).unwrap();
+                let row = queued_step(&db, temp.path());
+                let task = row["task"].as_str().unwrap();
+                let step = row["id"].as_str().unwrap();
+                let (attempt, worker, _) = begin(&db, &row).unwrap();
+                crate::storage::dispatch(
+                    &db,
+                    "runtime_storage_configure",
+                    &json!({"min_free_bytes":1024_u64.pow(5)}),
+                )
+                .unwrap();
+                let mut scheduler = Scheduler {
+                    running: HashMap::new(),
+                    decisions: crate::decision::shadow::Queue::default(),
+                    reviews: crate::decision::review::Queue::default(),
+                    previews: crate::preview::Queue::default(),
+                    limit: 1,
+                };
+                // A working planner has no runnable dependents. Its placement and
+                // capacity are already recorded; pressure must not requeue it.
+                for _ in 0..3 {
+                    scheduler.tick(&db, true).await.unwrap();
+                    assert!(
+                        db.rows("SELECT * FROM project_queue WHERE task=?", &[&task])
+                            .unwrap()
+                            .is_empty()
+                    );
+                    assert_eq!(db.task(task).unwrap()["status"], "running");
+                    assert_eq!(db.steps(task).unwrap()[0]["state"], "running");
+                }
+                db.finish(step, &attempt, &worker, Ok(json!({"accepted":true})))
+                    .unwrap();
+                // Once the planner completes, admission applies to the now-runnable
+                // work. Skipping busy-task checks never bypasses a disk hold.
+                scheduler.tick(&db, true).await.unwrap();
+                let queued = db
+                    .rows("SELECT reason FROM project_queue WHERE task=?", &[&task])
+                    .unwrap();
+                assert!(queued[0]["reason"].as_str().unwrap().contains("disk"));
+                assert!(scheduler.running.is_empty());
+                assert_eq!(crate::project_runtime::host_active(&db).unwrap(), 0);
+                assert_eq!(db.rows("SELECT id FROM attempts", &[]).unwrap().len(), 1);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn failed_dependencies_still_skip_and_settle_under_disk_pressure() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let temp = tempfile::tempdir().unwrap();
+                let db =
+                    Store::open_with_config_dir(temp.path(), &temp.path().join("config")).unwrap();
+                let row = queued_step(&db, temp.path());
+                let task = row["task"].as_str().unwrap();
+                let (attempt, worker, _) = begin(&db, &row).unwrap();
+                db.finish(
+                    row["id"].as_str().unwrap(),
+                    &attempt,
+                    &worker,
+                    Err(anyhow::anyhow!("planning failed")),
+                )
+                .unwrap();
+                crate::storage::dispatch(
+                    &db,
+                    "runtime_storage_configure",
+                    &json!({"min_free_bytes":1024_u64.pow(5)}),
+                )
+                .unwrap();
+                let mut scheduler = Scheduler {
+                    running: HashMap::new(),
+                    decisions: crate::decision::shadow::Queue::default(),
+                    reviews: crate::decision::review::Queue::default(),
+                    previews: crate::preview::Queue::default(),
+                    limit: 1,
+                };
+                for _ in 0..3 {
+                    scheduler.tick(&db, true).await.unwrap();
+                }
+                assert_eq!(db.task(task).unwrap()["status"], "failed");
+                let steps = db.steps(task).unwrap();
+                assert_eq!(steps[0]["state"], "failed");
+                assert!(steps[1..].iter().all(|step| step["state"] == "skipped"));
+                assert!(
+                    db.rows("SELECT * FROM project_queue WHERE task=?", &[&task])
+                        .unwrap()
+                        .is_empty()
+                );
                 assert!(scheduler.running.is_empty());
             })
             .await;
