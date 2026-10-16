@@ -1,5 +1,5 @@
-//! Conservative, opt-in pruning of completed native read/search exchanges.
-//! The original conversation stays live until every omitted byte is verified in CAS.
+//! Verified native tool output archives and opt-in read/search pruning.
+//! Every projected byte remains available through task- and attempt-bound CAS pages.
 use crate::{
     config::{Decision, DecisionMode, NativeContextMode, Settings},
     decision::{Answer, ChoiceQuestion, DecisionHttpClient, DecisionRequest, Question, store},
@@ -17,7 +17,7 @@ use std::{
 const KEEP_RECENT: usize = 3;
 const MAX_GROUPS: usize = 8;
 const MAX_ARCHIVE_BYTES: usize = 4 * 1024 * 1024;
-const PAGE_BYTES: usize = 8 * 1024;
+pub(crate) const PAGE_BYTES: usize = 8 * 1024;
 const MAX_EVALUATIONS_PER_GROUP: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -649,6 +649,67 @@ pub fn mark_used(db: &Store, task: &str, attempt: &str, conversation_hash: &str)
     })
 }
 
+/// Keep large results out of each subsequent Vertex request without repeating tools
+/// or losing output. The caller supplies the same redacted JSON shown to the worker.
+pub fn tool_result(
+    db: &Store,
+    task: &str,
+    step: &str,
+    attempt: &str,
+    call: &str,
+    content: String,
+) -> Result<String> {
+    if content.len() <= PAGE_BYTES {
+        return Ok(content);
+    }
+    let mut parts = Vec::new();
+    let mut offset = 0;
+    while offset < content.len() {
+        let mut end = (offset + MAX_ARCHIVE_BYTES).min(content.len());
+        while !content.is_char_boundary(end) {
+            end -= 1;
+        }
+        let hash = db.artifact(
+            task,
+            Some(step),
+            &format!("native-context/{attempt}/tool-result/{call}/{}", parts.len()),
+            &content.as_bytes()[offset..end],
+            &json!({"attempt":attempt,"tool_call":call,"offset":offset,"total_bytes":content.len()}),
+            true,
+        )?;
+        // Retrieval verifies both the durable link and the stored bytes before
+        // the smaller result can replace output in a provider request.
+        retrieve(db, task, attempt, &hash, 0, PAGE_BYTES)?;
+        parts.push(json!({"hash":hash,"offset":offset,"bytes":end-offset}));
+        offset = end;
+    }
+    let mut head = PAGE_BYTES / 4;
+    while !content.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = content.len() - PAGE_BYTES / 4;
+    while !content.is_char_boundary(tail) {
+        tail += 1;
+    }
+    let mut projected = json!({
+        "archived_tool_result": {
+            "total_bytes":content.len(),"parts":parts,
+            "preview":format!("{}\n[output archived]\n{}",&content[..head],&content[tail..]),
+            "instructions":"This is a partial preview, not the complete tool result. Retrieve needed original JSON bytes with retrieve_native_context using a part's hash and a byte offset within that part. Parts concatenate in offset order. Do not repeat a command to recover its output."
+        }
+    });
+    // Command success/failure stays directly visible even when stdout is large.
+    let original: Value = serde_json::from_str(&content)?;
+    for field in ["exit_code", "success", "latency_ms"] {
+        if let Some(value) = original.get(field)
+            && (value.is_boolean() || value.is_number() || value.is_null())
+        {
+            projected[field] = value.clone();
+        }
+    }
+    Ok(projected.to_string())
+}
+
 pub fn retrieve(
     db: &Store,
     task: &str,
@@ -691,7 +752,7 @@ pub fn retrieve(
 }
 
 pub fn retrieval_tool() -> Value {
-    json!({"type":"function","function":{"name":"retrieve_native_context","description":"Retrieve a bounded page of a previously archived read-only native tool exchange by SHA-256, without rerunning tools.","parameters":{"type":"object","properties":{"hash":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":8192}},"required":["hash","offset","limit"]}}})
+    json!({"type":"function","function":{"name":"retrieve_native_context","description":"Retrieve an 8 KiB page of this attempt's archived tool output or read-only exchange by SHA-256, without rerunning tools.","parameters":{"type":"object","properties":{"hash":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":8192}},"required":["hash","offset","limit"]}}})
 }
 
 #[cfg(test)]

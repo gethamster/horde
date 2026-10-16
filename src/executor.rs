@@ -1280,8 +1280,9 @@ where
         }
     }
     definitions.push(crate::native_protocol::completion_tool(i.spec));
-    if !chatgpt
-        && i.settings.decision.native_context_mode == crate::config::NativeContextMode::Active
+    if vertex
+        || (!chatgpt
+            && i.settings.decision.native_context_mode == crate::config::NativeContextMode::Active)
     {
         definitions.push(crate::native_context::retrieval_tool());
     }
@@ -1644,8 +1645,9 @@ where
                             crate::native_protocol::completion_result(args, calls.len(), i.spec)
                         } else if name == "retrieve_native_context" {
                             (|| -> Result<Value> {
-                                if i.settings.decision.native_context_mode
-                                    != crate::config::NativeContextMode::Active
+                                if !vertex
+                                    && i.settings.decision.native_context_mode
+                                        != crate::config::NativeContextMode::Active
                                 {
                                     bail!("native context retrieval is not enabled");
                                 }
@@ -1701,7 +1703,37 @@ where
                 completion_reminder |=
                     loop_guard.record(signature, &outcome, i.settings.max_identical_tool_calls);
                 let duration_ms = tool_started.elapsed().as_millis() as u64;
-                messages.push(json!({"role":"tool","tool_call_id":call["id"],"content":match &result {Ok(v)=>crate::secrets::redact(i.db,i.task,v).to_string(),Err(e)=>crate::secrets::redact(i.db,i.task,&json!({"error":e.to_string()})).to_string()}}))?;
+                let content = match &result {
+                    Ok(value) => crate::secrets::redact(i.db, i.task, value).to_string(),
+                    Err(error) => {
+                        crate::secrets::redact(i.db, i.task, &json!({"error":error.to_string()}))
+                            .to_string()
+                    }
+                };
+                let content = if vertex
+                    && content.len() > crate::native_context::PAGE_BYTES
+                    && !["complete_step", "retrieve_native_context"].contains(&name)
+                {
+                    let root = i.db.root.clone();
+                    let (task, step, attempt) =
+                        (i.task.to_owned(), i.step.to_owned(), i.attempt.to_owned());
+                    let call = call["id"].as_str().context("tool call id")?.to_owned();
+                    crate::budget::blocking(move || {
+                        crate::native_context::tool_result(
+                            &Store::open(&root)?,
+                            &task,
+                            &step,
+                            &attempt,
+                            &call,
+                            content,
+                        )
+                    })
+                    .await?
+                } else {
+                    content
+                };
+                messages
+                    .push(json!({"role":"tool","tool_call_id":call["id"],"content":content}))?;
                 record_tool_completed(i, name, &event_arguments, &result, duration_ms, &key)?;
             }
             if completion_reminder {
@@ -2046,25 +2078,35 @@ mod tool_event_tests {
 
     #[tokio::test]
     async fn vertex_http_retries_preserve_tools_conversation_and_attempt() {
-        vertex_http_conversation_case(false, None).await;
+        vertex_http_conversation_case(false, None, false).await;
     }
 
     #[tokio::test]
     async fn vertex_http_retry_exhaustion_keeps_the_original_error_and_work() {
-        vertex_http_conversation_case(true, None).await;
+        vertex_http_conversation_case(true, None, false).await;
     }
 
     #[tokio::test]
     async fn vertex_http_errors_retain_bounded_redacted_diagnostics() {
-        vertex_http_conversation_case(true, Some(json!({"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Invalid tool response synthetic-token-4 and synthetic-app-\"secret\nvalue"}}).to_string())).await;
+        vertex_http_conversation_case(true, Some(json!({"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Invalid tool response synthetic-token-4 and synthetic-app-\"secret\nvalue"}}).to_string()), false).await;
         vertex_http_conversation_case(
             true,
             Some("x".repeat(4080) + "synthetic-token-4" + &"x".repeat(4096)),
+            false,
         )
         .await;
     }
 
-    async fn vertex_http_conversation_case(exhaust: bool, error_body: Option<String>) {
+    #[tokio::test]
+    async fn vertex_large_command_output_is_archived_and_retrieved_without_reexecution() {
+        vertex_http_conversation_case(false, None, true).await;
+    }
+
+    async fn vertex_http_conversation_case(
+        exhaust: bool,
+        error_body: Option<String>,
+        large_output: bool,
+    ) {
         use std::{
             collections::BTreeMap,
             io::{Read, Write},
@@ -2079,10 +2121,12 @@ mod tool_event_tests {
         let oversized = error_body.as_ref().is_some_and(|body| body.len() > 4096);
         let server_body = error_body.clone();
         let server = std::thread::spawn(move || {
-            for (index, status) in if exhaust {
-                [200, 499, 503, terminal_status]
+            for (index, status) in if large_output {
+                vec![200, 499, 500, 200, 200]
+            } else if exhaust {
+                vec![200, 499, 503, terminal_status]
             } else {
-                [200, 499, 500, 200]
+                vec![200, 499, 500, 200]
             }
             .into_iter()
             .enumerate()
@@ -2114,8 +2158,36 @@ mod tool_event_tests {
                 socket.read_exact(&mut body).unwrap();
                 recorded.lock().unwrap().push(body);
                 let message = if index == 0 {
-                    json!({"role":"assistant","content":null,"tool_calls":[{"id":"command-once","type":"function","extra_content":{"google":{"thought_signature":"opaque-signature"}},"function":{"name":"command","arguments":json!({"argv":["sh","-c","printf x >> marker.txt"]}).to_string()}}]})
+                    let command = if large_output {
+                        "printf x >> marker.txt; printf '%6200000s' evidence-tail"
+                    } else {
+                        "printf x >> marker.txt"
+                    };
+                    json!({"role":"assistant","content":null,"tool_calls":[{"id":"command-once","type":"function","extra_content":{"google":{"thought_signature":"opaque-signature"}},"function":{"name":"command","arguments":json!({"argv":["sh","-c",command]}).to_string()}}]})
+                } else if large_output && index == 3 {
+                    let recorded = recorded.lock().unwrap();
+                    let request: Value = serde_json::from_slice(recorded.last().unwrap()).unwrap();
+                    assert!(recorded.last().unwrap().len() < 64 * 1024);
+                    let result: Value =
+                        serde_json::from_str(request["messages"][3]["content"].as_str().unwrap())
+                            .unwrap();
+                    assert_eq!(result["success"], true);
+                    let parts = result["archived_tool_result"]["parts"].as_array().unwrap();
+                    assert_eq!(parts.len(), 2);
+                    let part = parts.last().unwrap();
+                    json!({"role":"assistant","content":null,"tool_calls":[{"id":"read-original","type":"function","function":{"name":"retrieve_native_context","arguments":json!({"hash":part["hash"],"offset":part["bytes"].as_u64().unwrap()-256,"limit":8192}).to_string()}}]})
                 } else {
+                    if large_output && index == 4 {
+                        let recorded = recorded.lock().unwrap();
+                        let request: Value =
+                            serde_json::from_slice(recorded.last().unwrap()).unwrap();
+                        let page: Value = serde_json::from_str(
+                            request["messages"][5]["content"].as_str().unwrap(),
+                        )
+                        .unwrap();
+                        assert!(page["content"].as_str().unwrap().contains("evidence-tail"));
+                        assert!(recorded.last().unwrap().len() < 64 * 1024);
+                    }
                     json!({"role":"assistant","content":null,"tool_calls":[{"id":"finish","type":"function","function":{"name":"complete_step","arguments":json!({"result":"done","accepted":true,"artifacts":[]}).to_string()}}]})
                 };
                 let body = if status == 200 {
@@ -2256,7 +2328,7 @@ mod tool_event_tests {
             },
         )
         .await;
-        assert_eq!(resolutions, 4);
+        assert_eq!(resolutions, if large_output { 5 } else { 4 });
         if exhaust {
             assert_eq!(
                 result.as_ref().unwrap_err().to_string(),
@@ -2273,7 +2345,7 @@ mod tool_event_tests {
                     .as_array()
                     .unwrap()
                     .len(),
-                2
+                if large_output { 3 } else { 2 }
             );
         }
         db.finish(&step, &attempt, wid, result).unwrap();
@@ -2283,7 +2355,7 @@ mod tool_event_tests {
             "x"
         );
         let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 4);
+        assert_eq!(requests.len(), if large_output { 5 } else { 4 });
         assert_eq!(requests[1], requests[2]);
         assert_eq!(requests[2], requests[3]);
         let retry: Value = serde_json::from_slice(&requests[1]).unwrap();
@@ -2307,7 +2379,16 @@ mod tool_event_tests {
                 &[&task],
             )
             .unwrap();
-        assert_eq!(tools.len(), if exhaust { 1 } else { 2 });
+        assert_eq!(
+            tools.len(),
+            if exhaust {
+                1
+            } else if large_output {
+                3
+            } else {
+                2
+            }
+        );
         assert!(tools.iter().all(|row| {
             serde_json::from_str::<Value>(row["data"].as_str().unwrap()).unwrap()["success"] == true
         }));
