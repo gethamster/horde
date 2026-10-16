@@ -943,7 +943,7 @@ pub fn available(db: &Store, oid: &str) -> Result<bool> {
 pub(crate) fn process_identity(pid: u32) -> Option<String> {
     #[cfg(target_os = "linux")]
     {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let stat = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
         let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
         linux_process_identity(pid, &stat, &boot)
     }
@@ -962,17 +962,28 @@ pub(crate) fn process_identity_for(pid: u32, _expected: &str) -> Option<String> 
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn linux_process_identity(pid: u32, stat: &str, boot: &str) -> Option<String> {
+fn linux_process_identity(pid: u32, stat: impl AsRef<[u8]>, boot: &str) -> Option<String> {
     if pid <= 1 || pid > i32::MAX as u32 {
         return None;
     }
     // comm is parenthesized but can itself contain spaces, newlines, and closing
     // parentheses. The final closing parenthesis precedes the numeric fields.
-    let (record_pid, rest) = stat.split_once(" (")?;
-    if record_pid.parse::<u32>().ok()? != pid {
+    let stat = stat.as_ref();
+    let open = stat.windows(2).position(|bytes| bytes == b" (")?;
+    if std::str::from_utf8(&stat[..open])
+        .ok()?
+        .parse::<u32>()
+        .ok()?
+        != pid
+    {
         return None;
     }
-    let fields = rest[rest.rfind(") ")? + 2..]
+    let close = stat.windows(2).rposition(|bytes| bytes == b") ")?;
+    if close < open + 2 {
+        return None;
+    }
+    let fields = std::str::from_utf8(&stat[close + 2..])
+        .ok()?
         .split_ascii_whitespace()
         .collect::<Vec<_>>();
     let group = fields.get(2)?.parse::<u32>().ok()?;
@@ -1140,23 +1151,25 @@ mod process_identity_tests {
 
     #[test]
     fn linux_identity_uses_boot_pid_start_ticks_and_group_not_process_name() {
-        let identity = linux_process_identity(42, &stat(42, "first", 42, 12345), BOOT).unwrap();
+        let identity = linux_process_identity(42, stat(42, "first", 42, 12345), BOOT).unwrap();
         assert!(identity.starts_with("linux-proc-v1:"));
         assert_eq!(
-            linux_process_identity(
-                42,
-                &stat(42, "name ) with (spaces)\nand )", 42, 12345),
-                BOOT
-            ),
+            linux_process_identity(42, stat(42, "name ) with (spaces)\nand )", 42, 12345), BOOT),
+            Some(identity.clone())
+        );
+        let mut non_utf8_name = stat(42, "first", 42, 12345).into_bytes();
+        non_utf8_name[4] = 0xff;
+        assert_eq!(
+            linux_process_identity(42, &non_utf8_name, BOOT),
             Some(identity.clone())
         );
         for other in [
-            linux_process_identity(42, &stat(42, "first", 42, 12346), BOOT),
-            linux_process_identity(42, &stat(42, "first", 43, 12345), BOOT),
-            linux_process_identity(43, &stat(43, "first", 42, 12345), BOOT),
+            linux_process_identity(42, stat(42, "first", 42, 12346), BOOT),
+            linux_process_identity(42, stat(42, "first", 43, 12345), BOOT),
+            linux_process_identity(43, stat(43, "first", 42, 12345), BOOT),
             linux_process_identity(
                 42,
-                &stat(42, "first", 42, 12345),
+                stat(42, "first", 42, 12345),
                 "2b409fd7-159b-413e-b931-a318d285b5cb",
             ),
         ] {
