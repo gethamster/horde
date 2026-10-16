@@ -902,6 +902,8 @@ mod event_index_migration_tests {
                 .to_string()
                 .contains("stop the running Horde daemon")
         );
+        // A concurrent test can fork while this file description is open.
+        fs2::FileExt::unlock(&lock).unwrap();
         drop(lock);
         let db = Store::open(dir.path()).unwrap();
         assert_eq!(
@@ -1028,6 +1030,8 @@ mod event_index_migration_tests {
                 .to_string()
                 .contains("stop the running Horde daemon")
         );
+        // A concurrent test can fork while this file description is open.
+        fs2::FileExt::unlock(&lock).unwrap();
         drop(lock);
         let db = Store::open(dir.path()).unwrap();
         assert_eq!(db.rows("SELECT * FROM events", &[]).unwrap(), events);
