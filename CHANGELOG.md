@@ -4,6 +4,9 @@
 
 ## 0.6.41 - 2026-10-16
 
+- Index step-attempt ownership checks so revocation polling does not scan
+  historical attempts; preserve every running and uncertain binding.
+
 - Reuse the shared disk-pressure monitor in scheduling and admission instead of
   repeating all-host measurements on the daemon event loop. Keep fresh checks
   of each new task’s own volumes and hold admission when monitor health is unknown.
