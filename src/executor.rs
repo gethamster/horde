@@ -1158,7 +1158,7 @@ fn vertex_retry_delay(
     remaining: std::time::Duration,
 ) -> Option<std::time::Duration> {
     use std::time::{Duration, SystemTime};
-    if ![429, 500, 503].contains(&status.as_u16()) || !(1..3).contains(&attempt) {
+    if ![429, 499, 500, 503].contains(&status.as_u16()) || !(1..3).contains(&attempt) {
         return None;
     }
     let requested = headers
@@ -1453,6 +1453,47 @@ where
                         tokio::time::sleep(delay).await;
                         continue;
                     }
+                }
+                if vertex {
+                    // Keep the status authoritative even if its diagnostic body
+                    // is missing, oversized, or stalled. Never retain a request.
+                    let diagnostic =
+                        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                            let mut response = response;
+                            let mut bytes = Vec::new();
+                            while let Some(chunk) = response.chunk().await? {
+                                if bytes.len() + chunk.len() > 4096 {
+                                    return Ok((Vec::new(), true));
+                                }
+                                bytes.extend_from_slice(&chunk);
+                            }
+                            Ok::<_, reqwest::Error>((bytes, false))
+                        })
+                        .await;
+                    let (error, truncated) = match diagnostic {
+                        Ok(Ok((_, true))) => (
+                            "Provider error response exceeded 4 KiB; body withheld".into(),
+                            true,
+                        ),
+                        Ok(Ok((bytes, false))) => {
+                            let value = serde_json::from_slice::<Value>(&bytes)
+                                .unwrap_or_else(|_| json!(String::from_utf8_lossy(&bytes)));
+                            truncate_text(
+                                diagnostic_value(i.db, i.task, &value, &key).to_string(),
+                                2048,
+                            )
+                        }
+                        _ => ("Provider error response unavailable".into(), false),
+                    };
+                    i.db.event(
+                        i.task,
+                        "executor.progress",
+                        json!({
+                            "step":i.step,"attempt":i.attempt,"kind":"provider_error",
+                            "model":model,"status":status.as_u16(),"request_bytes":body.len(),
+                            "error":error,"error_truncated":truncated,
+                        }),
+                    )?;
                 }
                 bail!(
                     "{} returned {status}; retry or fallback requires workflow policy",
@@ -1886,7 +1927,7 @@ mod tool_event_tests {
         use reqwest::{StatusCode, header::HeaderMap};
         use std::time::Duration;
         let headers = HeaderMap::new();
-        for status in [429, 500, 503] {
+        for status in [429, 499, 500, 503] {
             let status = StatusCode::from_u16(status).unwrap();
             for (attempt, expected) in [(1, Some(1)), (2, Some(2)), (3, None), (4, None)] {
                 assert_eq!(
@@ -1999,15 +2040,25 @@ mod tool_event_tests {
 
     #[tokio::test]
     async fn vertex_http_retries_preserve_tools_conversation_and_attempt() {
-        vertex_http_conversation_case(false).await;
+        vertex_http_conversation_case(false, None).await;
     }
 
     #[tokio::test]
     async fn vertex_http_retry_exhaustion_keeps_the_original_error_and_work() {
-        vertex_http_conversation_case(true).await;
+        vertex_http_conversation_case(true, None).await;
     }
 
-    async fn vertex_http_conversation_case(exhaust: bool) {
+    #[tokio::test]
+    async fn vertex_http_errors_retain_bounded_redacted_diagnostics() {
+        vertex_http_conversation_case(true, Some(json!({"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Invalid tool response synthetic-token-4 and synthetic-app-\"secret\nvalue"}}).to_string())).await;
+        vertex_http_conversation_case(
+            true,
+            Some("x".repeat(4080) + "synthetic-token-4" + &"x".repeat(4096)),
+        )
+        .await;
+    }
+
+    async fn vertex_http_conversation_case(exhaust: bool, error_body: Option<String>) {
         use std::{
             collections::BTreeMap,
             io::{Read, Write},
@@ -2017,12 +2068,15 @@ mod tool_event_tests {
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = requests.clone();
-        let model = "google/gemini-3.8-flash";
+        let model = "google/gemini-4-argon";
+        let terminal_status = if error_body.is_some() { 400 } else { 429 };
+        let oversized = error_body.as_ref().is_some_and(|body| body.len() > 4096);
+        let server_body = error_body.clone();
         let server = std::thread::spawn(move || {
             for (index, status) in if exhaust {
-                [200, 429, 429, 429]
+                [200, 499, 503, terminal_status]
             } else {
-                [200, 429, 500, 200]
+                [200, 499, 500, 200]
             }
             .into_iter()
             .enumerate()
@@ -2058,7 +2112,13 @@ mod tool_event_tests {
                 } else {
                     json!({"role":"assistant","content":null,"tool_calls":[{"id":"finish","type":"function","function":{"name":"complete_step","arguments":json!({"result":"done","accepted":true,"artifacts":[]}).to_string()}}]})
                 };
-                let body = if status == 200 {json!({"model":model,"choices":[{"message":message}],"usage":{"completion_tokens":1}})} else {json!({"error":"synthetic temporary capacity failure"})}.to_string();
+                let body = if status == 200 {
+                    json!({"model":model,"choices":[{"message":message}],"usage":{"completion_tokens":1}}).to_string()
+                } else {
+                    server_body.clone().unwrap_or_else(|| {
+                        json!({"error":"synthetic temporary capacity failure"}).to_string()
+                    })
+                };
                 write!(socket,"HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
             }
         });
@@ -2112,6 +2172,20 @@ mod tool_event_tests {
         )
         .unwrap();
         let task = db.submit("append once", &repo, &settings, &plan).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO task_bundles VALUES(?,?,?)",
+                rusqlite::params![task, "app", "v1"],
+            )
+            .unwrap();
+        let secret_dir = db.root.join("remote-secrets").join(&task);
+        std::fs::create_dir_all(&secret_dir).unwrap();
+        std::fs::write(
+            secret_dir.join(crate::store::hash(b"app")),
+            json!({"version":"v1","values":{"APP_KEY":"synthetic-app-\"secret\nvalue"}})
+                .to_string(),
+        )
+        .unwrap();
         let step = db.steps(&task).unwrap()[0]["id"]
             .as_str()
             .unwrap()
@@ -2180,7 +2254,11 @@ mod tool_event_tests {
         if exhaust {
             assert_eq!(
                 result.as_ref().unwrap_err().to_string(),
-                "Vertex returned 429 Too Many Requests; retry or fallback requires workflow policy"
+                if terminal_status == 400 {
+                    "Vertex returned 400 Bad Request; retry or fallback requires workflow policy"
+                } else {
+                    "Vertex returned 429 Too Many Requests; retry or fallback requires workflow policy"
+                }
             );
         } else {
             assert_eq!(result.as_ref().unwrap()["accepted"], true);
@@ -2229,6 +2307,28 @@ mod tool_event_tests {
         }));
         let retries = db.rows("SELECT data FROM events WHERE task=? AND kind='executor.progress' AND json_extract(data,'$.kind')='provider_retry'",&[&task]).unwrap();
         assert_eq!(retries.len(), 2);
+        let diagnostics = db.rows("SELECT data FROM events WHERE task=? AND kind='executor.progress' AND json_extract(data,'$.kind')='provider_error'", &[&task]).unwrap();
+        assert_eq!(diagnostics.len(), usize::from(exhaust));
+        if let Some(record) = diagnostics.first() {
+            let value: Value = serde_json::from_str(record["data"].as_str().unwrap()).unwrap();
+            assert_eq!(value["status"], terminal_status);
+            assert_eq!(value["model"], model);
+            assert_eq!(value["request_bytes"], requests.last().unwrap().len());
+            let error = value["error"].as_str().unwrap();
+            assert!(!error.contains("synthetic-token-4"));
+            assert!(error.len() <= 2048);
+            assert_eq!(value["error_truncated"], oversized);
+            if error_body.is_some() && !oversized {
+                assert!(error.contains("INVALID_ARGUMENT"));
+                assert!(error.contains("Invalid tool response"));
+                assert!(error.contains("[REDACTED]"));
+                assert!(!error.contains("synthetic-app-"));
+            }
+            if oversized {
+                assert!(error.contains("body withheld"));
+            }
+            assert!(value.get("messages").is_none());
+        }
         assert!(
             db.rows(
                 "SELECT seq FROM events WHERE task=? AND kind='step.progress'",
