@@ -179,6 +179,7 @@ async fn run_step(
     attempt: String,
     wid: String,
     token: String,
+    pressure: tokio::sync::watch::Receiver<Value>,
 ) -> Result<()> {
     let db = Store::open(&root)?;
     let tid = row["id"].as_str().context("step")?;
@@ -194,6 +195,7 @@ async fn run_step(
         oid,
         &attempt,
         &wid,
+        pressure,
         crate::budget::supervise(
             &db,
             oid,
@@ -655,6 +657,7 @@ pub(crate) async fn handle(stream: tokio::net::UnixStream, root: PathBuf) -> Res
 type ActiveAttempt = (String, String, String, JoinHandle<Result<()>>);
 
 struct Scheduler {
+    pressure: tokio::sync::watch::Receiver<Value>,
     running: HashMap<String, ActiveAttempt>,
     decisions: crate::decision::shadow::Queue,
     reviews: crate::decision::review::Queue,
@@ -944,6 +947,7 @@ impl Scheduler {
                     attempt.clone(),
                     wid.clone(),
                     token,
+                    self.pressure.clone(),
                 )));
                 self.running
                     .insert(tid, (oid.to_owned(), attempt, wid, handle));
@@ -1017,7 +1021,10 @@ pub async fn daemon(root: &Path) -> Result<()> {
         "horde daemon listening on {} ({recovered} interrupted attempts held for reconciliation, {interrupted_decisions} interrupted advisory decisions, {resumed_reviews} never-sent reviews queued for replay)",
         socket.display()
     );
+    let (pressure_sender, pressure) =
+        tokio::sync::watch::channel(json!({"state":"paused","id":"health-unavailable"}));
     let mut scheduler = Scheduler {
+        pressure,
         running: HashMap::new(),
         decisions: crate::decision::shadow::Queue::default(),
         reviews: crate::decision::review::Queue::default(),
@@ -1034,8 +1041,10 @@ pub async fn daemon(root: &Path) -> Result<()> {
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
-    let storage_pressure =
-        tokio::task::spawn_local(crate::storage::pressure::monitor(root.to_owned()));
+    let storage_pressure = tokio::task::spawn_local(crate::storage::pressure::monitor(
+        root.to_owned(),
+        pressure_sender,
+    ));
     let storage_root = root.to_owned();
     let storage_maintenance = tokio::task::spawn_local(async move {
         loop {
@@ -1597,7 +1606,10 @@ mod scheduling_limits {
                     &json!({"min_free_bytes":1024_u64.pow(5)}),
                 )
                 .unwrap();
+                let (_pressure_sender, pressure) =
+                    tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
                 let mut scheduler = Scheduler {
+                    pressure,
                     running: HashMap::new(),
                     decisions: crate::decision::shadow::Queue::default(),
                     reviews: crate::decision::review::Queue::default(),
@@ -1628,7 +1640,10 @@ mod scheduling_limits {
                     &json!({"min_free_bytes":1024_u64.pow(5)}),
                 )
                 .unwrap();
+                let (_pressure_sender, pressure) =
+                    tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
                 let mut scheduler = Scheduler {
+                    pressure,
                     running: HashMap::new(),
                     decisions: crate::decision::shadow::Queue::default(),
                     reviews: crate::decision::review::Queue::default(),
@@ -1686,7 +1701,10 @@ mod scheduling_limits {
                     &json!({"min_free_bytes":1024_u64.pow(5)}),
                 )
                 .unwrap();
+                let (_pressure_sender, pressure) =
+                    tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
                 let mut scheduler = Scheduler {
+                    pressure,
                     running: HashMap::new(),
                     decisions: crate::decision::shadow::Queue::default(),
                     reviews: crate::decision::review::Queue::default(),
@@ -1792,7 +1810,10 @@ mod scheduling_limits {
                     .collect();
                 db.submit("limits", temp.path(), &settings, &plan).unwrap();
                 crate::management::set(&db, "concurrency", "3").unwrap();
+                let (_pressure_sender, pressure) =
+                    tokio::sync::watch::channel(json!({"state":"healthy","id":"test"}));
                 let mut scheduler = Scheduler {
+                    pressure,
                     running: HashMap::new(),
                     decisions: crate::decision::shadow::Queue::default(),
                     reviews: crate::decision::review::Queue::default(),

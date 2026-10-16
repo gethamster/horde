@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.40 - 2026-10-16
+
+- Measure host disk pressure once per monitor cycle off the daemon event loop,
+  then share the result with active attempts. Preserve process holds and pause
+  work when the monitor is unavailable without repeating all-host probes per worker.
+
 ## 0.6.36 - 2026-10-16
 
 - Run native Gemini tool workers directly through Google Vertex AI using the VM's
