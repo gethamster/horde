@@ -26,6 +26,7 @@ enum Evidence {
     Unknown,
     NotRequired,
     CredentialPresent,
+    AdcConfigured,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -179,7 +180,8 @@ fn validate(record: &RuntimeInventory) -> Result<()> {
         }
         if let Some(mode) = &capability.auth_mode {
             ensure!(
-                ["api", "login"].contains(&mode.as_str()),
+                ["api", "login"].contains(&mode.as_str())
+                    || (mode == "adc" && capability.kind == "vertex"),
                 "invalid capability authentication mode"
             );
         }
@@ -197,12 +199,21 @@ fn validate(record: &RuntimeInventory) -> Result<()> {
             "capability IDs must be unique executor names"
         );
         ensure!(
-            ["codex", "claude", "grok", "tuara", "chatgpt", "simulated"]
-                .contains(&capability.kind.as_str()),
+            [
+                "codex",
+                "claude",
+                "grok",
+                "tuara",
+                "chatgpt",
+                "vertex",
+                "simulated"
+            ]
+            .contains(&capability.kind.as_str()),
             "unsupported executor capability kind"
         );
         ensure!(
             capability.availability.executable != Evidence::CredentialPresent
+                && capability.availability.executable != Evidence::AdcConfigured
                 && capability.availability.authentication != Evidence::Available,
             "invalid capability evidence category"
         );
@@ -213,8 +224,13 @@ fn validate(record: &RuntimeInventory) -> Result<()> {
         );
         ensure!(
             capability.availability.executable != Evidence::NotRequired
-                || ["tuara", "chatgpt", "simulated"].contains(&capability.kind.as_str()),
+                || ["tuara", "chatgpt", "vertex", "simulated"].contains(&capability.kind.as_str()),
             "external executor requires executable evidence"
+        );
+        ensure!(
+            capability.availability.authentication != Evidence::AdcConfigured
+                || (capability.kind == "vertex" && capability.auth_mode.as_deref() == Some("adc")),
+            "ADC evidence requires a Vertex executor"
         );
         ensure!(
             !capability.availability.verified,
@@ -294,12 +310,14 @@ fn capability(
     credential: &impl Fn(&str) -> Evidence,
 ) -> Result<Capability> {
     let executable = match config.kind.as_str() {
-        "tuara" | "chatgpt" | "simulated" => Evidence::NotRequired,
+        "tuara" | "chatgpt" | "vertex" | "simulated" => Evidence::NotRequired,
         "codex" | "claude" => executable(config.program.as_deref().unwrap_or(&config.kind)),
         _ => Evidence::Unknown,
     };
     let authentication = if config.kind == "simulated" {
         Evidence::NotRequired
+    } else if config.kind == "vertex" && config.auth_mode == "adc" {
+        Evidence::AdcConfigured
     } else if config.auth_mode == "api" || config.kind == "tuara" {
         credential(&config.api_key_env)
     } else {
@@ -779,6 +797,50 @@ mod tests {
     use super::*;
     use crate::config::{Executor, Provider, Settings};
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn vertex_advertises_adc_configuration_without_fabricating_authentication() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Store::open(root.path()).unwrap();
+        let mut settings = Settings::default();
+        settings.providers.insert("gcp".into(),Provider {kind:"vertex".into(),auth_mode:"adc".into(),base_url:"https://aiplatform.googleapis.com/v1/projects/example-project/locations/global/endpoints/openapi".into(),model:Some("google/gemini-3.8-flash".into()),..Default::default()});
+        settings.executors.insert(
+            "gcp".into(),
+            Executor {
+                provider: Some("gcp".into()),
+                ..Default::default()
+            },
+        );
+        let report = local_from(&db, &settings, |_| Evidence::Missing).unwrap();
+        validate(&report).unwrap();
+        let capability = report
+            .capabilities
+            .iter()
+            .find(|row| row.id == "gcp")
+            .unwrap();
+        assert_eq!(capability.auth_mode.as_deref(), Some("adc"));
+        assert!(capability.availability.executable == Evidence::NotRequired);
+        assert!(capability.availability.authentication == Evidence::AdcConfigured);
+        assert!(!capability.availability.verified);
+        assert_eq!(capability.available, None);
+        let project = crate::projects::dispatch(&db, "project_create", &json!({"slug":"isolated"}))
+            .unwrap()
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let scoped = local_project_record(&db, &project, &settings).unwrap();
+        let capability = scoped
+            .capabilities
+            .iter()
+            .find(|row| row.id == "gcp")
+            .unwrap();
+        assert!(capability.availability.authentication == Evidence::Missing);
+        assert_eq!(capability.available, Some(false));
+        let mut resolved = settings.executor("gcp").unwrap();
+        resolved.project = Some(project);
+        assert!(resolved.validate_vertex().is_err());
+    }
 
     fn settings(program: &str) -> Settings {
         Settings {

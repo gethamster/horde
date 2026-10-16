@@ -21,8 +21,11 @@ pub struct Snapshot {
 }
 pub fn account(c: &ExecutorConfig) -> String {
     c.account.clone().unwrap_or_else(|| {
-        if c.auth_mode == "api" {
-            format!("{}:api:{}:{}", c.kind, c.base_url, c.api_key_env)
+        if ["api", "adc"].contains(&c.auth_mode.as_str()) {
+            format!(
+                "{}:{}:{}:{}",
+                c.kind, c.auth_mode, c.base_url, c.api_key_env
+            )
         } else {
             format!("{}:login", c.kind)
         }

@@ -183,7 +183,7 @@ fn executor_blockers(
                 ));
             }
         }
-        "tuara" => {
+        "tuara" | "vertex" => {
             if !executable("rg") {
                 blockers.push("Install ripgrep (rg) for native workers.".into());
             }
@@ -193,7 +193,9 @@ fn executor_blockers(
             "Role {role} uses unsupported executor kind {kind}."
         )),
     }
-    if matches!(config.kind.as_str(), "codex" | "tuara") && config.max_api_cost_usd.is_some() {
+    if matches!(config.kind.as_str(), "codex" | "tuara" | "vertex")
+        && config.max_api_cost_usd.is_some()
+    {
         blockers.push(format!("Role {role} cannot enforce max_api_cost_usd with {}; choose a supported executor or remove that cap.", config.kind));
     }
     blockers

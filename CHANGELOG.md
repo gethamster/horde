@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.36 - 2026-10-16
+
+- Run native Gemini tool workers directly through Google Vertex AI using the VM's
+  attached service account. Resolve metadata OAuth on every request, verify exact
+  model identity with inference, and preserve Google's tool-call thought signatures.
+- Report configured ADC separately from verified provider authentication; retain
+  existing workflow budgets, workspaces, claims, and completion contracts.
+
 ## 0.6.35 - 2026-10-12
 
 - Keep the controller responsive as task history grows by scanning notification

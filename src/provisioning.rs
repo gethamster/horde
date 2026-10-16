@@ -477,7 +477,9 @@ pub fn list(directory: &Path) -> Result<Vec<serde_json::Value>> {
                 "auth_mode": provider.auth_mode,
                 "model": provider.model,
                 "api_key_env": provider.api_key_env,
-                "credential": if provider.kind == "chatgpt" {
+                "credential": if provider.kind == "vertex" {
+                    "adc_configured"
+                } else if provider.kind == "chatgpt" {
                     "managed account login; inspect with horde account inspect"
                 } else if !needs_key {
                     "not required"
@@ -498,6 +500,10 @@ pub async fn models(directory: &Path, name: &str) -> Result<Vec<String>> {
         .providers
         .get(name)
         .with_context(|| format!("provider {name} is not configured"))?;
+    anyhow::ensure!(
+        provider.kind != "vertex",
+        "Vertex has no OpenAI model catalog; configure an explicit google/MODEL and use doctor --provider NAME --probe"
+    );
     if provider.kind == "chatgpt" {
         bail!(
             "ChatGPT model discovery requires a managed account; use `horde account models ACCOUNT_ID`"

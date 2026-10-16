@@ -257,6 +257,66 @@ impl Default for ExecutorConfig {
         Provider::default().resolve(&Executor::default())
     }
 }
+impl ExecutorConfig {
+    pub(crate) fn validate_vertex(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.project
+                .as_deref()
+                .is_none_or(|project| project == "default"),
+            "Vertex attached identity is supported only in the default Horde project"
+        );
+        let url = reqwest::Url::parse(&self.base_url)
+            .context("Vertex needs its Google OpenAI endpoint")?;
+        let parts: Vec<_> = url
+            .path()
+            .trim_end_matches('/')
+            .trim_start_matches('/')
+            .split('/')
+            .collect();
+        anyhow::ensure!(
+            url.scheme() == "https"
+                && url.host_str() == Some("aiplatform.googleapis.com")
+                && url.port().is_none()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+                && parts.len() == 7
+                && parts[0] == "v1"
+                && parts[1] == "projects"
+                && !parts[2].is_empty()
+                && parts[2]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && parts[3..] == ["locations", "global", "endpoints", "openapi"],
+            "Vertex requires https://aiplatform.googleapis.com/v1/projects/PROJECT/locations/global/endpoints/openapi"
+        );
+        anyhow::ensure!(
+            self.auth_mode == "adc"
+                && self.api_key_env.is_empty()
+                && self.account.is_none()
+                && self.program.is_none(),
+            "Vertex requires auth_mode=adc with the attached service account, without api_key_env, account or program"
+        );
+        anyhow::ensure!(
+            !self.stream,
+            "Vertex currently requires stream=false to preserve Google tool-call signatures"
+        );
+        anyhow::ensure!(
+            self.max_price.is_none() && self.max_api_cost_usd.is_none(),
+            "Vertex does not support API price or total-spend caps"
+        );
+        anyhow::ensure!(
+            self.model
+                .as_deref()
+                .is_some_and(|model| model.starts_with("google/")
+                    && model.len() > 7
+                    && model != "google/auto"),
+            "Vertex needs an explicit google/MODEL identity"
+        );
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Delivery {
@@ -742,13 +802,17 @@ impl Settings {
             }
             crate::native_protocol::validate_extra_body(&provider.extra_body)
                 .map_err(|e| anyhow::anyhow!("provider {slug}: {e}"))?;
-            if provider.kind != "tuara" && !provider.extra_body.is_empty() {
+            if !["tuara", "vertex"].contains(&provider.kind.as_str())
+                && !provider.extra_body.is_empty()
+            {
                 bail!("provider {slug}: extra_body is supported only by the native tuara executor");
             }
             if provider.kind.is_empty() {
                 bail!("provider {slug} needs a kind");
             }
-            if !["login", "api"].contains(&provider.auth_mode.as_str()) {
+            if provider.kind == "vertex" {
+                provider.resolve(&Executor::default()).validate_vertex()?;
+            } else if !["login", "api"].contains(&provider.auth_mode.as_str()) {
                 bail!("provider {slug} auth_mode must be login or api");
             }
             // Only these reach a provider endpoint directly; the CLI harnesses under
@@ -782,7 +846,7 @@ impl Settings {
                 && self
                     .providers
                     .get(executor.provider())
-                    .is_some_and(|p| p.kind != "tuara")
+                    .is_some_and(|p| !["tuara", "vertex"].contains(&p.kind.as_str()))
             {
                 bail!(
                     "executor role {role}: extra_body is supported only by the native tuara executor"
@@ -793,6 +857,11 @@ impl Settings {
                     "executor role {role} names provider {}, which is not configured",
                     executor.provider()
                 );
+            }
+            if let Some(provider) = self.providers.get(executor.provider())
+                && provider.kind == "vertex"
+            {
+                provider.resolve(executor).validate_vertex()?;
             }
         }
         for (role, target) in &self.fallbacks {

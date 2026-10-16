@@ -602,6 +602,17 @@ async fn project_probe(
     config: &horde::config::ExecutorConfig,
     tools: bool,
 ) -> Result<Value> {
+    if config.kind == "vertex" {
+        anyhow::ensure!(
+            project == "default",
+            "Vertex attached identity is supported only in the default Horde project"
+        );
+        return if tools {
+            horde::executor::probe_tools(config).await
+        } else {
+            horde::executor::probe(config).await
+        };
+    }
     let key = horde::account_auth::api_key(db, project, config)?;
     if tools {
         horde::executor::probe_tools_with_key(config, &key).await
@@ -1251,8 +1262,8 @@ async fn main() -> Result<()> {
                         .context("provider missing")?
                 };
                 anyhow::ensure!(
-                    config.kind == "tuara",
-                    "streaming probe requires a native tuara provider"
+                    ["tuara", "vertex"].contains(&config.kind.as_str()),
+                    "tool probe requires a native tuara or vertex provider"
                 );
                 project_probe(&db, &project, &config, true).await?
             } else {
@@ -1260,8 +1271,8 @@ async fn main() -> Result<()> {
                 if let Some(name) = &provider {
                     let config = settings.provider(name).context("provider missing")?;
                     anyhow::ensure!(
-                        config.kind == "tuara",
-                        "catalog resolution requires a native tuara provider"
+                        ["tuara", "vertex"].contains(&config.kind.as_str()),
+                        "model resolution requires a native tuara or vertex provider"
                     );
                     resolved_models.insert(
                         name.clone(),

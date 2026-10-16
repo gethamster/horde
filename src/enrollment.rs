@@ -94,6 +94,11 @@ pub fn issue(db: &Store, id: &str, profile: &crate::fleet::Profile) -> Result<Op
             // invocation reservation; controller refresh secrets never bootstrap.
             continue;
         }
+        // Vertex credentials belong to the destination VM's attached service
+        // account; never export a controller token to another runtime.
+        if config.kind == "vertex" {
+            continue;
+        }
         ensure!(
             config.auth_mode == "api" || config.kind == "tuara" || config.kind == "simulated",
             "subscription login must be performed explicitly on the remote runtime"
