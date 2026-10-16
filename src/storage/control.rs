@@ -188,7 +188,11 @@ impl Drop for ProcessGuard {
                     libc::kill(-(self.pid as i32), libc::SIGKILL);
                 }
             }
-            if let Err(error) = control.clear_receipt(self.pid) {
+            // Never-paused processes have no receipt; a successful resume already
+            // removed it. Only a held process or failed cleanup can retain one.
+            if (process.paused || !process.receipt_synced)
+                && let Err(error) = control.clear_receipt(self.pid)
+            {
                 eprintln!("storage pause receipt cleanup failed: {error}");
             }
         }

@@ -200,6 +200,8 @@ active, and the existing cancellation path remains available. Durable cleanup
 requests are advisory; authoritative pressure state belongs to the host. An optional
 operator cleanup command runs once per incident outside worker holds. Saved pause
 receipts require reconciliation after a crash and never authorize automatic signals.
+A finished process removes a receipt only after an actual hold or failed cleanup;
+never-paused commands do not open the database during process-guard cleanup.
 Docker containers and in-flight remote HTTP requests are outside local process
 suspension. Periodic
 maintenance removes only eligible old, clean worker checkouts from successful

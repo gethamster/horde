@@ -175,14 +175,32 @@ async fn timeout_and_checkpoint_exclude_paused_time() {
 #[tokio::test]
 async fn dropping_paused_process_guard_kills_group() {
     let dir = tempfile::tempdir().unwrap();
-    crate::store::Store::open(dir.path()).unwrap();
+    let db = crate::store::Store::open(dir.path()).unwrap();
     let control = Control::new(dir.path(), "cancel");
     scope(control.clone(), async {
         let mut child = child(dir.path());
         let guard = register_process(child.id()).unwrap();
         wait_for_progress_async(dir.path(), 0).await;
         control.set_paused(true).unwrap();
+        let receipts: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM runtime_settings WHERE key LIKE 'storage.pause:%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipts, 1);
         drop(guard);
+        let receipts: i64 = db
+            .conn
+            .query_row(
+                "SELECT count(*) FROM runtime_settings WHERE key LIKE 'storage.pause:%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipts, 0);
         let status = child.wait().unwrap();
         assert!(!status.success());
         let before = std::fs::metadata(dir.path().join("counter"))
@@ -346,6 +364,35 @@ async fn receipt_write_failure_still_stops_every_owned_group_and_retries() {
         drop(second_guard);
         first.wait().unwrap();
         second.wait().unwrap();
+    }).await;
+}
+
+#[tokio::test]
+async fn dropping_guard_after_failed_resume_removes_pending_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::store::Store::open(dir.path()).unwrap();
+    let control = Control::new(dir.path(), "failed-resume-cleanup");
+    scope(control.clone(), async {
+        let mut child = child(dir.path());
+        let guard = register_process(child.id()).unwrap();
+        control.set_paused(true).unwrap();
+        wait_for_stop(&child).await;
+        db.conn.execute_batch("CREATE TRIGGER no_receipt_delete BEFORE DELETE ON runtime_settings WHEN OLD.key GLOB 'storage.pause:*' BEGIN SELECT RAISE(ABORT, 'simulated delete failure'); END;").unwrap();
+        assert!(control.set_paused(false).is_err());
+        {
+            let state = control.state.lock().unwrap();
+            let process = state.processes.get(&child.id()).unwrap();
+            assert!(!process.paused);
+            assert!(!process.receipt_synced);
+        }
+        let receipts: i64 = db.conn.query_row("SELECT count(*) FROM runtime_settings WHERE key LIKE 'storage.pause:%'", [], |row| row.get(0)).unwrap();
+        assert_eq!(receipts, 1);
+        db.conn.execute_batch("DROP TRIGGER no_receipt_delete").unwrap();
+        drop(guard);
+        child.wait().unwrap();
+        let receipts: i64 = db.conn.query_row("SELECT count(*) FROM runtime_settings WHERE key LIKE 'storage.pause:%'", [], |row| row.get(0)).unwrap();
+        assert_eq!(receipts, 0);
+        assert!(control.state.lock().unwrap().processes.is_empty());
     }).await;
 }
 
@@ -539,6 +586,68 @@ async fn executor_launches_do_not_block_current_thread_http_responses() {
         assert!(control.state.lock().unwrap().processes.is_empty());
         eprintln!("32 HTTP responses during 32 slow process launches: {elapsed:?}");
         assert!(elapsed < Duration::from_secs(2), "launches stalled the reactor: {elapsed:?}");
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn never_paused_process_cleanup_does_not_wait_for_sqlite_writer() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::task::LocalSet::new().run_until(async {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::store::Store::open(dir.path()).unwrap();
+        let control = Control::new(dir.path(), "unpaused-cleanup");
+        let mut children = Vec::new();
+        let mut guards = Vec::new();
+        for _ in 0..32 {
+            let child = child(dir.path());
+            let guard = blocking_scope(Some(control.clone()), || register_process(child.id())).unwrap();
+            children.push(child);
+            guards.push(guard);
+        }
+        let path = db.root.join("state.sqlite3");
+        let (ready, locked) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let connection = rusqlite::Connection::open(path).unwrap();
+            connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            ready.send(()).unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            connection.execute_batch("ROLLBACK").unwrap();
+        });
+        locked.recv().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::task::spawn_local(async move {
+            for _ in 0..32 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::task::spawn_local(async move {
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte).await.unwrap();
+                        request.extend_from_slice(&byte);
+                    }
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await.unwrap();
+                });
+            }
+        });
+        let started = Instant::now();
+        let drops: Vec<_> = guards.into_iter().map(|guard| tokio::task::spawn_local(async move { drop(guard) })).collect();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        futures_util::future::join_all((0..32).map(|_| async {
+            let response = client.get(format!("http://{address}/")).send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.text().await.unwrap(), "ok");
+        })).await;
+        for task in drops { task.await.unwrap(); }
+        let elapsed = started.elapsed();
+        for child in &mut children { child.wait().unwrap(); }
+        writer.join().unwrap();
+        server.await.unwrap();
+        assert!(control.state.lock().unwrap().processes.is_empty());
+        let receipts: i64 = db.conn.query_row("SELECT count(*) FROM runtime_settings WHERE key LIKE 'storage.pause:%'", [], |row| row.get(0)).unwrap();
+        assert_eq!(receipts, 0);
+        eprintln!("32 HTTP responses during never-paused cleanup with SQLite writer: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "unnecessary receipt cleanup stalled the reactor: {elapsed:?}");
     }).await;
 }
 
