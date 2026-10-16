@@ -72,7 +72,13 @@ Vertex currently requires non-streaming responses. Horde retains the complete
 assistant message, including Google's opaque tool-call `extra_content` thought
 signatures, and sends it with the tool response on the next request. API price
 ceilings and total-spend caps are unsupported for this route; use Google Cloud's
-existing billing controls. HTTP failures remain explicit and do not switch models.
+existing billing controls. During a native tool conversation, HTTP 429, 500, and
+503 receive up to three requests for that model turn, with one- and two-second
+backoff. A valid `Retry-After` header can lengthen that delay, but a retry cannot
+outwait the existing progress budget. These retries keep the conversation and
+tool results in the same attempt. Other HTTP errors and exhausted retries remain
+explicit and do not switch models. Provider retry events report status and delay
+without response bodies, headers, or credentials.
 
 ## ChatGPT Responses transport
 
