@@ -1183,6 +1183,7 @@ pub async fn daemon(root: &Path) -> Result<()> {
         None
     };
     let mut interval = tokio::time::interval(Duration::from_millis(200));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     crate::update::complete_handoff(&db)?;
     // Older updaters replace only the executable. Fetch its signed default pack
