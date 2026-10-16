@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.43 - 2026-10-16
+
+- Avoid opening the workflow database when a finished process has no pause
+  receipt to remove. Keep receipt cleanup after actual holds and failed resumes,
+  without making ordinary commands wait for an unrelated SQLite writer.
+
 ## 0.6.42 - 2026-10-16
 
 - Launch executor processes off the daemon event loop so fork/exec handshakes

@@ -98,6 +98,9 @@ impl Control {
         // live group whose ownership this guard already proves. Retain and retry
         // failed receipts; persisted PIDs alone never authorize future signals.
         let receipt = if paused {
+            // The write can commit before signalling fails; retain the cleanup
+            // obligation on every early return from this pause attempt.
+            process.receipt_synced = false;
             (|| -> Result<()> {
                 let db = crate::store::Store::open(&self.root)?;
                 crate::management::set(&db, &self.receipt_key(pid), &json!({"attempt":self.attempt,"pid":pid,"identity":process.identity,"state":"paused","created":crate::store::now()}).to_string())
@@ -188,7 +191,11 @@ impl Drop for ProcessGuard {
                     libc::kill(-(self.pid as i32), libc::SIGKILL);
                 }
             }
-            if let Err(error) = control.clear_receipt(self.pid) {
+            // Never-paused processes have no receipt; a successful resume already
+            // removed it. Only a held process or failed cleanup can retain one.
+            if (process.paused || !process.receipt_synced)
+                && let Err(error) = control.clear_receipt(self.pid)
+            {
                 eprintln!("storage pause receipt cleanup failed: {error}");
             }
         }
