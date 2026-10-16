@@ -232,7 +232,7 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
     match config.kind.as_str() {
         "simulated" => Ok(json!({"result":"simulated executor","accepted":true})),
         "codex" | "claude" | "grok" => harness(i, &config).await,
-        "tuara" | "chatgpt" => native_worker(i, &config).await,
+        "tuara" | "chatgpt" | "vertex" => native_worker(i, &config).await,
         _ => bail!("unknown executor kind {}", config.kind),
     }
 }
@@ -897,6 +897,9 @@ fn accepted(result: Value) -> Result<Value> {
     Ok(result)
 }
 pub async fn probe(config: &ExecutorConfig) -> Result<Value> {
+    if config.kind == "vertex" {
+        return probe_with_key(config, "").await;
+    }
     if config.project.is_some() && config.account.is_some() {
         bail!("managed project probes require an explicit account resolver");
     }
@@ -904,6 +907,11 @@ pub async fn probe(config: &ExecutorConfig) -> Result<Value> {
     probe_with_key(config, &key).await
 }
 pub async fn probe_with_key(config: &ExecutorConfig, key: &str) -> Result<Value> {
+    if config.kind == "vertex" {
+        config.validate_vertex()?;
+        let token = crate::account_auth::vertex_access_token().await?;
+        return vertex_probe(config, &token).await;
+    }
     let requested = config
         .model
         .as_deref()
@@ -966,6 +974,34 @@ pub async fn probe_with_key(config: &ExecutorConfig, key: &str) -> Result<Value>
         requested
     };
     Ok(json!({"model":model,"requested_model":requested,"catalog_verified":true,"models":all}))
+}
+
+async fn vertex_probe(config: &ExecutorConfig, token: &str) -> Result<Value> {
+    let model = config
+        .model
+        .as_deref()
+        .context("Vertex needs an explicit model")?;
+    let response = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60)).build()?
+        .post(format!("{}/chat/completions", config.base_url.trim_end_matches('/')))
+        .bearer_auth(token)
+        .json(&json!({"model":model,"messages":[{"role":"user","content":"Reply OK."}],"max_tokens":16,"stream":false}))
+        .send().await?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "Vertex model probe returned {}",
+        response.status()
+    );
+    let data: Value = response.json().await?;
+    anyhow::ensure!(
+        data["model"] == model
+            && data["choices"]
+                .as_array()
+                .is_some_and(|choices| !choices.is_empty()),
+        "Vertex model probe did not return the requested model {model}"
+    );
+    Ok(
+        json!({"model":model,"requested_model":model,"catalog_verified":false,"model_verified":true,"verification":"inference"}),
+    )
 }
 pub async fn chatgpt_models(config: &ExecutorConfig, key: &str) -> Result<Value> {
     let response = reqwest::Client::builder()
@@ -1119,7 +1155,13 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
     let mut generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
     let project = crate::projects::task_project(i.db, i.task)?;
     let chatgpt = config.kind == "chatgpt";
-    let mut key = if chatgpt {
+    let vertex = config.kind == "vertex";
+    if vertex {
+        config.validate_vertex()?;
+    }
+    let mut key = if vertex {
+        String::new()
+    } else if chatgpt {
         crate::account_auth::invocation_chatgpt_token(
             i,
             &project,
@@ -1141,7 +1183,7 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
     i.db.event(
         i.task,
         "executor.model_resolved",
-        json!({"step":i.step,"attempt":i.attempt,"model":model,"requested_model":config.model}),
+        json!({"step":i.step,"attempt":i.attempt,"model":model,"requested_model":config.model,"catalog_verified":catalog["catalog_verified"],"verification":catalog["verification"]}),
     )?;
     // A total spend cap cannot be guaranteed without a quoted price and usage contract.
     if chatgpt && (config.max_api_cost_usd.is_some() || config.max_price.is_some()) {
@@ -1268,6 +1310,9 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
         let data = loop {
             crate::storage::control::checkpoint().await;
             request_attempt += 1;
+            if vertex {
+                key = crate::account_auth::vertex_access_token().await?;
+            }
             if chatgpt {
                 key = crate::account_auth::invocation_chatgpt_token(
                     i,
@@ -1328,7 +1373,13 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
             if !chatgpt && !status.is_success() {
                 bail!(
                     "{} returned {status}; retry or fallback requires workflow policy",
-                    if chatgpt { "ChatGPT" } else { "Tuara" }
+                    if vertex {
+                        "Vertex"
+                    } else if chatgpt {
+                        "ChatGPT"
+                    } else {
+                        "Tuara"
+                    }
                 );
             }
             let progress = |mut progress: Value| {
@@ -1379,6 +1430,12 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
             break data;
         };
         ensure_native_account(i, config, generation.as_deref())?;
+        if vertex {
+            anyhow::ensure!(
+                data["model"] == model,
+                "Vertex returned another model; no model substituted"
+            );
+        }
         let extras: serde_json::Map<String, Value> = data
             .as_object()
             .context("response object")?
@@ -1415,7 +1472,7 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
             bail!("Tuara returned no message");
         }
         // Router guarantees string content, including assistant tool-call turns.
-        if message["content"].is_null() {
+        if !vertex && message["content"].is_null() {
             message["content"] = json!("");
         }
         messages.push(message.clone())?;
@@ -1565,8 +1622,87 @@ async fn native_worker(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Va
     bail!("native worker exceeded maximum tool rounds")
 }
 
-/// Explicit probe for streaming and tool behavior; never substitutes a model.
+async fn vertex_tool_probe(config: &ExecutorConfig) -> Result<Value> {
+    let model = config
+        .model
+        .as_deref()
+        .context("Vertex needs an explicit model")?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+    let mut messages = vec![
+        json!({"role":"user","content":"Call ping with value ok. After the tool response, reply OK."}),
+    ];
+    let mut signed = false;
+    for round in 0..2 {
+        let token = crate::account_auth::vertex_access_token().await?;
+        let mut body = json!({"model":model,"messages":messages,"stream":false,"max_tokens":128,"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}}],"tool_choice":if round == 0 {json!({"type":"function","function":{"name":"ping"}})} else {json!("none")}});
+        body.as_object_mut()
+            .expect("request object")
+            .extend(config.extra_body.clone());
+        let response = client
+            .post(format!(
+                "{}/chat/completions",
+                config.base_url.trim_end_matches('/')
+            ))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "Vertex tool probe returned {}",
+            response.status()
+        );
+        let data: Value = response.json().await?;
+        anyhow::ensure!(
+            data["model"] == model,
+            "Vertex tool probe returned another model"
+        );
+        let assistant = data["choices"][0]["message"].clone();
+        if round == 0 {
+            let calls = assistant["tool_calls"]
+                .as_array()
+                .context("Vertex probe returned no tool calls")?;
+            anyhow::ensure!(
+                calls.len() == 1
+                    && calls[0]["function"]["name"] == "ping"
+                    && serde_json::from_str::<Value>(
+                        calls[0]["function"]["arguments"]
+                            .as_str()
+                            .context("Vertex probe arguments")?
+                    )? == json!({"value":"ok"}),
+                "Vertex did not satisfy tool-call contract"
+            );
+            let id = calls[0]["id"]
+                .as_str()
+                .context("Vertex probe tool identity")?
+                .to_owned();
+            signed =
+                calls[0].get("extra_content").is_some() || assistant.get("extra_content").is_some();
+            // Keep Google's complete assistant message, including opaque tool
+            // thought signatures required by the next Google request.
+            messages.push(assistant);
+            messages.push(json!({"role":"tool","tool_call_id":id,"content":"ok"}));
+        } else {
+            anyhow::ensure!(
+                assistant["content"]
+                    .as_str()
+                    .is_some_and(|text| !text.trim().is_empty()),
+                "Vertex probe returned no completion after the tool response"
+            );
+        }
+    }
+    Ok(
+        json!({"model":model,"requested_model":model,"catalog_verified":false,"model_verified":true,"verification":"inference","tool_calls_verified":true,"tool_round_trip_verified":true,"streaming_tool_calls_verified":false,"tool_extensions_preserved":signed}),
+    )
+}
+
+/// Explicit probe for provider tool behavior; never substitutes a model.
 pub async fn probe_tools(config: &ExecutorConfig) -> Result<Value> {
+    if config.kind == "vertex" {
+        return probe_tools_with_key(config, "").await;
+    }
     if config.project.is_some() && config.account.is_some() {
         bail!("managed project probes require an explicit account resolver");
     }
@@ -1576,6 +1712,9 @@ pub async fn probe_tools(config: &ExecutorConfig) -> Result<Value> {
 pub async fn probe_tools_with_key(config: &ExecutorConfig, key: &str) -> Result<Value> {
     let catalog = probe_with_key(config, key).await?;
     let model = catalog["model"].as_str().context("resolved model")?;
+    if config.kind == "vertex" {
+        return vertex_tool_probe(config).await;
+    }
     if config.kind == "chatgpt" {
         let messages = crate::native_protocol::Conversation::new(vec![
             json!({"role":"user","content":"Call ping with value ok."}),
@@ -1658,6 +1797,70 @@ pub async fn probe_tools_with_key(config: &ExecutorConfig, key: &str) -> Result<
 #[cfg(test)]
 mod tool_event_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn vertex_probe_uses_inference_and_rejects_model_substitution() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for (status, model) in [
+                (200, "google/gemini-3.8-flash"),
+                (200, "google/another-model"),
+                (429, ""),
+            ] {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut headers = vec![];
+                while !headers.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    headers.push(byte[0]);
+                }
+                let headers = String::from_utf8(headers).unwrap();
+                assert!(headers.starts_with("POST /v1/chat/completions "));
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")
+                            .map(|size| size.parse::<usize>().unwrap())
+                    })
+                    .unwrap();
+                let mut body = vec![0; length];
+                socket.read_exact(&mut body).unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&body).unwrap()["model"],
+                    "google/gemini-3.8-flash"
+                );
+                let body=json!({"model":model,"choices":[{"message":{"role":"assistant","content":"OK"}}]}).to_string();
+                write!(socket,"HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            }
+        });
+        let config = ExecutorConfig {
+            kind: "vertex".into(),
+            model: Some("google/gemini-3.8-flash".into()),
+            base_url: format!("http://{address}/v1"),
+            ..Default::default()
+        };
+        let result = vertex_probe(&config, "synthetic-token").await.unwrap();
+        assert_eq!(result["catalog_verified"], false);
+        assert_eq!(result["model_verified"], true);
+        assert!(
+            vertex_probe(&config, "synthetic-token")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("requested model")
+        );
+        assert!(
+            vertex_probe(&config, "synthetic-token")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("429")
+        );
+        server.join().unwrap();
+    }
 
     #[test]
     fn tool_errors_redact_secrets_before_utf8_safe_truncation_and_fail_closed() {

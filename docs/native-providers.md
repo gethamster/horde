@@ -1,6 +1,6 @@
 # Native provider contract
 
-Horde's native executor supports Chat Completions with `kind = "tuara"` and
+Horde's native executor supports Chat Completions with `kind = "tuara"` or `kind = "vertex"` and
 ChatGPT plan usage through Responses with `kind = "chatgpt"`. Tuara requests post
 to `<base_url>/chat/completions`; a configured base URL can point to a local server.
 The contract below applies within one native invocation. An invocation starts a
@@ -25,6 +25,50 @@ and catalog model `XXXXTSJV130XXX`. A native Tuara coding provider instead uses
 base URL `https://tuara.com/router/v1` and a generative model. See
 [decision configuration](configuration.md#decision-models-and-advisory-routing)
 for credentials, capability guidance, and inspection commands.
+
+## Google Vertex AI
+
+On a Google Compute Engine VM, use the attached service account through metadata
+authentication. Grant that account Vertex AI User on the project charged for
+inference. No API key, personal login, service-account key file, proxy, or token
+refresh process is needed.
+
+```toml
+[providers.google]
+kind = "vertex"
+auth_mode = "adc"
+base_url = "https://aiplatform.googleapis.com/v1/projects/YOUR-PROJECT/locations/global/endpoints/openapi"
+model = "google/gemini-3.8-flash"
+stream = false
+
+[executors.worker]
+provider = "google"
+[executors.reviewer]
+provider = "google"
+model = "google/gemini-4-argon"
+```
+
+This ADC mode supports the VM's attached identity. It does not read local gcloud
+logins or credential files. It is available only in the default Horde project;
+other Horde projects retain their managed-account authorization requirement.
+Leave `api_key_env`, `account`, and `program` unset.
+Each model probe and inference request obtains a fresh bearer from the metadata
+server, so a long task does not pin an expiring token. Credentials never enter
+workflow settings, worker command environments, or account export bundles.
+
+Google's OpenAI endpoint has no `/models` catalog. Horde verifies the configured
+model with a small real inference and requires the response's model identity to
+match exactly. Probes report `model_verified=true`, `verification="inference"`,
+and `catalog_verified=false`. Capability inventory reports `adc_configured`,
+which describes configuration and does not claim successful authentication.
+Use `horde doctor --provider google --probe` for a real two-request tool round trip.
+These probes consume the project's inference quota and billing allowance.
+
+Vertex currently requires non-streaming responses. Horde retains the complete
+assistant message, including Google's opaque tool-call `extra_content` thought
+signatures, and sends it with the tool response on the next request. API price
+ceilings and total-spend caps are unsupported for this route; use Google Cloud's
+existing billing controls. HTTP failures remain explicit and do not switch models.
 
 ## ChatGPT Responses transport
 

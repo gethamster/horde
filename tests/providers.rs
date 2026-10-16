@@ -13,6 +13,39 @@ use std::{
     sync::{Arc, Mutex},
     thread,
 };
+
+#[test]
+fn vertex_configuration_requires_attached_identity_and_preserved_google_tools() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config.toml");
+    let canonical = "[providers.gcp]\nkind='vertex'\nauth_mode='adc'\nbase_url='https://aiplatform.googleapis.com/v1/projects/example-project/locations/global/endpoints/openapi'\nmodel='google/gemini-3.8-flash'\n[executors.worker]\nprovider='gcp'\n";
+    std::fs::write(&config, canonical).unwrap();
+    let settings = Settings::load_dir(root.path()).unwrap();
+    assert_eq!(settings.executor("worker").unwrap().kind, "vertex");
+    for (before, after) in [
+        ("auth_mode='adc'", "auth_mode='api'"),
+        ("kind='vertex'", "kind='tuara'"),
+        ("aiplatform.googleapis.com", "untrusted.example"),
+        ("https://", "http://"),
+        ("/openapi'", "/openapi?key=secret'"),
+        ("model='google/gemini-3.8-flash'", "model='auto'"),
+        (
+            "model='google/gemini-3.8-flash'",
+            "model='google/gemini-3.8-flash'\nstream=true",
+        ),
+        (
+            "auth_mode='adc'",
+            "auth_mode='adc'\napi_key_env='STATIC_TOKEN'",
+        ),
+        (
+            "auth_mode='adc'",
+            "auth_mode='adc'\naccount='shared-account'",
+        ),
+    ] {
+        std::fs::write(&config, canonical.replace(before, after)).unwrap();
+        assert!(Settings::load_dir(root.path()).is_err(), "accepted {after}");
+    }
+}
 fn server(replies: Vec<(u16, String)>) -> (String, Arc<Mutex<Vec<Value>>>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -261,7 +294,7 @@ async fn unavailable_model_fails_without_substitution() {
 async fn native_worker_executes_claimed_file_tool_and_retains_usage() {
     let(url,requests,handle)=server(vec![
         (200,json!({"data":[{"id":"z-ai/glm-5.3-flash"}]}).to_string()),
-        (200,json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call1","type":"function","function":{"name":"write_file","arguments":json!({"path":"hello.txt","content":"hello"}).to_string()}}]}}],"usage":{"prompt_tokens":20,"completion_tokens":10}}).to_string()),
+        (200,json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call1","type":"function","extra_content":{"google":{"thought_signature":"opaque-google-signature"}},"function":{"name":"write_file","arguments":json!({"path":"hello.txt","content":"hello"}).to_string()}}]}}],"usage":{"prompt_tokens":20,"completion_tokens":10}}).to_string()),
         (200,json!({"choices":[{"message":{"role":"assistant","content":json!({"result":"implemented","accepted":true}).to_string()}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}).to_string()),
     ]);
     let dir = tempfile::tempdir().unwrap();
@@ -314,6 +347,10 @@ async fn native_worker_executes_claimed_file_tool_and_retains_usage() {
     handle.join().unwrap();
     let requests = requests.lock().unwrap();
     assert_eq!(requests[2]["messages"][2]["content"], "");
+    assert_eq!(
+        requests[2]["messages"][2]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+        "opaque-google-signature"
+    );
     assert_eq!(requests[2]["messages"][3]["role"], "tool");
 }
 /// A reasoning model can end a turn with its thinking in a separate field and

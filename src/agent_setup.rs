@@ -477,15 +477,27 @@ fn configure_provider(root: &Path, request: &Request) -> Result<Value> {
         ));
     };
     ensure!(
-        ["tuara", "codex", "claude", "grok", "chatgpt", "simulated"].contains(&kind),
+        [
+            "tuara",
+            "vertex",
+            "codex",
+            "claude",
+            "grok",
+            "chatgpt",
+            "simulated"
+        ]
+        .contains(&kind),
         "unsupported provider kind"
     );
-    let auth_mode =
-        spec.auth_mode
-            .as_deref()
-            .unwrap_or(if kind == "tuara" { "api" } else { "login" });
+    let auth_mode = spec.auth_mode.as_deref().unwrap_or(if kind == "vertex" {
+        "adc"
+    } else if kind == "tuara" {
+        "api"
+    } else {
+        "login"
+    });
     ensure!(
-        ["api", "login"].contains(&auth_mode),
+        ["api", "login"].contains(&auth_mode) || (kind == "vertex" && auth_mode == "adc"),
         "invalid provider authentication mode"
     );
     let variable = spec.api_key_env.clone().unwrap_or_default();
@@ -549,7 +561,7 @@ fn configure_provider(root: &Path, request: &Request) -> Result<Value> {
             request.credential.is_none()
                 && request.credential_env.is_none()
                 && request.credential_file.is_none(),
-            "subscription providers use their own login store, not an API key"
+            "this provider uses its runtime authentication, not an API key"
         );
         None
     };

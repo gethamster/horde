@@ -6,6 +6,123 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command};
 
+/// Resolve the attached Google service account for this request, not for the
+/// lifetime of a worker. No refresh token or service-account key is persisted.
+pub async fn vertex_access_token() -> Result<String> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    metadata_access_token(&client, "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token").await
+}
+
+async fn metadata_access_token(client: &reqwest::Client, url: &str) -> Result<String> {
+    let response = client
+        .get(url)
+        .header("Metadata-Flavor", "Google")
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("Vertex ADC metadata is unavailable"))?;
+    ensure!(
+        response.status().is_success(),
+        "Vertex ADC metadata returned {}",
+        response.status()
+    );
+    ensure!(
+        response
+            .headers()
+            .get("Metadata-Flavor")
+            .is_some_and(|value| value == "Google"),
+        "Vertex ADC metadata identity is missing"
+    );
+    let data: Value = response
+        .json()
+        .await
+        .context("Vertex ADC metadata response is invalid")?;
+    ensure!(
+        data["token_type"] == "Bearer"
+            && data["expires_in"]
+                .as_u64()
+                .is_some_and(|seconds| seconds > 0),
+        "Vertex ADC metadata token is invalid or expired"
+    );
+    Ok(data["access_token"]
+        .as_str()
+        .filter(|token| !token.is_empty())
+        .context("Vertex ADC metadata token is missing")?
+        .to_owned())
+}
+
+#[cfg(test)]
+mod vertex_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[tokio::test]
+    async fn attached_identity_is_resolved_again_and_invalid_metadata_fails_closed() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for (status, flavor, body) in [
+                (
+                    200,
+                    true,
+                    json!({"access_token":"first","token_type":"Bearer","expires_in":1}),
+                ),
+                (
+                    200,
+                    true,
+                    json!({"access_token":"renewed","token_type":"Bearer","expires_in":3600}),
+                ),
+                (403, true, json!({"error":"denied"})),
+                (
+                    200,
+                    false,
+                    json!({"access_token":"untrusted","token_type":"Bearer","expires_in":3600}),
+                ),
+            ] {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut headers = Vec::new();
+                while !headers.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).unwrap();
+                    headers.push(byte[0]);
+                }
+                assert!(
+                    String::from_utf8(headers)
+                        .unwrap()
+                        .to_ascii_lowercase()
+                        .contains("metadata-flavor: google")
+                );
+                let body = body.to_string();
+                write!(socket,"HTTP/1.1 {status} OK\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{body}",body.len(),if flavor {"Metadata-Flavor: Google\r\n"} else {""}).unwrap();
+            }
+        });
+        let client = reqwest::Client::new();
+        assert_eq!(metadata_access_token(&client, &url).await.unwrap(), "first");
+        assert_eq!(
+            metadata_access_token(&client, &url).await.unwrap(),
+            "renewed"
+        );
+        assert!(
+            metadata_access_token(&client, &url)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("403")
+        );
+        assert!(
+            metadata_access_token(&client, &url)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("identity is missing")
+        );
+        server.join().unwrap();
+    }
+}
+
 #[derive(Debug)]
 pub struct RefreshOwnerRequired;
 impl std::fmt::Display for RefreshOwnerRequired {
