@@ -571,7 +571,7 @@ fn schema_ten_upgrade_is_additive_and_requires_daemon_to_stop() {
         db.conn
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        11
+        crate::store::SCHEMA_VERSION
     );
 }
 

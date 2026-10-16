@@ -20,6 +20,7 @@ pub async fn vertex_access_token() -> Result<String> {
 async fn metadata_access_token(client: &reqwest::Client, url: &str) -> Result<String> {
     let mut retries = 0;
     let response = loop {
+        let started = std::time::Instant::now();
         match client
             .get(url)
             .header("Metadata-Flavor", "Google")
@@ -27,14 +28,24 @@ async fn metadata_access_token(client: &reqwest::Client, url: &str) -> Result<St
             .await
         {
             Ok(response) => break response,
-            Err(_) if retries < 2 => {
+            Err(error) => {
+                let timeout = error.is_timeout();
+                let connect = error.is_connect();
+                let source = anyhow::Error::new(error.without_url());
+                eprintln!(
+                    "Vertex ADC metadata attempt {} failed after {}ms (timeout={timeout}, connect={connect}): {source:#}",
+                    retries + 1,
+                    started.elapsed().as_millis(),
+                );
+                if retries == 2 {
+                    anyhow::bail!("Vertex ADC metadata is unavailable");
+                }
                 // A brief metadata connection failure must not discard an ongoing
                 // model conversation. Retry transport only, before any response
                 // validation, without retaining credentials between requests.
                 tokio::time::sleep(std::time::Duration::from_millis(100 << retries)).await;
                 retries += 1;
             }
-            Err(_) => anyhow::bail!("Vertex ADC metadata is unavailable"),
         }
     };
     ensure!(
