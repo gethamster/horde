@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep every distinct retrieved evidence page available to Vertex workers. Collapse only verified duplicate reads into references to retained content, so workers can finish reviews without repeatedly retrieving pages that vanished from their requests.
+
 ## 0.6.45 - 2026-10-17
 
 - Stop resending older retrieved archive pages in Vertex requests. Keep the
