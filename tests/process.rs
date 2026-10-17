@@ -268,6 +268,11 @@ command=["sleep","30"]
         assert!(start.elapsed() < Duration::from_secs(5));
         std::thread::sleep(Duration::from_millis(30));
     };
+    assert!(
+        d.call_result("reconcile_worker", json!({"task":oid,"worker":wid}))
+            .is_err(),
+        "reconciliation must not relabel a running worker as stopped"
+    );
     d.restart();
     let v = d.wait(&oid, "blocked");
     assert_eq!(v["attempts"].as_array().unwrap().len(), 1);

@@ -733,6 +733,12 @@ fn dispatch_authorized(
                 }
             }
             db.atomic(|| {
+                let running: bool = db.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM attempts WHERE worker=? AND state='running')",
+                    [wid],
+                    |row| row.get(0),
+                )?;
+                anyhow::ensure!(!running, "worker has a running attempt; cannot reconcile it");
                 db.conn.execute("UPDATE attempts SET state='interrupted',finished=? WHERE worker=? AND state='uncertain'",rusqlite::params![now(),wid])?;
                 for attempt in &attempts {
                     let step = attempt["step"].as_str().context("reconciled step")?;

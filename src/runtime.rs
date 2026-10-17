@@ -168,6 +168,7 @@ fn begin(
         db.conn.execute("UPDATE notifications SET dispatched_seq=COALESCE((SELECT MAX(m.seq) FROM messages m JOIN receipts r ON r.message=m.id WHERE r.worker=?),0) WHERE worker=?",rusqlite::params![wid,wid])?;
         crate::delegation::pin(db,oid,&attempt)?;
         crate::project_runtime::record(db, oid, &attempt, binding.as_ref())?;
+        crate::preview::bind_attempt(db, tid, &attempt)?;
         db.event(
             oid,
             "step.started",
@@ -211,10 +212,34 @@ async fn run_step(
         ),
     )
     .await;
-    db.finish(tid, &attempt, &wid, result)?;
-    crate::accounts::release_step(&db, tid)?;
-    crate::project_runtime::release_remote(&db, tid).await
+    finish_attempt(&db, tid, &attempt, &wid, &result).await
 }
+
+fn database_contention(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(code, _))
+                if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        )
+    })
+}
+
+async fn finish_attempt(
+    db: &Store,
+    step: &str,
+    attempt: &str,
+    worker: &str,
+    result: &Result<Value>,
+) -> Result<()> {
+    loop {
+        match db.finish_ref(step, attempt, worker, result) {
+            Err(error) if database_contention(&error) => tokio::task::yield_now().await,
+            result => return result,
+        }
+    }
+}
+
 async fn execute_step(
     db: &Store,
     row: &Value,
@@ -658,7 +683,13 @@ pub(crate) async fn handle(stream: tokio::net::UnixStream, root: PathBuf) -> Res
     write.write_all(format!("{response}\n").as_bytes()).await?;
     Ok(())
 }
-type ActiveAttempt = (String, String, String, JoinHandle<Result<()>>);
+struct ActiveAttempt {
+    task: String,
+    attempt: String,
+    worker: String,
+    handle: Option<JoinHandle<Result<()>>>,
+    failure: Option<String>,
+}
 
 struct Scheduler {
     pressure: tokio::sync::watch::Receiver<Value>,
@@ -672,34 +703,15 @@ impl Scheduler {
     async fn tick(&mut self, db: &Store, remote_ready: bool) -> Result<()> {
         crate::project_runtime::reconcile_releases(db).await?;
         crate::accounts::cleanup_ungranted(db)?;
-        let finished: Vec<_> = self
-            .running
-            .iter()
-            .filter(|(_, (_, _, _, h))| h.is_finished())
-            .map(|(k, _)| k.clone())
-            .collect();
-        for tid in finished {
-            if let Some((_, attempt, wid, h)) = self.running.remove(&tid) {
-                match h.await {
-                    Ok(Ok(())) => {}
-                    other => {
-                        db.finish(
-                            &tid,
-                            &attempt,
-                            &wid,
-                            Err(anyhow::anyhow!("worker execution failed: {other:?}")),
-                        )?;
-                    }
-                }
-                crate::accounts::release_step(db, &tid)?;
-                crate::project_runtime::release_remote(db, &tid).await?;
-            }
-        }
         let cancelled: Vec<_> = self
             .running
             .iter()
-            .filter_map(|(tid, (oid, _, _, _))| {
-                db.task(oid)
+            .filter_map(|(tid, active)| {
+                active
+                    .handle
+                    .as_ref()
+                    .filter(|handle| !handle.is_finished())?;
+                db.task(&active.task)
                     .ok()
                     .filter(|o| {
                         o["status"] == "cancelled"
@@ -709,18 +721,50 @@ impl Scheduler {
             })
             .collect();
         for tid in cancelled {
-            if let Some((_, attempt, wid, h)) = self.running.remove(&tid) {
-                h.abort();
-                let _ = h.await;
-                db.finish(
-                    &tid,
-                    &attempt,
-                    &wid,
-                    Err(anyhow::anyhow!("cancelled; worker process group stopped")),
-                )?;
-                crate::accounts::release_step(db, &tid)?;
-                crate::project_runtime::release_remote(db, &tid).await?;
+            if let Some(active) = self.running.get_mut(&tid) {
+                if let Some(handle) = &active.handle {
+                    handle.abort();
+                }
+                active.failure = Some("cancelled; worker process group stopped".into());
             }
+        }
+        let finished: Vec<_> = self
+            .running
+            .iter()
+            .filter(|(_, active)| {
+                active
+                    .handle
+                    .as_ref()
+                    .is_none_or(|handle| handle.is_finished())
+            })
+            .map(|(step, _)| step.clone())
+            .collect();
+        for tid in finished {
+            let active = self.running.get_mut(&tid).expect("known active attempt");
+            if let Some(handle) = active.handle.take() {
+                match handle.await {
+                    Ok(Ok(())) => {}
+                    other if active.failure.is_none() => {
+                        active.failure = Some(format!("worker execution failed: {other:?}"));
+                    }
+                    _ => {}
+                }
+            }
+            // Keep the completed item until its outcome and reservation release
+            // are durable. A busy write returns to the daemon select loop, so
+            // RPC, cancellation and shutdown stay available between retries.
+            if let Some(failure) = &active.failure {
+                db.finish_ref(
+                    &tid,
+                    &active.attempt,
+                    &active.worker,
+                    &Err(anyhow::anyhow!(failure.clone())),
+                )?;
+                active.failure = None;
+            }
+            crate::accounts::release_step(db, &tid)?;
+            crate::project_runtime::release_remote(db, &tid).await?;
+            self.running.remove(&tid);
         }
         self.limit = crate::project_runtime::host_limit(db)?;
         if self.previews.tick(db).await? {
@@ -798,7 +842,7 @@ impl Scheduler {
             let mut active = self
                 .running
                 .values()
-                .filter(|(o, _, _, _)| o == oid)
+                .filter(|active| active.task == oid)
                 .count();
             for mut row in ready {
                 if !crate::storage::admission(db, oid, &self.pressure)? {
@@ -927,7 +971,6 @@ impl Scheduler {
                         return Err(error);
                     }
                 };
-                crate::preview::bind_attempt(db, &tid, &attempt)?;
                 let decision_job = (step.kind == "agent"
                     && settings.decision.mode == crate::config::DecisionMode::Shadow)
                     .then(|| {
@@ -953,8 +996,16 @@ impl Scheduler {
                     token,
                     self.pressure.clone(),
                 )));
-                self.running
-                    .insert(tid, (oid.to_owned(), attempt, wid, handle));
+                self.running.insert(
+                    tid,
+                    ActiveAttempt {
+                        task: oid.to_owned(),
+                        attempt,
+                        worker: wid,
+                        handle: Some(handle),
+                        failure: None,
+                    },
+                );
                 active += 1;
                 // Let the selected executor begin before any advisory database
                 // work. The shadow result can never gate this attempt.
@@ -1223,7 +1274,13 @@ pub async fn daemon(root: &Path) -> Result<()> {
                 let(stream,_)=connection?;let root=root.to_owned();
                 tokio::task::spawn_local(async move{if let Err(e)=handle(stream,root).await{eprintln!("RPC connection: {e:#}");}});
             },
-            _=interval.tick()=>{if shutdown.exists(){std::fs::remove_file(&shutdown)?;break;}scheduler.tick(&db,remote_ready.get()).await?;},
+            _=interval.tick()=>{
+                if shutdown.exists(){std::fs::remove_file(&shutdown)?;break;}
+                if let Err(error) = scheduler.tick(&db,remote_ready.get()).await {
+                    if !database_contention(&error) {return Err(error);}
+                    eprintln!("Scheduler database contention; retrying without interrupting workers: {error:#}");
+                }
+            },
             _=tokio::signal::ctrl_c()=>{break;},
             _=terminate.recv()=>{break;},
         }
@@ -1257,15 +1314,31 @@ pub async fn daemon(root: &Path) -> Result<()> {
     scheduler.decisions.shutdown(&db).await;
     scheduler.reviews.shutdown(&db).await;
     scheduler.previews.shutdown(&db).await?;
-    for (tid, (_, attempt, wid, h)) in scheduler.running {
-        h.abort();
-        let _ = h.await;
-        db.finish(
-            &tid,
-            &attempt,
-            &wid,
-            Err(anyhow::anyhow!("daemon stopped; process group stopped")),
-        )?;
+    for (tid, active) in scheduler.running {
+        let failure = if let Some(handle) = active.handle {
+            if handle.is_finished() {
+                match handle.await {
+                    Ok(Ok(())) => active.failure,
+                    other => active
+                        .failure
+                        .or_else(|| Some(format!("worker execution failed: {other:?}"))),
+                }
+            } else {
+                handle.abort();
+                let _ = handle.await;
+                Some("daemon stopped; process group stopped".into())
+            }
+        } else {
+            active.failure
+        };
+        if let Some(failure) = failure {
+            db.finish(
+                &tid,
+                &active.attempt,
+                &active.worker,
+                Err(anyhow::anyhow!(failure)),
+            )?;
+        }
     }
     std::fs::remove_file(socket)?;
     if crate::management::value(&db, "restart_requested")?.as_deref() == Some("true") {
@@ -1955,8 +2028,10 @@ mod scheduling_limits {
                 crate::management::set(&db, "concurrency", "6").unwrap();
                 scheduler.tick(&db, true).await.unwrap();
                 assert_eq!(crate::management::status(&db).unwrap()["active"], 4);
-                for (_, _, _, handle) in scheduler.running.into_values() {
-                    handle.abort();
+                for active in scheduler.running.into_values() {
+                    if let Some(handle) = active.handle {
+                        handle.abort();
+                    }
                 }
             })
             .await;
