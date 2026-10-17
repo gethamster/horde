@@ -212,6 +212,13 @@ deleted by this policy. See [disk space and retention](runtime-management.md#dis
 
 A hard restart marks running attempts uncertain and blocks their tasks. It never assumes an interrupted process, model call, merge, or external write did nothing. Reconciliation checks recorded PIDs, preserves claims, and requires inspection of local/external effects. A subsequent delivery attempt queries PR/merge/deployment state before retrying. Graceful SIGINT/SIGTERM and cancellation stop command process groups.
 
+Temporary SQLite writer contention does not stop the daemon or interrupt active
+workers. The scheduler retries after the lock clears, and a completed invocation
+retains its original result until that result can be committed without rerunning
+the invocation. Attempt creation and preview binding commit together before
+execution starts. Worker reconciliation refuses a currently running attempt,
+including one that starts while another caller is reconciling an older attempt.
+
 Process launch uses the existing blocking executor so the fork/exec handshake
 does not block daemon I/O. The child and its process-group and storage guards
 are created together there; cancellation while launch is pending drops the

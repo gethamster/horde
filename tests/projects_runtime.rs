@@ -108,6 +108,77 @@ command = ["/bin/sh", "-c", "sleep {seconds}; printf '{slug}' > result.txt; pwd"
 }
 
 #[test]
+fn sqlite_writer_contention_preserves_daemon_and_completed_work() {
+    let mut daemon = Daemon::new();
+    let (_, task) = daemon.submit_with_delay("sqlite-contention", 2);
+    let db = Store::open(&daemon.root).unwrap();
+    let started = Instant::now();
+    let attempt = loop {
+        let rows = db.rows(
+            "SELECT a.id,a.step,a.pid FROM attempts a JOIN steps s ON s.id=a.step WHERE s.task=? AND s.name='write' AND a.state='running' AND a.pid IS NOT NULL",
+            &[&task],
+        ).unwrap();
+        if let Some(attempt) = rows.first() {
+            break attempt.clone();
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "command did not start"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    // The real worker finishes while another connection holds the writer lock
+    // longer than the store's busy timeout. Neither scheduling nor persisting
+    // that successful result may terminate the daemon or rerun the command.
+    db.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    std::thread::sleep(Duration::from_secs(12));
+    let alive = daemon.child.try_wait().unwrap().is_none();
+    db.conn.execute_batch("ROLLBACK").unwrap();
+    assert!(alive, "SQLite contention terminated the daemon");
+    let released = Instant::now();
+    loop {
+        if db.task(&task).unwrap()["status"] == "succeeded" {
+            break;
+        }
+        assert!(
+            released.elapsed() < Duration::from_secs(20),
+            "completed work was not persisted after the lock cleared"
+        );
+        assert!(
+            daemon.child.try_wait().unwrap().is_none(),
+            "daemon exited during recovery"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let attempts = db
+        .rows(
+            "SELECT id,state FROM attempts WHERE step=?",
+            &[&attempt["step"].as_str().unwrap()],
+        )
+        .unwrap();
+    assert_eq!(attempts.len(), 1, "successful command was executed again");
+    assert_eq!(attempts[0]["id"], attempt["id"]);
+    assert_eq!(attempts[0]["state"], "succeeded");
+    assert!(
+        db.rows(
+            "SELECT seq FROM events WHERE task=? AND kind='attempt.interrupted'",
+            &[&task]
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let (_, next_task) = daemon.submit("after-contention");
+    let resumed = Instant::now();
+    while db.task(&next_task).unwrap()["status"] != "succeeded" {
+        assert!(
+            resumed.elapsed() < Duration::from_secs(20),
+            "scheduler did not admit new work after contention"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
 fn disk_pressure_queues_work_and_recovers_without_a_restart() {
     let daemon = Daemon::new();
     daemon.call(

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.47 - 2026-10-17
+
+- Keep the daemon and active workers running through temporary SQLite writer
+  contention. Retain completed results until they can be saved, retry scheduling
+  without replaying completed work, and keep cancellation and shutdown available.
+- Refuse worker reconciliation if a new attempt is already running, and bind
+  preview ownership atomically with the attempt before launching it.
+
 ## 0.6.46 - 2026-10-17
 
 - Keep every distinct retrieved evidence page available to Vertex workers. Collapse

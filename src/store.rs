@@ -267,7 +267,13 @@ CREATE INDEX IF NOT EXISTS attempts_step_state ON attempts(step,state);
         self.conn.execute_batch("BEGIN IMMEDIATE")?;
         match f() {
             Ok(v) => {
-                self.conn.execute_batch("COMMIT")?;
+                if let Err(error) = self.conn.execute_batch("COMMIT") {
+                    // A failed commit can leave the transaction and its write
+                    // lock open. Keep the original error, but release the lock
+                    // before the caller retries or reports the operation.
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(error.into());
+                }
                 Ok(v)
             }
             Err(e) => {
@@ -747,6 +753,15 @@ CREATE INDEX IF NOT EXISTS attempts_step_state ON attempts(step,state);
         worker: &str,
         result: Result<Value>,
     ) -> Result<()> {
+        self.finish_ref(step, attempt, worker, &result)
+    }
+    pub(crate) fn finish_ref(
+        &self,
+        step: &str,
+        attempt: &str,
+        worker: &str,
+        result: &Result<Value>,
+    ) -> Result<()> {
         let row = self
             .rows("SELECT * FROM steps WHERE id=?", &[&step])?
             .into_iter()
@@ -764,7 +779,7 @@ CREATE INDEX IF NOT EXISTS attempts_step_state ON attempts(step,state);
             .filter(|e| e.is::<crate::account_auth::RefreshOwnerRequired>())
             .map(|_| "credential_refresh_required");
         let value = match result {
-            Ok(v) => v,
+            Ok(v) => v.clone(),
             Err(e) => e
                 .downcast_ref::<crate::budget::Exhausted>()
                 .map(|e| e.0.clone())
