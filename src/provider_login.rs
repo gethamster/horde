@@ -50,6 +50,7 @@ struct Session {
 }
 
 struct State {
+    login_lock: Option<std::fs::File>,
     status: &'static str,
     output: Vec<u8>,
     truncated: bool,
@@ -230,6 +231,7 @@ fn start(root: &Path, request: Request) -> Result<Value> {
         expires_at: crate::store::now() + timeout as i64,
         control: sender,
         state: Mutex::new(State {
+            login_lock: Some(login_lock),
             status: "starting",
             output: vec![],
             truncated: false,
@@ -240,7 +242,6 @@ fn start(root: &Path, request: Request) -> Result<Value> {
     registry.insert(session.id.clone(), session.clone());
     let owned = session.clone();
     if std::thread::Builder::new().name("provider-login".into()).spawn(move || {
-        let _login_lock = login_lock;
         let result = tokio::runtime::Builder::new_current_thread().enable_all().build()
             .map_err(anyhow::Error::from)
             .and_then(|runtime| runtime.block_on(supervise(&owned, receiver)));
@@ -281,6 +282,10 @@ fn submit(session: &Session, input: String) -> Result<()> {
 
 fn finish(session: &Session, status: &'static str, message: Option<&'static str>) {
     let mut state = session.state.lock().unwrap();
+    if terminal(status) {
+        // A terminal receipt must allow another daemon to acquire the credential store.
+        drop(state.login_lock.take());
+    }
     state.status = status;
     state.message = message;
 }
@@ -495,6 +500,43 @@ pub fn recover(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::redact_input;
+
+    #[test]
+    fn terminal_status_releases_the_credential_lock_before_it_is_observable() {
+        use fs2::FileExt;
+        for status in ["succeeded", "failed", "cancelled", "expired"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("login.lock");
+            let owner = std::fs::File::create(&path).unwrap();
+            owner.try_lock_exclusive().unwrap();
+            let contender = std::fs::File::open(&path).unwrap();
+            let (control, _receiver) = tokio::sync::mpsc::channel(4);
+            let session = super::Session {
+                id: "test".into(),
+                root: directory.path().to_owned(),
+                provider: "test".into(),
+                request_id: "test".into(),
+                config: Default::default(),
+                timeout: 20,
+                created: std::time::Instant::now(),
+                expires_at: 0,
+                control,
+                state: std::sync::Mutex::new(super::State {
+                    login_lock: Some(owner),
+                    status: "starting",
+                    output: vec![],
+                    truncated: false,
+                    submitted: vec![],
+                    message: None,
+                }),
+            };
+            super::finish(&session, "verifying", None);
+            assert!(contender.try_lock_exclusive().is_err());
+            super::finish(&session, status, None);
+            assert_eq!(super::report(&session)["status"], status);
+            contender.try_lock_exclusive().unwrap();
+        }
+    }
 
     #[test]
     fn tuara_preset_uses_the_existing_provider_model_and_credential_variable() {
