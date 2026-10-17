@@ -718,13 +718,14 @@ pub fn retrieve(
     offset: usize,
     limit: usize,
 ) -> Result<Value> {
+    let text = archive_text(db, task, attempt, hash)?;
+    archive_page(&text, hash, offset, limit)
+}
+
+fn archive_text(db: &Store, task: &str, attempt: &str, hash: &str) -> Result<String> {
     ensure!(
         hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "invalid native context hash"
-    );
-    ensure!(
-        (1..=PAGE_BYTES).contains(&limit),
-        "native context page limit exceeds 8 KiB"
     );
     let prefix = format!("native-context/{attempt}/%");
     ensure!(!db.rows("SELECT hash FROM artifact_links WHERE task=? AND hash=? AND name LIKE ? AND verified=1", &[&task,&hash,&prefix])?.is_empty(), "native context archive is not linked to this task and attempt");
@@ -733,7 +734,14 @@ pub fn retrieve(
         bytes.len() <= MAX_ARCHIVE_BYTES && crate::store::hash(&bytes) == hash,
         "native context archive integrity failure"
     );
-    let text = String::from_utf8(bytes).context("native context archive is not UTF-8")?;
+    String::from_utf8(bytes).context("native context archive is not UTF-8")
+}
+
+fn archive_page(text: &str, hash: &str, offset: usize, limit: usize) -> Result<Value> {
+    ensure!(
+        (1..=PAGE_BYTES).contains(&limit),
+        "native context page limit exceeds 8 KiB"
+    );
     ensure!(
         offset <= text.len() && text.is_char_boundary(offset),
         "invalid native context offset"
@@ -760,6 +768,9 @@ pub(crate) fn project_retrieved_pages(
     mut messages: Vec<Value>,
 ) -> Result<Option<Conversation>> {
     let candidates = older_retrieved_pages(&messages);
+    // One request may contain many pages of the same immutable archive. Verify
+    // each archive once in this request, while checking every page's exact bytes.
+    let mut archives = HashMap::new();
     let mut changed = false;
     for (start, index) in candidates {
         let call = &messages[start]["tool_calls"][index - start - 1];
@@ -786,8 +797,12 @@ pub(crate) fn project_retrieved_pages(
         };
         // Missing, changed, cross-attempt, failed, and unresolved reads stay
         // verbatim. Only the exact successful archived page can be projected.
-        if retrieve(db, task, attempt, hash, offset, limit)
-            .ok()
+        let archived = archives
+            .entry(hash.to_owned())
+            .or_insert_with(|| archive_text(db, task, attempt, hash).ok());
+        if archived
+            .as_deref()
+            .and_then(|text| archive_page(text, hash, offset, limit).ok())
             .as_ref()
             != Some(&page)
         {
