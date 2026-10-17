@@ -759,18 +759,20 @@ fn archive_page(text: &str, hash: &str, offset: usize, limit: usize) -> Result<V
     )
 }
 
-/// Keep recently consumed pages in full, with older pages available by the same
-/// verified archive reference. The canonical conversation is never rewritten.
+/// Keep every distinct retrieved page in the request. Only repeated copies of
+/// the same verified page become receipts pointing to its first full result.
+/// The canonical conversation is never rewritten.
 pub(crate) fn project_retrieved_pages(
     db: &Store,
     task: &str,
     attempt: &str,
     mut messages: Vec<Value>,
 ) -> Result<Option<Conversation>> {
-    let candidates = older_retrieved_pages(&messages);
+    let candidates = retrieved_pages(&messages);
     // One request may contain many pages of the same immutable archive. Verify
     // each archive once in this request, while checking every page's exact bytes.
     let mut archives = HashMap::new();
+    let mut retained = HashMap::new();
     let mut changed = false;
     for (start, index) in candidates {
         let call = &messages[start]["tool_calls"][index - start - 1];
@@ -815,10 +817,16 @@ pub(crate) fn project_retrieved_pages(
         if bytes == 0 {
             continue;
         }
+        let key = (hash.to_owned(), offset, limit);
+        let Some(original_call) = retained.get(&key) else {
+            retained.insert(key, call["id"].clone());
+            continue;
+        };
         let object = page.as_object_mut().expect("verified page is an object");
         object.remove("content");
         object.insert("bytes".into(), json!(bytes));
-        object.insert("content_archived".into(), json!("This previously read page remains available through retrieve_native_context with the same hash, offset and limit. Retrieve it again if its exact content is needed."));
+        object.insert("content_duplicate_of".into(), original_call.clone());
+        object.insert("instructions".into(), json!("The identical page content is retained in that earlier tool result in this request. Use that result; no retrieval is necessary."));
         let projected = page.to_string();
         if projected.len() < messages[index]["content"].as_str().unwrap().len() {
             messages[index]["content"] = json!(projected);
@@ -828,11 +836,11 @@ pub(crate) fn project_retrieved_pages(
     changed.then(|| Conversation::new(messages)).transpose()
 }
 
-pub(crate) fn has_older_retrieved_pages(messages: &[Value]) -> bool {
-    !older_retrieved_pages(messages).is_empty()
+pub(crate) fn has_retrieved_pages(messages: &[Value]) -> bool {
+    retrieved_pages(messages).len() > 1
 }
 
-fn older_retrieved_pages(messages: &[Value]) -> Vec<(usize, usize)> {
+fn retrieved_pages(messages: &[Value]) -> Vec<(usize, usize)> {
     let mut exchanges = Vec::new();
     let mut index = 2;
     while index < messages.len() {
@@ -860,10 +868,8 @@ fn older_retrieved_pages(messages: &[Value]) -> Vec<(usize, usize)> {
         exchanges.push((index, end));
         index = end;
     }
-    let older = exchanges.len().saturating_sub(KEEP_RECENT);
     exchanges
         .into_iter()
-        .take(older)
         .flat_map(|(start, end)| {
             (start + 1..end).filter_map(move |index| {
                 (messages[start]["tool_calls"][index - start - 1]["function"]["name"]

@@ -180,7 +180,7 @@ fn retrieved_pair(id: &str, hash: &str, offset: usize, page: Value) -> Vec<Value
 }
 
 #[test]
-fn older_retrieved_pages_shrink_requests_without_changing_history_or_evidence() {
+fn retrieved_evidence_stays_readable_after_later_reads_and_only_duplicates_shrink() {
     let dir = tempfile::tempdir().unwrap();
     let db = Store::open(dir.path()).unwrap();
     let (task, step, attempt) = task(&db, &Settings::default());
@@ -206,38 +206,51 @@ fn older_retrieved_pages_shrink_requests_without_changing_history_or_evidence() 
             retrieve(&db, &task, &attempt, &hash, offset, PAGE_BYTES).unwrap(),
         ));
     }
+    // Reading more evidence must not make earlier, still-needed pages disappear.
+    assert!(
+        project_retrieved_pages(&db, &task, &attempt, history.clone())
+            .unwrap()
+            .is_none()
+    );
+    for n in 0..47 {
+        let offset = n * PAGE_BYTES;
+        history.extend(retrieved_pair(
+            &format!("read-again-{n}"),
+            &hash,
+            offset,
+            retrieve(&db, &task, &attempt, &hash, offset, PAGE_BYTES).unwrap(),
+        ));
+    }
+    for n in 0..4 {
+        history.extend(pair(
+            "search",
+            &format!("later-{n}"),
+            json!({"matches":"new evidence"}),
+        ));
+    }
     let canonical = Conversation::new(history.clone()).unwrap();
     let old_hash = canonical.hash().unwrap();
-    let projection_started = Instant::now();
     let projected = project_retrieved_pages(&db, &task, &attempt, canonical.values().unwrap())
         .unwrap()
         .unwrap();
-    let projection_elapsed = projection_started.elapsed();
     let values = projected.values().unwrap();
     assert_eq!(canonical.hash().unwrap(), old_hash);
     assert_eq!(values.len(), history.len());
     assert_eq!(&values[..2], &history[..2]);
     for n in 0..47 {
-        let index = 2 + n * 2;
-        assert_eq!(values[index], history[index]);
+        let first = 3 + n * 2;
+        let latest = 3 + (47 + n) * 2;
+        let receipt: Value =
+            serde_json::from_str(values[latest]["content"].as_str().unwrap()).unwrap();
+        assert!(receipt.get("content").is_none());
+        assert_eq!(receipt["content_duplicate_of"], format!("page-{n}"));
+        assert_eq!(values[first], history[first]);
+        let retained: Value =
+            serde_json::from_str(values[first]["content"].as_str().unwrap()).unwrap();
         assert_eq!(
-            values[index + 1]["tool_call_id"],
-            history[index + 1]["tool_call_id"]
+            retained,
+            retrieve(&db, &task, &attempt, &hash, n * PAGE_BYTES, PAGE_BYTES).unwrap()
         );
-        let page: Value =
-            serde_json::from_str(values[index + 1]["content"].as_str().unwrap()).unwrap();
-        if n >= 44 {
-            assert_eq!(values[index + 1], history[index + 1]);
-        } else {
-            assert!(page.get("content").is_none());
-            assert_eq!(page["bytes"], PAGE_BYTES);
-            let original =
-                retrieve(&db, &task, &attempt, &hash, n * PAGE_BYTES, PAGE_BYTES).unwrap();
-            assert_eq!(page["hash"], original["hash"]);
-            assert_eq!(page["offset"], original["offset"]);
-            assert_eq!(page["next_offset"], original["next_offset"]);
-            assert_eq!(page["total_bytes"], original["total_bytes"]);
-        }
     }
     let tools = serde_json::value::to_raw_value(&vec![retrieval_tool()]).unwrap();
     let encode = |messages| {
@@ -254,20 +267,9 @@ fn older_retrieved_pages_shrink_requests_without_changing_history_or_evidence() 
     };
     let before = encode(&canonical).len();
     let after = encode(&projected).len();
-    assert!(after * 2 < before, "before={before}, after={after}");
+    assert!(after * 4 < before * 3, "before={before}, after={after}");
     eprintln!(
-        "47-page review request: {before} -> {after} serialized bytes; projection={projection_elapsed:?}"
-    );
-    let page = retrieve(&db, &task, &attempt, &hash, 0, PAGE_BYTES).unwrap();
-    history.extend(retrieved_pair("read-again", &hash, 0, page.clone()));
-    let next = project_retrieved_pages(&db, &task, &attempt, history)
-        .unwrap()
-        .unwrap()
-        .values()
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(next.last().unwrap()["content"].as_str().unwrap()).unwrap(),
-        page
+        "47 distinct pages retained with duplicate reads removed: {before} -> {after} serialized bytes"
     );
 }
 
@@ -290,7 +292,8 @@ fn unverified_pages_and_other_tool_results_remain_verbatim() {
     let page = retrieve(&db, &task, &attempt, &hash, 0, PAGE_BYTES).unwrap();
     let mut history = prefix();
     let mut changed = page.clone();
-    assert!(!has_older_retrieved_pages(&history));
+    history.extend(retrieved_pair("original", &hash, 0, page.clone()));
+    assert!(!has_retrieved_pages(&history));
     changed["content"] = json!("not the archived evidence");
     history.extend(retrieved_pair("changed", &hash, 0, changed));
     history.extend(retrieved_pair("wrong-offset", &hash, 1, page.clone()));
@@ -318,7 +321,8 @@ fn unverified_pages_and_other_tool_results_remain_verbatim() {
             .is_none()
     );
     let mut good = prefix();
-    good.extend(retrieved_pair("good", &hash, 0, page));
+    good.extend(retrieved_pair("good", &hash, 0, page.clone()));
+    good.extend(retrieved_pair("duplicate", &hash, 0, page));
     good.extend_from_slice(&history[history.len() - 6..]);
     assert!(
         project_retrieved_pages(&db, &task, "different-attempt", good.clone())
