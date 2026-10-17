@@ -208,9 +208,11 @@ fn older_retrieved_pages_shrink_requests_without_changing_history_or_evidence() 
     }
     let canonical = Conversation::new(history.clone()).unwrap();
     let old_hash = canonical.hash().unwrap();
+    let projection_started = Instant::now();
     let projected = project_retrieved_pages(&db, &task, &attempt, canonical.values().unwrap())
         .unwrap()
         .unwrap();
+    let projection_elapsed = projection_started.elapsed();
     let values = projected.values().unwrap();
     assert_eq!(canonical.hash().unwrap(), old_hash);
     assert_eq!(values.len(), history.len());
@@ -253,7 +255,9 @@ fn older_retrieved_pages_shrink_requests_without_changing_history_or_evidence() 
     let before = encode(&canonical).len();
     let after = encode(&projected).len();
     assert!(after * 2 < before, "before={before}, after={after}");
-    eprintln!("47-page review request: {before} -> {after} serialized bytes");
+    eprintln!(
+        "47-page review request: {before} -> {after} serialized bytes; projection={projection_elapsed:?}"
+    );
     let page = retrieve(&db, &task, &attempt, &hash, 0, PAGE_BYTES).unwrap();
     history.extend(retrieved_pair("read-again", &hash, 0, page.clone()));
     let next = project_retrieved_pages(&db, &task, &attempt, history)
@@ -286,6 +290,7 @@ fn unverified_pages_and_other_tool_results_remain_verbatim() {
     let page = retrieve(&db, &task, &attempt, &hash, 0, PAGE_BYTES).unwrap();
     let mut history = prefix();
     let mut changed = page.clone();
+    assert!(!has_older_retrieved_pages(&history));
     changed["content"] = json!("not the archived evidence");
     history.extend(retrieved_pair("changed", &hash, 0, changed));
     history.extend(retrieved_pair("wrong-offset", &hash, 1, page.clone()));

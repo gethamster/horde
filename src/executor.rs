@@ -1348,19 +1348,24 @@ where
         }
         let turn_started = Instant::now();
         let projected = if vertex {
-            let root = i.db.root.clone();
-            let task = i.task.to_owned();
-            let attempt = i.attempt.to_owned();
             let history = messages.values()?;
-            crate::budget::blocking(move || {
-                crate::native_context::project_retrieved_pages(
-                    &Store::open(&root)?,
-                    &task,
-                    &attempt,
-                    history,
-                )
-            })
-            .await?
+            if crate::native_context::has_older_retrieved_pages(&history) {
+                let root = i.db.root.clone();
+                let task = i.task.to_owned();
+                let attempt = i.attempt.to_owned();
+                crate::budget::blocking(move || {
+                    crate::native_context::project_retrieved_pages(
+                        &Store::open(&root)?,
+                        &task,
+                        &attempt,
+                        history,
+                    )
+                })
+                .await
+                .unwrap_or(None)
+            } else {
+                None
+            }
         } else {
             None
         };

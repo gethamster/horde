@@ -759,6 +759,65 @@ pub(crate) fn project_retrieved_pages(
     attempt: &str,
     mut messages: Vec<Value>,
 ) -> Result<Option<Conversation>> {
+    let candidates = older_retrieved_pages(&messages);
+    let mut changed = false;
+    for (start, index) in candidates {
+        let call = &messages[start]["tool_calls"][index - start - 1];
+        let Some(args) = call["function"]["arguments"]
+            .as_str()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        else {
+            continue;
+        };
+        let (Some(hash), Some(offset), Some(limit)) = (
+            args["hash"].as_str(),
+            args["offset"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok()),
+            args["limit"].as_u64().and_then(|n| usize::try_from(n).ok()),
+        ) else {
+            continue;
+        };
+        let Some(mut page) = messages[index]["content"]
+            .as_str()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        else {
+            continue;
+        };
+        // Missing, changed, cross-attempt, failed, and unresolved reads stay
+        // verbatim. Only the exact successful archived page can be projected.
+        if retrieve(db, task, attempt, hash, offset, limit)
+            .ok()
+            .as_ref()
+            != Some(&page)
+        {
+            continue;
+        }
+        let Some(content) = page["content"].as_str() else {
+            continue;
+        };
+        let bytes = content.len();
+        if bytes == 0 {
+            continue;
+        }
+        let object = page.as_object_mut().expect("verified page is an object");
+        object.remove("content");
+        object.insert("bytes".into(), json!(bytes));
+        object.insert("content_archived".into(), json!("This previously read page remains available through retrieve_native_context with the same hash, offset and limit. Retrieve it again if its exact content is needed."));
+        let projected = page.to_string();
+        if projected.len() < messages[index]["content"].as_str().unwrap().len() {
+            messages[index]["content"] = json!(projected);
+            changed = true;
+        }
+    }
+    changed.then(|| Conversation::new(messages)).transpose()
+}
+
+pub(crate) fn has_older_retrieved_pages(messages: &[Value]) -> bool {
+    !older_retrieved_pages(messages).is_empty()
+}
+
+fn older_retrieved_pages(messages: &[Value]) -> Vec<(usize, usize)> {
     let mut exchanges = Vec::new();
     let mut index = 2;
     while index < messages.len() {
@@ -787,62 +846,17 @@ pub(crate) fn project_retrieved_pages(
         index = end;
     }
     let older = exchanges.len().saturating_sub(KEEP_RECENT);
-    let mut changed = false;
-    for (start, end) in exchanges.into_iter().take(older) {
-        for index in start + 1..end {
-            let call = &messages[start]["tool_calls"][index - start - 1];
-            if call["function"]["name"] != "retrieve_native_context" {
-                continue;
-            }
-            let Some(args) = call["function"]["arguments"]
-                .as_str()
-                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-            else {
-                continue;
-            };
-            let (Some(hash), Some(offset), Some(limit)) = (
-                args["hash"].as_str(),
-                args["offset"]
-                    .as_u64()
-                    .and_then(|n| usize::try_from(n).ok()),
-                args["limit"].as_u64().and_then(|n| usize::try_from(n).ok()),
-            ) else {
-                continue;
-            };
-            let Some(mut page) = messages[index]["content"]
-                .as_str()
-                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-            else {
-                continue;
-            };
-            // Missing, changed, cross-attempt, failed, and unresolved reads stay
-            // verbatim. Only the exact successful archived page can be projected.
-            if retrieve(db, task, attempt, hash, offset, limit)
-                .ok()
-                .as_ref()
-                != Some(&page)
-            {
-                continue;
-            }
-            let Some(content) = page["content"].as_str() else {
-                continue;
-            };
-            let bytes = content.len();
-            if bytes == 0 {
-                continue;
-            }
-            let object = page.as_object_mut().expect("verified page is an object");
-            object.remove("content");
-            object.insert("bytes".into(), json!(bytes));
-            object.insert("content_archived".into(), json!("This previously read page remains available through retrieve_native_context with the same hash, offset and limit. Retrieve it again if its exact content is needed."));
-            let projected = page.to_string();
-            if projected.len() < messages[index]["content"].as_str().unwrap().len() {
-                messages[index]["content"] = json!(projected);
-                changed = true;
-            }
-        }
-    }
-    changed.then(|| Conversation::new(messages)).transpose()
+    exchanges
+        .into_iter()
+        .take(older)
+        .flat_map(|(start, end)| {
+            (start + 1..end).filter_map(move |index| {
+                (messages[start]["tool_calls"][index - start - 1]["function"]["name"]
+                    == "retrieve_native_context")
+                    .then_some((start, index))
+            })
+        })
+        .collect()
 }
 
 pub fn retrieval_tool() -> Value {
