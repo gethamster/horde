@@ -751,6 +751,100 @@ pub fn retrieve(
     )
 }
 
+/// Keep recently consumed pages in full, with older pages available by the same
+/// verified archive reference. The canonical conversation is never rewritten.
+pub(crate) fn project_retrieved_pages(
+    db: &Store,
+    task: &str,
+    attempt: &str,
+    mut messages: Vec<Value>,
+) -> Result<Option<Conversation>> {
+    let mut exchanges = Vec::new();
+    let mut index = 2;
+    while index < messages.len() {
+        let Some(calls) = messages[index]["tool_calls"].as_array() else {
+            index += 1;
+            continue;
+        };
+        let end = index + calls.len() + 1;
+        let mut ids = HashSet::new();
+        if messages[index]["role"] != "assistant"
+            || calls.is_empty()
+            || end > messages.len()
+            || !calls
+                .iter()
+                .zip(&messages[index + 1..end])
+                .all(|(call, result)| {
+                    call["id"].as_str().is_some_and(|id| ids.insert(id))
+                        && result["role"] == "tool"
+                        && result["tool_call_id"] == call["id"]
+                })
+        {
+            index += 1;
+            continue;
+        }
+        exchanges.push((index, end));
+        index = end;
+    }
+    let older = exchanges.len().saturating_sub(KEEP_RECENT);
+    let mut changed = false;
+    for (start, end) in exchanges.into_iter().take(older) {
+        for index in start + 1..end {
+            let call = &messages[start]["tool_calls"][index - start - 1];
+            if call["function"]["name"] != "retrieve_native_context" {
+                continue;
+            }
+            let Some(args) = call["function"]["arguments"]
+                .as_str()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            else {
+                continue;
+            };
+            let (Some(hash), Some(offset), Some(limit)) = (
+                args["hash"].as_str(),
+                args["offset"]
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok()),
+                args["limit"].as_u64().and_then(|n| usize::try_from(n).ok()),
+            ) else {
+                continue;
+            };
+            let Some(mut page) = messages[index]["content"]
+                .as_str()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            else {
+                continue;
+            };
+            // Missing, changed, cross-attempt, failed, and unresolved reads stay
+            // verbatim. Only the exact successful archived page can be projected.
+            if retrieve(db, task, attempt, hash, offset, limit)
+                .ok()
+                .as_ref()
+                != Some(&page)
+            {
+                continue;
+            }
+            let Some(content) = page["content"].as_str() else {
+                continue;
+            };
+            let bytes = content.len();
+            if bytes == 0 {
+                continue;
+            }
+            let object = page.as_object_mut().expect("verified page is an object");
+            object.remove("content");
+            object.insert("bytes".into(), json!(bytes));
+            object.insert("content_archived".into(), json!("This previously read page remains available through retrieve_native_context with the same hash, offset and limit. Retrieve it again if its exact content is needed."));
+            let projected = page.to_string();
+            if projected.len() < messages[index]["content"].as_str().unwrap().len() {
+                messages[index]["content"] = json!(projected);
+                changed = true;
+            }
+        }
+    }
+    changed.then(|| Conversation::new(messages)).transpose()
+}
+
 pub fn retrieval_tool() -> Value {
     json!({"type":"function","function":{"name":"retrieve_native_context","description":"Retrieve an 8 KiB page of this attempt's archived tool output or read-only exchange by SHA-256, without rerunning tools.","parameters":{"type":"object","properties":{"hash":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":8192}},"required":["hash","offset","limit"]}}})
 }
