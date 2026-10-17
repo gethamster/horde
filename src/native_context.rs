@@ -718,13 +718,14 @@ pub fn retrieve(
     offset: usize,
     limit: usize,
 ) -> Result<Value> {
+    let text = archive_text(db, task, attempt, hash)?;
+    archive_page(&text, hash, offset, limit)
+}
+
+fn archive_text(db: &Store, task: &str, attempt: &str, hash: &str) -> Result<String> {
     ensure!(
         hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "invalid native context hash"
-    );
-    ensure!(
-        (1..=PAGE_BYTES).contains(&limit),
-        "native context page limit exceeds 8 KiB"
     );
     let prefix = format!("native-context/{attempt}/%");
     ensure!(!db.rows("SELECT hash FROM artifact_links WHERE task=? AND hash=? AND name LIKE ? AND verified=1", &[&task,&hash,&prefix])?.is_empty(), "native context archive is not linked to this task and attempt");
@@ -733,7 +734,14 @@ pub fn retrieve(
         bytes.len() <= MAX_ARCHIVE_BYTES && crate::store::hash(&bytes) == hash,
         "native context archive integrity failure"
     );
-    let text = String::from_utf8(bytes).context("native context archive is not UTF-8")?;
+    String::from_utf8(bytes).context("native context archive is not UTF-8")
+}
+
+fn archive_page(text: &str, hash: &str, offset: usize, limit: usize) -> Result<Value> {
+    ensure!(
+        (1..=PAGE_BYTES).contains(&limit),
+        "native context page limit exceeds 8 KiB"
+    );
     ensure!(
         offset <= text.len() && text.is_char_boundary(offset),
         "invalid native context offset"
@@ -749,6 +757,121 @@ pub fn retrieve(
     Ok(
         json!({"hash":hash,"offset":offset,"content":&text[offset..end],"next_offset":(end<text.len()).then_some(end),"total_bytes":text.len()}),
     )
+}
+
+/// Keep recently consumed pages in full, with older pages available by the same
+/// verified archive reference. The canonical conversation is never rewritten.
+pub(crate) fn project_retrieved_pages(
+    db: &Store,
+    task: &str,
+    attempt: &str,
+    mut messages: Vec<Value>,
+) -> Result<Option<Conversation>> {
+    let candidates = older_retrieved_pages(&messages);
+    // One request may contain many pages of the same immutable archive. Verify
+    // each archive once in this request, while checking every page's exact bytes.
+    let mut archives = HashMap::new();
+    let mut changed = false;
+    for (start, index) in candidates {
+        let call = &messages[start]["tool_calls"][index - start - 1];
+        let Some(args) = call["function"]["arguments"]
+            .as_str()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        else {
+            continue;
+        };
+        let (Some(hash), Some(offset), Some(limit)) = (
+            args["hash"].as_str(),
+            args["offset"]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok()),
+            args["limit"].as_u64().and_then(|n| usize::try_from(n).ok()),
+        ) else {
+            continue;
+        };
+        let Some(mut page) = messages[index]["content"]
+            .as_str()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        else {
+            continue;
+        };
+        // Missing, changed, cross-attempt, failed, and unresolved reads stay
+        // verbatim. Only the exact successful archived page can be projected.
+        let archived = archives
+            .entry(hash.to_owned())
+            .or_insert_with(|| archive_text(db, task, attempt, hash).ok());
+        if archived
+            .as_deref()
+            .and_then(|text| archive_page(text, hash, offset, limit).ok())
+            .as_ref()
+            != Some(&page)
+        {
+            continue;
+        }
+        let Some(content) = page["content"].as_str() else {
+            continue;
+        };
+        let bytes = content.len();
+        if bytes == 0 {
+            continue;
+        }
+        let object = page.as_object_mut().expect("verified page is an object");
+        object.remove("content");
+        object.insert("bytes".into(), json!(bytes));
+        object.insert("content_archived".into(), json!("This previously read page remains available through retrieve_native_context with the same hash, offset and limit. Retrieve it again if its exact content is needed."));
+        let projected = page.to_string();
+        if projected.len() < messages[index]["content"].as_str().unwrap().len() {
+            messages[index]["content"] = json!(projected);
+            changed = true;
+        }
+    }
+    changed.then(|| Conversation::new(messages)).transpose()
+}
+
+pub(crate) fn has_older_retrieved_pages(messages: &[Value]) -> bool {
+    !older_retrieved_pages(messages).is_empty()
+}
+
+fn older_retrieved_pages(messages: &[Value]) -> Vec<(usize, usize)> {
+    let mut exchanges = Vec::new();
+    let mut index = 2;
+    while index < messages.len() {
+        let Some(calls) = messages[index]["tool_calls"].as_array() else {
+            index += 1;
+            continue;
+        };
+        let end = index + calls.len() + 1;
+        let mut ids = HashSet::new();
+        if messages[index]["role"] != "assistant"
+            || calls.is_empty()
+            || end > messages.len()
+            || !calls
+                .iter()
+                .zip(&messages[index + 1..end])
+                .all(|(call, result)| {
+                    call["id"].as_str().is_some_and(|id| ids.insert(id))
+                        && result["role"] == "tool"
+                        && result["tool_call_id"] == call["id"]
+                })
+        {
+            index += 1;
+            continue;
+        }
+        exchanges.push((index, end));
+        index = end;
+    }
+    let older = exchanges.len().saturating_sub(KEEP_RECENT);
+    exchanges
+        .into_iter()
+        .take(older)
+        .flat_map(|(start, end)| {
+            (start + 1..end).filter_map(move |index| {
+                (messages[start]["tool_calls"][index - start - 1]["function"]["name"]
+                    == "retrieve_native_context")
+                    .then_some((start, index))
+            })
+        })
+        .collect()
 }
 
 pub fn retrieval_tool() -> Value {

@@ -172,6 +172,179 @@ fn small_tool_results_remain_unchanged_and_create_no_archive() {
     );
 }
 
+fn retrieved_pair(id: &str, hash: &str, offset: usize, page: Value) -> Vec<Value> {
+    vec![
+        json!({"role":"assistant","content":"Read the evidence before deciding.","tool_calls":[{"id":id,"type":"function","function":{"name":"retrieve_native_context","arguments":json!({"hash":hash,"offset":offset,"limit":PAGE_BYTES}).to_string()}}]}),
+        json!({"role":"tool","tool_call_id":id,"content":page.to_string()}),
+    ]
+}
+
+#[test]
+fn older_retrieved_pages_shrink_requests_without_changing_history_or_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(dir.path()).unwrap();
+    let (task, step, attempt) = task(&db, &Settings::default());
+    let bytes = "evidence ".repeat(PAGE_BYTES * 47 / 9 + 1);
+    let hash = db
+        .artifact(
+            &task,
+            Some(&step),
+            &format!("native-context/{attempt}/fixture"),
+            bytes.as_bytes(),
+            &json!({}),
+            true,
+        )
+        .unwrap();
+    let mut history = prefix();
+    history[1]["content"] = json!("mandatory contract ".repeat(7000));
+    for n in 0..47 {
+        let offset = n * PAGE_BYTES;
+        history.extend(retrieved_pair(
+            &format!("page-{n}"),
+            &hash,
+            offset,
+            retrieve(&db, &task, &attempt, &hash, offset, PAGE_BYTES).unwrap(),
+        ));
+    }
+    let canonical = Conversation::new(history.clone()).unwrap();
+    let old_hash = canonical.hash().unwrap();
+    let projection_started = Instant::now();
+    let projected = project_retrieved_pages(&db, &task, &attempt, canonical.values().unwrap())
+        .unwrap()
+        .unwrap();
+    let projection_elapsed = projection_started.elapsed();
+    let values = projected.values().unwrap();
+    assert_eq!(canonical.hash().unwrap(), old_hash);
+    assert_eq!(values.len(), history.len());
+    assert_eq!(&values[..2], &history[..2]);
+    for n in 0..47 {
+        let index = 2 + n * 2;
+        assert_eq!(values[index], history[index]);
+        assert_eq!(
+            values[index + 1]["tool_call_id"],
+            history[index + 1]["tool_call_id"]
+        );
+        let page: Value =
+            serde_json::from_str(values[index + 1]["content"].as_str().unwrap()).unwrap();
+        if n >= 44 {
+            assert_eq!(values[index + 1], history[index + 1]);
+        } else {
+            assert!(page.get("content").is_none());
+            assert_eq!(page["bytes"], PAGE_BYTES);
+            let original =
+                retrieve(&db, &task, &attempt, &hash, n * PAGE_BYTES, PAGE_BYTES).unwrap();
+            assert_eq!(page["hash"], original["hash"]);
+            assert_eq!(page["offset"], original["offset"]);
+            assert_eq!(page["next_offset"], original["next_offset"]);
+            assert_eq!(page["total_bytes"], original["total_bytes"]);
+        }
+    }
+    let tools = serde_json::value::to_raw_value(&vec![retrieval_tool()]).unwrap();
+    let encode = |messages| {
+        crate::native_protocol::request_bytes(
+            "google/gemini-4-argon",
+            messages,
+            &tools,
+            true,
+            8192,
+            None,
+            &Default::default(),
+        )
+        .unwrap()
+    };
+    let before = encode(&canonical).len();
+    let after = encode(&projected).len();
+    assert!(after * 2 < before, "before={before}, after={after}");
+    eprintln!(
+        "47-page review request: {before} -> {after} serialized bytes; projection={projection_elapsed:?}"
+    );
+    let page = retrieve(&db, &task, &attempt, &hash, 0, PAGE_BYTES).unwrap();
+    history.extend(retrieved_pair("read-again", &hash, 0, page.clone()));
+    let next = project_retrieved_pages(&db, &task, &attempt, history)
+        .unwrap()
+        .unwrap()
+        .values()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(next.last().unwrap()["content"].as_str().unwrap()).unwrap(),
+        page
+    );
+}
+
+#[test]
+fn unverified_pages_and_other_tool_results_remain_verbatim() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(dir.path()).unwrap();
+    let (task, step, attempt) = task(&db, &Settings::default());
+    let bytes = "original evidence".repeat(700);
+    let hash = db
+        .artifact(
+            &task,
+            Some(&step),
+            &format!("native-context/{attempt}/fixture"),
+            bytes.as_bytes(),
+            &json!({}),
+            true,
+        )
+        .unwrap();
+    let page = retrieve(&db, &task, &attempt, &hash, 0, PAGE_BYTES).unwrap();
+    let mut history = prefix();
+    let mut changed = page.clone();
+    assert!(!has_older_retrieved_pages(&history));
+    changed["content"] = json!("not the archived evidence");
+    history.extend(retrieved_pair("changed", &hash, 0, changed));
+    history.extend(retrieved_pair("wrong-offset", &hash, 1, page.clone()));
+    history.extend(retrieved_pair(
+        "failed",
+        &hash,
+        0,
+        json!({"error":"unavailable"}),
+    ));
+    history.extend(pair(
+        "command",
+        "write",
+        json!({"success":true,"stdout":"write receipt"}),
+    ));
+    for n in 0..3 {
+        history.extend(pair(
+            "search",
+            &format!("recent-{n}"),
+            json!({"matches":"latest evidence"}),
+        ));
+    }
+    assert!(
+        project_retrieved_pages(&db, &task, &attempt, history.clone())
+            .unwrap()
+            .is_none()
+    );
+    let mut good = prefix();
+    good.extend(retrieved_pair("good", &hash, 0, page));
+    good.extend_from_slice(&history[history.len() - 6..]);
+    assert!(
+        project_retrieved_pages(&db, &task, "different-attempt", good.clone())
+            .unwrap()
+            .is_none()
+    );
+    std::fs::write(db.root.join("artifacts").join(&hash), "tampered").unwrap();
+    assert!(
+        project_retrieved_pages(&db, &task, &attempt, good.clone())
+            .unwrap()
+            .is_none()
+    );
+    std::fs::remove_file(db.root.join("artifacts").join(hash)).unwrap();
+    assert!(
+        project_retrieved_pages(&db, &task, &attempt, good)
+            .unwrap()
+            .is_none()
+    );
+    history.push(json!({"role":"assistant","tool_calls":[{"id":"pending","function":{"name":"retrieve_native_context","arguments":"{}"}}]}));
+    assert!(
+        project_retrieved_pages(&db, &task, &attempt, history)
+            .unwrap()
+            .is_none()
+    );
+}
+
 #[test]
 fn projected_tool_result_cannot_outlive_missing_or_changed_archive_bytes() {
     let dir = tempfile::tempdir().unwrap();

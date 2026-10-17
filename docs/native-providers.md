@@ -364,3 +364,12 @@ These records survive budget exhaustion even when no final completion is returne
 The daemon's [step progress budget](configuration.md#step-progress-budgets) also
 bounds loops of valid, changing tool calls. Read-only coordination never renews it.
 Model-response and tool-completion events include the current attempt's `timing`.
+
+Vertex requests keep the latest three completed tool exchanges in full. For
+older successful `retrieve_native_context` calls, Horde sends the verified
+archive hash, offset, byte count and continuation metadata instead of repeating
+the page content. The original conversation remains unchanged. Reading that
+page again returns its complete content, and the new read stays visible in the
+recent exchanges. Missing or changed archives, unsuccessful reads, instructions,
+and other tool results remain unchanged. This projection requires no decision
+model and does not impose a request-size limit.

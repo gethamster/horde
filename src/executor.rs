@@ -1347,17 +1347,40 @@ where
             }
         }
         let turn_started = Instant::now();
+        let projected = if vertex {
+            let history = messages.values()?;
+            if crate::native_context::has_older_retrieved_pages(&history) {
+                let root = i.db.root.clone();
+                let task = i.task.to_owned();
+                let attempt = i.attempt.to_owned();
+                crate::budget::blocking(move || {
+                    crate::native_context::project_retrieved_pages(
+                        &Store::open(&root)?,
+                        &task,
+                        &attempt,
+                        history,
+                    )
+                })
+                .await
+                .unwrap_or(None)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let request_messages = projected.as_ref().unwrap_or(&messages);
         let body = if chatgpt {
             crate::native_responses::request_bytes(
                 model,
-                &messages,
+                request_messages,
                 &definitions,
                 &config.extra_body,
             )?
         } else {
             crate::native_protocol::request_bytes(
                 model,
-                &messages,
+                request_messages,
                 &definitions,
                 config.stream,
                 config.max_tokens,

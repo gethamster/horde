@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.45 - 2026-10-17
+
+- Stop resending older retrieved archive pages in Vertex requests. Keep the
+  latest three tool exchanges complete and preserve every original page for
+  retrieval without another model, a request ceiling, or changes to the task.
+
 ## 0.6.44 - 2026-10-16
 
 - Keep large Vertex tool output in verified, paged archives so repeated file
