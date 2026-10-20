@@ -439,3 +439,38 @@ fn descendant_prompt_keeps_the_original_source_freeze_and_budget() {
     assert!(prompt.contains("--heads-file <file> --until "));
     assert!(prompt.contains("Do not refreeze upstream refs"));
 }
+
+#[tokio::test]
+async fn retained_environment_owner_cannot_bypass_a_revoked_maintenance_fence() {
+    let (dir, db, policy) = fixture();
+    install(&db, &policy);
+    let task = task(&db, &policy);
+    pin(&db, &task, &bind(&policy)).unwrap();
+    db.conn.execute("INSERT INTO app_environments(id,task,attempt,kind,state,spec,workspace,created,expires) VALUES('environment',?,'legacy-attempt','process','preparing','{}',?,0,?)",rusqlite::params![task,policy.repo.to_string_lossy(),now()+60]).unwrap();
+    revoke(&db, &policy.policy_id, 1, "default").unwrap();
+    let marker = dir.path().join("must-not-run");
+    let mut command = std::process::Command::new("touch");
+    command.arg(&marker);
+    let error = crate::executor::run_process(command, None, 10, Some((&db, "legacy-attempt")))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("revoked"));
+    assert!(!marker.exists());
+}
+#[tokio::test]
+async fn missing_and_ambiguous_command_owners_fail_before_spawn() {
+    let (dir, db, _policy) = fixture();
+    let marker = dir.path().join("must-not-run");
+    for owners in [0, 2] {
+        for index in 0..owners {
+            db.conn.execute("INSERT INTO app_environments(id,task,attempt,kind,state,spec,workspace,created,expires) VALUES(?,?,'ambiguous','process','preparing','{}','/',0,?)",rusqlite::params![format!("env-{index}"),format!("owner-{index}"),now()+60]).unwrap();
+        }
+        let mut command = std::process::Command::new("touch");
+        command.arg(&marker);
+        let error = crate::executor::run_process(command, None, 10, Some((&db, "ambiguous")))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("unambiguous task owner"));
+        assert!(!marker.exists());
+    }
+}

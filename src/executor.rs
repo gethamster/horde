@@ -119,12 +119,19 @@ pub(crate) async fn run_process(
     record: Option<(&Store, &str)>,
 ) -> Result<Value> {
     if let Some((db, attempt)) = record {
-        let task: String = db.conn.query_row(
-            "SELECT s.task FROM steps s JOIN attempts a ON a.step=s.id WHERE a.id=?",
-            [attempt],
-            |row| row.get(0),
+        // Disposable environments retain task ownership independently of an
+        // attempt row (including older/direct lifecycle callers). Resolve only
+        // an unambiguous authoritative owner rather than skipping the fence.
+        let owners = db.rows(
+            "SELECT s.task FROM steps s JOIN attempts a ON a.step=s.id WHERE a.id=? UNION SELECT task FROM app_environments WHERE attempt=?",
+            &[&attempt, &attempt],
         )?;
-        crate::upstream_maintenance::check_online(db, &task).await?;
+        anyhow::ensure!(
+            owners.len() == 1,
+            "command record has no unambiguous task owner"
+        );
+        let task = owners[0]["task"].as_str().context("command task owner")?;
+        crate::upstream_maintenance::check_online(db, task).await?;
     }
     let mut cmd = AsyncCommand::from(command);
     cmd.kill_on_drop(true)
