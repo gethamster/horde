@@ -333,6 +333,17 @@ the `native` role. Ordinary
 a chat-completions request. Use `doctor --provider NAME` to inspect one catalog. A probe consumes model
 capacity and must be requested explicitly.
 
+To qualify the wire behavior without opening an installed runtime's Store, use
+the opt-in `probe_tools` Cargo example. Pass a separate flat `ExecutorConfig`
+TOML file and a private file containing only the inference key. The example
+requires `kind='tuara'` and `stream=false`; set the exact `model`, `base_url` and
+any `max_price` in that TOML. Run
+`cargo run --locked --example probe_tools -- /private/provider.toml /private/key`.
+It reads only those explicit files, calls the same bounded library probe, and
+prints qualification flags. It neither resolves managed accounts nor opens a
+Store, starts a daemon or checks for updates. This qualifies the wire only;
+the installed managed-account path needs its own subsequent qualification.
+
 ## Events and metrics
 
 Each `model_response` progress event includes the turn number, latency, resolved
