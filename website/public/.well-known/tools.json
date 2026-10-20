@@ -1,5 +1,5 @@
 {
-  "count": 121,
+  "count": 125,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -7,6 +7,106 @@
   },
   "specVersion": "1.0",
   "tools": [
+    {
+      "description": "Enroll an operator-reviewed existing held-out delivery report without weakening qualification gates",
+      "name": "delivery_qualification_enroll",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "approved": {
+            "type": "boolean"
+          },
+          "evidence_hash": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "qualification_id": {
+            "type": "string"
+          },
+          "reviewed_evidence_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "qualification_id",
+          "evidence_hash",
+          "reviewed_evidence_hash",
+          "approved"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Register operator-owned upstream maintenance authority and worker budget",
+      "name": "maintenance_policy_register",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "policy": {
+            "type": "object"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Inspect the selected project maintenance policy and revocation state",
+      "name": "maintenance_policy_get",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "policy_id": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy_id"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
+    {
+      "description": "Revoke an existing project maintenance policy and cancel its tasks",
+      "name": "maintenance_policy_revoke",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "policy_id": {
+            "type": "string"
+          },
+          "policy_revision": {
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy_id",
+          "policy_revision"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
     {
       "description": "Inspect local disk space and storage policy",
       "name": "runtime_storage_status",
@@ -2499,6 +2599,9 @@
           },
           "thread_id": {
             "type": "string"
+          },
+          "upstream_maintenance": {
+            "type": "object"
           }
         },
         "required": [
