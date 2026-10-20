@@ -416,7 +416,8 @@ fn in_flight_control_plane_command_group_is_killed_when_maintenance_is_revoked()
         Some(&mut guard),
     );
     revoke_thread.join().unwrap();
-    assert!(result.unwrap_err().to_string().contains("revoked"));
+    let error = result.unwrap_err();
+    assert!(error.to_string().contains("revoked"), "{error:#}");
     assert!(!effect.exists());
 }
 
