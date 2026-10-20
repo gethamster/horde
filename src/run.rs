@@ -223,7 +223,9 @@ pub fn main_head(db: &Store, oid: &str) -> Result<Value> {
 
 /// Integrate a freshly observed release base into the durable Run branch.
 pub fn integrate_main(db: &Store, oid: &str, expected: &str, expected_main: &str) -> Result<Value> {
+    crate::upstream_maintenance::check_online_sync(db, oid)?;
     let _lock = run_lock(db, oid)?;
+    crate::upstream_maintenance::check_online_sync(db, oid)?;
     let (path, branch, before) = run_branch(db, oid)?;
     expected_head(&before, expected)?;
     reconcile_locked(db, oid, expected)?;
@@ -629,13 +631,16 @@ fn observe_remote(db: &Store, oid: &str, branch: &str, sha: &str) -> Result<()> 
 /// Git remote branch protection authenticates the pusher; the project-scoped
 /// operator API authenticates the caller requesting reconciliation.
 pub fn reconcile_run(db: &Store, oid: &str, expected: &str) -> Result<Value> {
+    crate::upstream_maintenance::check_online_sync(db, oid)?;
     let _lock = run_lock(db, oid)?;
+    crate::upstream_maintenance::check_online_sync(db, oid)?;
     reconcile_locked(db, oid, expected)
 }
 
 /// The caller already holds the task integration lock. This is invoked before
 /// merging worker commits so external branch edits join combined validation.
 pub(crate) fn reconcile_at_integration_safe_point(db: &Store, oid: &str) -> Result<()> {
+    crate::upstream_maintenance::check_online_sync(db, oid)?;
     let (path, _, _) = run_branch(db, oid)?;
     if run(
         &path,
@@ -711,7 +716,9 @@ pub fn checkpoint_run(
     idempotency_key: Option<&str>,
     options: CheckpointOptions<'_>,
 ) -> Result<Value> {
+    crate::upstream_maintenance::check_online_sync(db, oid)?;
     let _lock = run_lock(db, oid)?;
+    crate::upstream_maintenance::check_online_sync(db, oid)?;
     ensure!(
         !validation.is_empty() && !validation[0].is_empty(),
         "checkpoint validation command is required"
@@ -783,11 +790,17 @@ pub fn checkpoint_run(
                 && (arg == secret || secret.len() >= 8 && arg.contains(secret)))),
         "checkpoint validation argv contains an application secret"
     );
-    let output = crate::budget::command_output(
+    let output = crate::upstream_maintenance::command_output(
+        db,
+        oid,
         crate::executor::clean_command(&validation[0])
             .args(&validation[1..])
             .current_dir(&path)
             .envs(&values),
+        serde_json::from_str::<crate::config::Settings>(
+            db.task(oid)?["settings"].as_str().context("Run settings")?,
+        )?
+        .timeout_seconds,
     )?;
     ensure!(
         head(&path)? == sha && run(&path, &["status", "--porcelain"])?.is_empty(),
@@ -823,6 +836,7 @@ pub fn checkpoint_run(
 /// Publish only a verified exact head using Git's normal non-force push.
 pub fn publish_run(db: &Store, oid: &str, expected: &str) -> Result<Value> {
     let _lock = run_lock(db, oid)?;
+    crate::upstream_maintenance::check_online_sync(db, oid)?;
     let (_, _, sha) = run_branch(db, oid)?;
     expected_head(&sha, expected)?;
     ensure!(

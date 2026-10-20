@@ -78,3 +78,5 @@ pub mod operational_observations;
 pub mod preview;
 
 pub mod upstream_maintenance;
+
+pub mod package_release;

@@ -189,7 +189,7 @@ fn delivery_outcome(db: &Store, task: &str, settings: &Settings, steps: &[Value]
 
 fn delivered(db: &Store, task: &str) -> Result<Value> {
     let ops = db.rows(
-        "SELECT name,state,data FROM external_ops WHERE task=? AND name IN ('pr','merge')",
+        "SELECT name,state,data FROM external_ops WHERE task=? AND name IN ('pr','merge','package-release.verified')",
         &[&task],
     )?;
     let succeeded = |name: &str| {
@@ -200,6 +200,13 @@ fn delivered(db: &Store, task: &str) -> Result<Value> {
         .and_then(|op| op["data"].as_str())
         .and_then(|data| serde_json::from_str::<Value>(data).ok())
         .and_then(|data| data["url"].as_str().map(str::to_owned));
+    if let Some(release) = succeeded("package-release.verified") {
+        let data: Value =
+            serde_json::from_str(release["data"].as_str().context("release receipt")?)?;
+        let mut result = outcome("package_released", pr_url.as_deref(), None);
+        result["package_release"] = data;
+        return Ok(result);
+    }
     let merged = succeeded("merge").is_some();
     Ok(outcome(
         if merged { "merged" } else { "pr_ready" },

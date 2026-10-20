@@ -1,5 +1,9 @@
 pub const OPERATIONS: &[(&str, &str)] = &[
     (
+        "delivery_qualification_enroll",
+        "Enroll an operator-reviewed existing held-out delivery report without weakening qualification gates",
+    ),
+    (
         "maintenance_policy_register",
         "Register operator-owned upstream maintenance authority and worker budget",
     ),

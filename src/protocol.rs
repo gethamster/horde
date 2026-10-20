@@ -78,6 +78,7 @@ pub fn project_allowed(name: &str) -> bool {
             | "project_configure"
             | "run_rebind_model"
             | "maintenance_policy_register"
+            | "delivery_qualification_enroll"
             | "project_repo_add"
             | "project_runtime_grant"
             | "project_runtime_revoke"
@@ -299,6 +300,9 @@ fn dispatch_authorized(
         if matches!(name, "put_artifact" | "add_knowledge") {
             args["step"] = w["step"].clone();
         }
+    }
+    if name == "delivery_qualification_enroll" {
+        return crate::delivery_policy::enroll_qualification(db, &args);
     }
     if let Some(result) = crate::upstream_maintenance::dispatch(db, name, &args)? {
         return Ok(result);

@@ -1,6 +1,7 @@
 use super::*;
 /// Operator retry is a durable request; it reconciles the same job and artifact.
 pub fn retry(db: &Store, task: &str, head: &str, key: &str) -> Result<Value> {
+    crate::upstream_maintenance::check_online_sync(db, task)?;
     ensure!(
         !key.is_empty()
             && key.len() <= 200

@@ -94,15 +94,23 @@ fn descendants(db: &Store, task: &str, root: &str) -> Result<Vec<Value>> {
         .collect())
 }
 
-fn checked_command(workspace: &Path, validation: &[String], timeout_seconds: u64) -> Result<()> {
+fn checked_command(
+    db: &Store,
+    task: &str,
+    workspace: &Path,
+    validation: &[String],
+    timeout_seconds: u64,
+) -> Result<()> {
     let mut command = crate::executor::clean_command(&validation[0]);
     command.args(&validation[1..]).current_dir(workspace);
     if let Some(host) = std::env::var_os("DOCKER_HOST") {
         command.env("DOCKER_HOST", host);
     }
-    let out = crate::budget::command_output_with_timeout(
+    let out = crate::upstream_maintenance::command_output(
+        db,
+        task,
         &mut command,
-        std::time::Duration::from_secs(timeout_seconds.clamp(1, 1800)),
+        timeout_seconds.clamp(1, 1800),
     )?;
     ensure!(
         out.status.success(),
@@ -277,6 +285,7 @@ fn recover_with_policy(
     validation: &[String],
     key: &str,
 ) -> Result<Value> {
+    crate::upstream_maintenance::check_online_sync(db, task)?;
     sha(expected_worker_head, "expected_worker_head")?;
     sha(expected_run_head, "expected_run_head")?;
     ensure!(
@@ -306,6 +315,7 @@ fn recover_with_policy(
         .write(true)
         .open(db.root.join(format!("recovery-{task}.lock")))?;
     lock.lock_exclusive()?;
+    crate::upstream_maintenance::check_online_sync(db, task)?;
     let existing = db
         .rows(
             "SELECT * FROM run_step_recoveries WHERE task=? AND idempotency_key=?",
@@ -453,7 +463,7 @@ fn recover_with_policy(
             "prior recovery commit is missing"
         );
         git::validate_scope(db, wid)?;
-        checked_command(workspace, validation, settings.timeout_seconds)?;
+        checked_command(db, task, workspace, validation, settings.timeout_seconds)?;
         ensure!(
             git::run(workspace, &["status", "--porcelain"])?.is_empty()
                 && git::run(workspace, &["rev-parse", "HEAD^{tree}"])? == pinned_tree,
@@ -487,7 +497,7 @@ fn recover_with_policy(
             tree(workspace)? == pinned,
             "index reconciliation changed the agent tree"
         );
-        checked_command(workspace, validation, settings.timeout_seconds)?;
+        checked_command(db, task, workspace, validation, settings.timeout_seconds)?;
         git::validate_scope(db, wid)?;
         ensure!(
             existing_agent_commit(db, &worker, workspace, expected_worker_head)?
@@ -522,7 +532,7 @@ fn recover_with_policy(
             db.conn.execute("INSERT INTO run_step_recoveries(task,idempotency_key,request,step,attempt,worker,validated_tree,commit_key,commit_parent,phase,created) VALUES(?,?,?,?,?,?,?,?,?,'prepared',?)",
                 params![task,key,request.to_string(),sid,aid,wid,staged,key,expected_worker_head,now()])?;
         }
-        checked_command(workspace, validation, settings.timeout_seconds)?;
+        checked_command(db, task, workspace, validation, settings.timeout_seconds)?;
         git::validate_scope(db, wid)?;
         ensure!(
             git::run(workspace, &["diff", "--quiet"]).is_ok()

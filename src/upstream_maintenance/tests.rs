@@ -34,7 +34,7 @@ fn fixture() -> (tempfile::TempDir, Store, Policy) {
 fn bind(policy: &Policy) -> Binding {
     serde_json::from_value(json!({"schema_version":1,"policy_id":policy.policy_id,"policy_revision":policy.policy_revision,
       "automation_grant_id":policy.automation_grant_id,"routine_id":policy.routine_id,"occurrence_id":"night-1","invocation_id":"invocation-1",
-      "expires_at":policy.expires_at,"upstreams":{"vercel/ai":"a".repeat(40),"vercel/chat":"b".repeat(40),"vercel/eve":"c".repeat(40)},"budget":policy.budget})).unwrap()
+      "collected_until":now()-10,"expires_at":policy.expires_at,"upstreams":{"vercel/ai":"a".repeat(40),"vercel/chat":"b".repeat(40),"vercel/eve":"c".repeat(40)},"budget":policy.budget})).unwrap()
 }
 fn task(db: &Store, policy: &Policy) -> String {
     let plan = template::compile(
@@ -68,6 +68,14 @@ fn changed_revision_expiry_source_scope_and_budget_are_rejected() {
     install(&db, &policy);
     let binding = bind(&policy);
     for changed in [
+        Binding {
+            collected_until: 0,
+            ..binding.clone()
+        },
+        Binding {
+            collected_until: policy.expires_at + 1,
+            ..binding.clone()
+        },
         Binding {
             policy_revision: 2,
             ..binding.clone()
@@ -136,8 +144,8 @@ fn budgets_are_reserved_atomically_across_descendants_and_parallel_root_batches(
         .unwrap();
     reserve_model(&db, &first, 40).unwrap();
     reserve_model(&db, &child, 60).unwrap();
-    assert!(reserve_model(&db, &second, 1).is_err());
     consume_output(&db, &child, 80).unwrap();
+    assert!(reserve_model(&db, &second, 1).is_err());
     assert!(consume_output(&db, &second, 1).is_err());
     let state = inspection(&db, &second).unwrap();
     assert_eq!(state["usage"]["model_calls"], 2);
@@ -153,6 +161,7 @@ fn ordinary_tasks_are_unchanged_and_workers_cannot_register_authority() {
     assert!(inspection(&db, &task).unwrap().is_null());
     let worker = db.register(&task, None).unwrap();
     for op in [
+        "delivery_qualification_enroll",
         "maintenance_policy_register",
         "maintenance_policy_revoke",
         "maintenance_policy_get",
@@ -167,9 +176,18 @@ fn ordinary_tasks_are_unchanged_and_workers_cannot_register_authority() {
             .is_err()
         );
     }
-    assert!(!crate::protocol::project_allowed(
-        "maintenance_policy_register"
-    ));
+    for op in [
+        "maintenance_policy_register",
+        "delivery_qualification_enroll",
+    ] {
+        let error = crate::protocol::dispatch_scoped(&db, op, json!({}), None, Some("default"))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unavailable to project-bound credentials")
+        );
+    }
     assert!(crate::protocol::project_allowed("maintenance_policy_get"));
     assert!(crate::protocol::project_allowed(
         "maintenance_policy_revoke"
@@ -179,10 +197,12 @@ fn ordinary_tasks_are_unchanged_and_workers_cannot_register_authority() {
 fn owning_authority_must_confirm_exact_invocation_and_policy_identity() {
     let (_dir, _db, policy) = fixture();
     let binding = bind(&policy);
-    let valid = json!({"active":true,"policy_id":policy.policy_id,"policy_revision":1,"automation_grant_id":policy.automation_grant_id,"routine_id":policy.routine_id,"invocation_id":binding.invocation_id,"occurrence_id":binding.occurrence_id,"expires_at":policy.expires_at});
+    let valid = json!({"collected_until":binding.collected_until,"upstreams":binding.upstreams,"active":true,"policy_id":policy.policy_id,"policy_revision":1,"automation_grant_id":policy.automation_grant_id,"routine_id":policy.routine_id,"invocation_id":binding.invocation_id,"occurrence_id":binding.occurrence_id,"expires_at":policy.expires_at});
     authority::validate_response(&policy, &binding, &valid).unwrap();
     for (field, replacement) in [
         ("active", json!(false)),
+        ("collected_until", json!(0)),
+        ("upstreams", json!({"vercel/ai":"d".repeat(40)})),
         ("policy_revision", json!(2)),
         ("automation_grant_id", json!("other")),
         ("invocation_id", json!("other")),
@@ -300,4 +320,122 @@ async fn oversized_model_response_is_refused_before_its_tool_call_is_parsed() {
     .unwrap_err();
     assert!(error.to_string().contains("budget exhausted"));
     server.await.unwrap();
+}
+
+#[test]
+fn attempted_budget_overrun_durably_fences_subsequent_commands_and_reopened_store() {
+    let (_dir, db, policy) = fixture();
+    install(&db, &policy);
+    let task = task(&db, &policy);
+    pin(&db, &task, &bind(&policy)).unwrap();
+    reserve_model(&db, &task, 100).unwrap();
+    // A fully admitted response remains usable before an overrun is attempted.
+    check_local(&db, &task).unwrap();
+    assert!(reserve_model(&db, &task, 1).is_err());
+    let reopened = Store::open(&db.root).unwrap();
+    assert!(
+        check_local(&reopened, &task)
+            .unwrap_err()
+            .to_string()
+            .contains("budget exhausted")
+    );
+    assert_eq!(
+        inspection(&reopened, &task).unwrap()["usage"]["fenced"],
+        true
+    );
+}
+#[test]
+fn revoked_run_cannot_execute_checkpoint_or_integrate_main() {
+    let (dir, db, policy) = fixture();
+    install(&db, &policy);
+    let task = task(&db, &policy);
+    pin(&db, &task, &bind(&policy)).unwrap();
+    let before = crate::git::run(&policy.repo, &["rev-parse", "HEAD"]).unwrap();
+    revoke(
+        &db,
+        &policy.policy_id,
+        policy.policy_revision,
+        &policy.project_id,
+    )
+    .unwrap();
+    let marker = dir.path().join("must-not-execute");
+    let argv = vec!["touch".to_string(), marker.display().to_string()];
+    let error = crate::run::checkpoint_run(
+        &db,
+        &task,
+        &before,
+        &argv,
+        None,
+        crate::run::CheckpointOptions::default(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("revoked"));
+    assert!(!marker.exists());
+    assert!(
+        crate::run::integrate_main(&db, &task, &before, &before)
+            .unwrap_err()
+            .to_string()
+            .contains("revoked")
+    );
+    assert_eq!(
+        crate::git::run(&policy.repo, &["rev-parse", "HEAD"]).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn in_flight_control_plane_command_group_is_killed_when_maintenance_is_revoked() {
+    let (dir, db, policy) = fixture();
+    install(&db, &policy);
+    let task = task(&db, &policy);
+    pin(&db, &task, &bind(&policy)).unwrap();
+    let started = dir.path().join("started");
+    let effect = dir.path().join("delayed-effect");
+    let root = db.root.clone();
+    let cancelled_task = task.clone();
+    let signal = started.clone();
+    let revoke_thread = std::thread::spawn(move || {
+        while !signal.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let db = Store::open(&root).unwrap();
+        revoke(&db, "adam-upstream", 1, "default").unwrap();
+        assert_eq!(db.task(&cancelled_task).unwrap()["status"], "cancelled");
+    });
+    let mut guard = || check_local(&db, &task).map(|_| ());
+    let result = crate::budget::command_output_with_timeout_guard(
+        std::process::Command::new("sh")
+            .args([
+                "-c",
+                "touch \"$1\"; sleep 2; touch \"$2\"",
+                "maintenance-test",
+            ])
+            .arg(&started)
+            .arg(&effect),
+        std::time::Duration::from_secs(10),
+        Some(&mut guard),
+    );
+    revoke_thread.join().unwrap();
+    assert!(result.unwrap_err().to_string().contains("revoked"));
+    assert!(!effect.exists());
+}
+
+#[test]
+fn descendant_prompt_keeps_the_original_source_freeze_and_budget() {
+    let (_dir, db, policy) = fixture();
+    install(&db, &policy);
+    let root = task(&db, &policy);
+    let child = task(&db, &policy);
+    let binding = bind(&policy);
+    pin(&db, &root, &binding).unwrap();
+    db.conn
+        .execute(
+            "UPDATE task_tree SET root=?,parent=? WHERE task=?",
+            rusqlite::params![root, root, child],
+        )
+        .unwrap();
+    let prompt = prompt(&db, &child).unwrap();
+    assert!(prompt.contains(&serde_json::to_string(&binding).unwrap()));
+    assert!(prompt.contains("--heads-file <file> --until "));
+    assert!(prompt.contains("Do not refreeze upstream refs"));
 }

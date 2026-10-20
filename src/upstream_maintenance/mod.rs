@@ -56,6 +56,7 @@ pub struct Binding {
     pub routine_id: String,
     pub occurrence_id: String,
     pub invocation_id: String,
+    pub collected_until: i64,
     pub expires_at: i64,
     pub upstreams: BTreeMap<String, String>,
     pub budget: Budget,
@@ -224,6 +225,12 @@ pub fn validate_binding(
                 )),
         "maintenance upstream snapshot must pin all three approved repositories"
     );
+    ensure!(
+        binding.collected_until > 0
+            && binding.collected_until <= binding.expires_at
+            && binding.collected_until <= now(),
+        "invalid maintenance collection cutoff"
+    );
     Ok(policy)
 }
 /// Policy checks at synchronous RPC boundaries run HTTP on a separate runtime so
@@ -300,9 +307,9 @@ pub fn dispatch(db: &Store, name: &str, args: &Value) -> Result<Option<Value>> {
 }
 /// Enforce the same policy while a provider call or command is in flight. Dropping
 /// the work uses the existing process-group cleanup and uncertain-effect records.
-pub async fn supervise<F>(db: &Store, task: &str, work: F) -> Result<Value>
+pub async fn supervise<F, T>(db: &Store, task: &str, work: F) -> Result<T>
 where
-    F: std::future::Future<Output = Result<Value>>,
+    F: std::future::Future<Output = Result<T>>,
 {
     if binding(db, task)?.is_none() {
         return work.await;
@@ -335,4 +342,50 @@ pub fn validate_settings(
         );
     }
     Ok(())
+}
+
+/// Supervise synchronous control-plane validation using existing process groups.
+pub fn command_output(
+    db: &Store,
+    task: &str,
+    command: &mut std::process::Command,
+    timeout: u64,
+) -> Result<std::process::Output> {
+    if binding(db, task)?.is_none() {
+        return crate::budget::command_output_with_timeout(
+            command,
+            std::time::Duration::from_secs(timeout.max(1)),
+        );
+    }
+    let mut next = std::time::Instant::now();
+    let mut guard = || {
+        check_local(db, task)?;
+        if std::time::Instant::now() >= next {
+            check_online_sync(db, task)?;
+            next = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        }
+        Ok(())
+    };
+    let result = crate::budget::command_output_with_timeout_guard(
+        command,
+        std::time::Duration::from_secs(timeout.max(1)),
+        Some(&mut guard),
+    );
+    if result.is_err() {
+        db.event(task, "maintenance.control_command_interrupted", json!({"effects_uncertain":true,"process_group_stopped":true,"reconciliation_required":true}))?;
+    }
+    result
+}
+
+/// Immutable provenance is presented to every descendant without credential data.
+pub fn prompt(db: &Store, task: &str) -> Result<String> {
+    let Some((_, binding)) = binding(db, task)? else {
+        return Ok(String::new());
+    };
+    let until = time::OffsetDateTime::from_unix_timestamp(binding.collected_until)?
+        .format(&time::format_description::well_known::Rfc3339)?;
+    Ok(format!(
+        "\nOwning upstream maintenance binding: {}\nFor upstream collection, write binding.upstreams unchanged to a JSON heads file and use `cargo xtask upstream collect --heads-file <file> --until {until}`. Resume with these identical heads and cutoff. Do not refreeze upstream refs. The binding grants no human acceptance or enrollment authority; admitted worker budgets and expiry apply across descendants.\n",
+        serde_json::to_string(&binding)?
+    ))
 }

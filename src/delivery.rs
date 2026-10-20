@@ -250,6 +250,9 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         }
     }
     save(i, "merge", "succeeded", &merged)?;
+    if i.settings.automatic_delivery.package_release.is_some() {
+        return crate::package_release::execute(i, &merged).await;
+    }
     if let Some(workflow) = &d.deploy_workflow {
         let sha = merged["mergeCommit"]["oid"]
             .as_str()

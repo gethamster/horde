@@ -372,6 +372,7 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
         qualification_id: "evaluation-1".into(),
         minimum_routine_probability: 0.8,
         minimum_review_confidence: 0.8,
+        package_release: None,
     };
     let settings = Settings {
         delivery: Delivery {

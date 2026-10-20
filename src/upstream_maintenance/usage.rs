@@ -3,6 +3,8 @@ use rusqlite::OptionalExtension;
 const BINDING: &str = "upstream-maintenance.binding";
 #[derive(Default, Serialize, Deserialize)]
 struct Usage {
+    #[serde(default)]
+    fenced: bool,
     model_calls: u64,
     input_bytes: u64,
     output_bytes: u64,
@@ -58,6 +60,10 @@ pub fn check_local(db: &Store, task: &str) -> Result<Option<Policy>> {
         db.task(task)?["status"] != "cancelled" && row["status"] != "cancelled",
         "maintenance task cancelled"
     );
+    ensure!(
+        !usage(db, &binding)?.fenced,
+        "maintenance worker execution budget exhausted"
+    );
     Ok(Some(policy))
 }
 fn usage_key(binding: &Binding) -> Result<String> {
@@ -77,36 +83,40 @@ fn usage(db: &Store, binding: &Binding) -> Result<Usage> {
         .unwrap_or_else(|| Ok(Usage::default()))
 }
 fn reserve(db: &Store, task: &str, calls: u64, input: u64, output: u64) -> Result<()> {
-    db.atomic(|| {
+    let allowed = db.atomic(|| {
         check_local(db, task)?;
         let Some((_, binding)) = binding(db, task)? else {
-            return Ok(());
+            return Ok(true);
         };
         let current = usage(db, &binding)?;
-        let next = Usage {
-            model_calls: current
-                .model_calls
-                .checked_add(calls)
-                .context("maintenance budget overflow")?,
-            input_bytes: current
-                .input_bytes
-                .checked_add(input)
-                .context("maintenance budget overflow")?,
-            output_bytes: current
-                .output_bytes
-                .checked_add(output)
-                .context("maintenance budget overflow")?,
+        let model_calls = current.model_calls.checked_add(calls);
+        let input_bytes = current.input_bytes.checked_add(input);
+        let output_bytes = current.output_bytes.checked_add(output);
+        let allowed = model_calls.is_some_and(|v| v <= binding.budget.max_model_calls)
+            && input_bytes.is_some_and(|v| v <= binding.budget.max_input_bytes)
+            && output_bytes.is_some_and(|v| v <= binding.budget.max_output_bytes);
+        let next = if allowed {
+            Usage {
+                fenced: false,
+                model_calls: model_calls.unwrap(),
+                input_bytes: input_bytes.unwrap(),
+                output_bytes: output_bytes.unwrap(),
+            }
+        } else {
+            Usage {
+                fenced: true,
+                ..current
+            }
         };
-        ensure!(
-            next.model_calls <= binding.budget.max_model_calls
-                && next.input_bytes <= binding.budget.max_input_bytes
-                && next.output_bytes <= binding.budget.max_output_bytes,
-            "maintenance worker execution budget exhausted"
-        );
         management::set(db, &usage_key(&binding)?, &serde_json::to_string(&next)?)?;
-        Ok(())
-    })
+        // Commit the fence before returning an error: transaction rollback must not
+        // let a command or delivery retry spend authority after attempted overrun.
+        Ok(allowed)
+    })?;
+    ensure!(allowed, "maintenance worker execution budget exhausted");
+    Ok(())
 }
+
 pub fn reserve_model(db: &Store, task: &str, input_bytes: usize) -> Result<()> {
     if binding(db, task)?.is_none() {
         return Ok(());
@@ -123,8 +133,8 @@ pub fn inspection(db: &Store, task: &str) -> Result<Value> {
     let Some((root, binding)) = binding(db, task)? else {
         return Ok(Value::Null);
     };
-    let policy = load(db, &binding.policy_id)?;
+    let active = check_local(db, task).is_ok();
     Ok(
-        json!({"root_task":root,"binding":binding,"usage":usage(db,&binding)?,"active":!policy.revoked && policy.policy.policy_revision==binding.policy_revision && binding.expires_at>now(),"package_release_qualified":false,"package_release_blocker":"Independent immutable package release is not qualified by the push-deployment automatic-delivery contract."}),
+        json!({"root_task":root,"binding":binding,"usage":usage(db,&binding)?,"active":active,"package_release_supported":true,"package_release_verified":db.rows("SELECT name FROM external_ops WHERE task=? AND name='package-release.verified' AND state='succeeded'", &[&root])?.len()==1}),
     )
 }

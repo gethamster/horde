@@ -33,6 +33,8 @@ pub(super) fn validate_url(policy: &Policy) -> Result<reqwest::Url> {
 pub(super) fn validate_response(policy: &Policy, binding: &Binding, value: &Value) -> Result<()> {
     ensure!(
         value["active"] == true
+            && value["collected_until"] == binding.collected_until
+            && value["upstreams"] == serde_json::to_value(&binding.upstreams)?
             && value["invocation_id"] == binding.invocation_id
             && value["occurrence_id"] == binding.occurrence_id
             && value["policy_id"] == policy.policy_id

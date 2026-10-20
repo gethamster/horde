@@ -469,6 +469,8 @@ fn validation_timeout_kills_the_check_without_committing_agent_work() {
     let f = Fixture::new();
     assert!(
         checked_command(
+            &f.db,
+            &f.task,
             &f.workspace,
             &["sh".into(), "-c".into(), "sleep 5".into()],
             1

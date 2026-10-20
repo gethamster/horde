@@ -23,8 +23,17 @@ pub struct AutomaticDelivery {
     pub qualification_id: String,
     pub minimum_routine_probability: f64,
     pub minimum_review_confidence: f64,
+    /// Explicit Adam CLI tag/artifact release contract, separate from application deployment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_release: Option<PackageRelease>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PackageRelease {
+    pub repository: String,
+    pub workflow: String,
+}
 impl AutomaticDelivery {
     pub(super) fn validate(&self) -> Result<()> {
         if !self.enabled {
@@ -33,8 +42,8 @@ impl AutomaticDelivery {
         if !std::path::Path::new(&self.gh_program).is_absolute()
             || self.repositories.is_empty()
             || self.bases.is_empty()
-            || self.environments.is_empty()
-            || self.deploy_workflows.is_empty()
+            || self.package_release.is_none()
+                && (self.environments.is_empty() || self.deploy_workflows.is_empty())
             || self.allowed_paths.is_empty()
             || self.required_checks.is_empty()
             || self.minimum_approvals == 0
@@ -45,6 +54,18 @@ impl AutomaticDelivery {
         {
             bail!(
                 "automatic delivery requires explicit scope, checks, review, approvals, and qualification"
+            );
+        }
+        if let Some(package) = &self.package_release
+            && (package.repository != "gethamster/adam"
+                || package.workflow != "release.yml"
+                || self.repositories != [package.repository.clone()]
+                || self.bases != ["main"]
+                || self.version_url.is_some()
+                || self.smoke_url.is_some())
+        {
+            bail!(
+                "package release requires the explicit Adam main/tag workflow contract without application assertions"
             );
         }
         for value in self
@@ -82,5 +103,55 @@ impl AutomaticDelivery {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn package() -> AutomaticDelivery {
+        AutomaticDelivery {
+            enabled: true,
+            gh_program: "/usr/bin/gh".into(),
+            repositories: vec!["gethamster/adam".into()],
+            bases: vec!["main".into()],
+            allowed_paths: vec!["src".into()],
+            required_checks: vec!["test".into()],
+            minimum_approvals: 1,
+            require_independent_review: true,
+            qualification_id: "reviewed-qualification".into(),
+            minimum_routine_probability: 0.8,
+            minimum_review_confidence: 0.8,
+            package_release: Some(PackageRelease {
+                repository: "gethamster/adam".into(),
+                workflow: "release.yml".into(),
+            }),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn immutable_package_contract_is_default_off_and_exactly_adam_main() {
+        assert!(
+            serde_json::to_value(AutomaticDelivery::default())
+                .unwrap()
+                .get("package_release")
+                .is_none()
+        );
+        package().validate().unwrap();
+        let mut changed = package();
+        changed.repositories.push("other/repository".into());
+        assert!(changed.validate().is_err());
+        let mut changed = package();
+        changed.bases = vec!["release".into()];
+        assert!(changed.validate().is_err());
+        changed = package();
+        changed.package_release.as_mut().unwrap().workflow = "deploy.yml".into();
+        assert!(changed.validate().is_err());
+        changed = package();
+        changed.version_url = Some("https://example.com".into());
+        assert!(changed.validate().is_err());
+        changed = package();
+        changed.minimum_approvals = 0;
+        assert!(changed.validate().is_err());
     }
 }
