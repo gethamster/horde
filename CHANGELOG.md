@@ -4,6 +4,9 @@
 
 ## 0.6.48 - 2026-10-20
 
+- Update the website dependencies with the existing security patch for Next.js,
+  Sharp and source-map-js.
+
 - Let System bind upstream maintenance to its original finite grant, occurrence,
   frozen source commits and aggregate worker budget. Recheck the owning service
   before admission and publication, and stop command groups when authority is

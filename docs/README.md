@@ -30,6 +30,7 @@ tested behavior and current limitations.
 | [Delegation](delegation.md) | Split work into child tasks while keeping the original context. |
 | [Application secrets and environments](environments.md) | Run checks in disposable app environments. |
 | [GitHub delivery](delivery.md) | Configure PR creation, merging, and deployment checks. |
+| [Upstream maintenance](upstream-maintenance.md) | Bind continuing work to revocable authority and worker budgets, and qualify immutable Adam package releases. |
 | [Progress and notifications](progress.md) | Stream task events with `horde watch`, read the terminal summary, and push milestones to a webhook or command. |
 | [Runtime networking](networking.md) | Move worker execution to other machines through direct networking or Tailscale. |
 | [Runtime management](runtime-management.md) | Manage execution hosts, capacity, and updates. |
