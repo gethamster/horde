@@ -506,13 +506,6 @@ fn append_fragment(
     Ok(())
 }
 
-pub(crate) async fn read_response(
-    response: reqwest::Response,
-    streaming: bool,
-    progress: impl FnMut(Value) -> Result<()>,
-) -> Result<Value> {
-    read_response_bounded(response, streaming, progress, |_| Ok(())).await
-}
 pub(crate) async fn read_response_bounded(
     response: reqwest::Response,
     streaming: bool,

@@ -4,6 +4,10 @@
 
 ## 0.6.48 - 2026-10-20
 
+- Make native Chat Completions doctor probes honor the configured streaming mode
+  and verify a bounded tool-result round trip. Retain opaque assistant metadata
+  between turns and report streaming, extensions and model evidence separately.
+
 - Update the website dependencies with the existing security patch for Next.js,
   Sharp and source-map-js.
 

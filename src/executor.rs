@@ -1937,6 +1937,9 @@ pub async fn probe_tools(config: &ExecutorConfig) -> Result<Value> {
     probe_tools_with_key(config, &key).await
 }
 pub async fn probe_tools_with_key(config: &ExecutorConfig, key: &str) -> Result<Value> {
+    if !matches!(config.kind.as_str(), "vertex" | "chatgpt") {
+        crate::native_probe::validate(config)?;
+    }
     let catalog = probe_with_key(config, key).await?;
     let model = catalog["model"].as_str().context("resolved model")?;
     if config.kind == "vertex" {
@@ -1981,44 +1984,7 @@ pub async fn probe_tools_with_key(config: &ExecutorConfig, key: &str) -> Result<
             json!({"model":model,"catalog_verified":true,"streaming_tool_calls_verified":true}),
         );
     }
-    crate::native_protocol::validate_extra_body(&config.extra_body)?;
-    let mut body = json!({"model":model,"messages":[{"role":"user","content":"Call ping with value ok."}],"stream":true,"max_tokens":128,"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}}],"tool_choice":{"type":"function","function":{"name":"ping"}}});
-    body.as_object_mut().expect("request object").extend(
-        crate::native_protocol::extra_body_with_usage(&config.extra_body, true),
-    );
-    body["tool_choice"] = json!({"type":"function","function":{"name":"ping"}});
-    if let Some(price) = &config.max_price {
-        body["max_price"] = json!(price);
-    }
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()?
-        .post(format!(
-            "{}/chat/completions",
-            config.base_url.trim_end_matches('/')
-        ))
-        .bearer_auth(key)
-        .json(&body)
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        bail!("Tuara streaming probe failed: {}", response.status());
-    }
-    let data = crate::native_protocol::read_response(response, true, |_| Ok(())).await?;
-    let calls = data["choices"][0]["message"]["tool_calls"]
-        .as_array()
-        .context("probe returned no tool calls")?;
-    if calls.len() != 1
-        || calls[0]["function"]["name"] != "ping"
-        || serde_json::from_str::<Value>(
-            calls[0]["function"]["arguments"]
-                .as_str()
-                .context("probe arguments")?,
-        )? != json!({"value":"ok"})
-    {
-        bail!("model did not satisfy streaming tool-call contract");
-    }
-    Ok(json!({"model":model,"catalog_verified":true,"streaming_tool_calls_verified":true}))
+    crate::native_probe::tools(config, key, model).await
 }
 
 #[cfg(test)]
