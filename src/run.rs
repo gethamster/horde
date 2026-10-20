@@ -843,6 +843,7 @@ pub(crate) fn publish_if_github_enabled(db: &Store, oid: &str, expected: &str) -
 }
 
 fn publish_locked(db: &Store, oid: &str, expected: &str) -> Result<Value> {
+    crate::upstream_maintenance::check_online_sync(db, oid)?;
     let (path, branch, sha) = run_branch(db, oid)?;
     expected_head(&sha, expected)?;
     let remote = fetch_run_head(db, oid, &path, &branch)?;
@@ -853,6 +854,7 @@ fn publish_locked(db: &Store, oid: &str, expected: &str) -> Result<Value> {
         );
     }
     if remote.as_deref() != Some(&sha) {
+        crate::upstream_maintenance::check_online_sync(db, oid)?;
         let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
         let push = run(
             &path,

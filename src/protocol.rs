@@ -77,6 +77,7 @@ pub fn project_allowed(name: &str) -> bool {
             | "project_update"
             | "project_configure"
             | "run_rebind_model"
+            | "maintenance_policy_register"
             | "project_repo_add"
             | "project_runtime_grant"
             | "project_runtime_revoke"
@@ -273,6 +274,7 @@ fn dispatch_authorized(
             bail!("reserved runtime argument");
         }
         let w = db.authenticate(token)?;
+        crate::upstream_maintenance::check_local(db, w["task"].as_str().context("worker task")?)?;
         for (key, source) in [("task", "task"), ("worker", "id")] {
             if args.get(key).is_some() && args[key] != w[source] {
                 bail!("worker credential scope violation");
@@ -297,6 +299,9 @@ fn dispatch_authorized(
         if matches!(name, "put_artifact" | "add_knowledge") {
             args["step"] = w["step"].clone();
         }
+    }
+    if let Some(result) = crate::upstream_maintenance::dispatch(db, name, &args)? {
+        return Ok(result);
     }
     if let Some(result) = crate::projects::dispatch(db, name, &args)? {
         return Ok(result);
@@ -383,6 +388,12 @@ fn dispatch_authorized(
     if name == "submit_task" && args.get("request_id").is_some() {
         return crate::submission::submit(db, &args);
     }
+    if name == "submit_task" && args.get("upstream_maintenance").is_some() {
+        anyhow::ensure!(
+            args["on"].is_null() || args["on"] == "local",
+            "remote maintenance execution is not budget-qualified"
+        );
+    }
     if name == "submit_task" && args["execution"].is_object() {
         let selection = crate::execution_selection::prepare_project(
             db,
@@ -404,12 +415,20 @@ fn dispatch_authorized(
         }
     }
     if name == "submit_task" && !args["on"].is_null() && args["on"] != "local" {
+        anyhow::ensure!(
+            args.get("upstream_maintenance").is_none(),
+            "remote maintenance execution is not budget-qualified"
+        );
         return crate::remote_submit::submit(db, &args);
     }
     if name == "submit_task" {
         let repo = Path::new(string(&args, "repo")?).canonicalize()?;
         let project = string(&args, "project")?;
+        let maintenance = crate::upstream_maintenance::authorize_submission(db, &args, &repo)?;
         let settings = Settings::load_project(db, project, &repo)?;
+        if let Some(binding) = &maintenance {
+            crate::upstream_maintenance::validate_settings(db, binding, &settings)?;
+        }
         let templates = template::load_templates(&crate::branding::templates(&repo))?;
         let objective = string(&args, "objective")?;
         let plan = template::compile(
@@ -431,6 +450,9 @@ fn dispatch_authorized(
         }
         return db.atomic(|| {
             let oid = db.submit_project(project, objective, &repo, &settings, &plan)?;
+            if let Some(binding) = &maintenance {
+                crate::upstream_maintenance::pin(db, &oid, binding)?;
+            }
             crate::run::bind_run_context(
                 db,
                 &oid,

@@ -295,6 +295,13 @@ pub fn delegate(db: &Store, oid: &str, args: &Value) -> Result<Value> {
             }
         }
     }
+    crate::upstream_maintenance::check_local(db, oid)?;
+    if crate::upstream_maintenance::binding(db, oid)?.is_some() {
+        ensure!(
+            args["peer"].is_null(),
+            "remote maintenance delegation is not budget-qualified"
+        );
+    }
     db.atomic(|| {
   let count:i64=db.conn.query_row("SELECT COUNT(*)-1 FROM task_tree WHERE root=?",[r],|r|r.get(0))?;
   ensure!(count<limits.children as i64 && t["depth"].as_u64().unwrap_or(0)<limits.depth as u64,"delegation tree limit reached");

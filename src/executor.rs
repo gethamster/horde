@@ -103,6 +103,7 @@ pub async fn run_task_command_env(
     attempt: Option<&str>,
     values: &std::collections::BTreeMap<String, String>,
 ) -> Result<Value> {
+    crate::upstream_maintenance::check_online(db, task).await?;
     let program = argv.first().context("empty command")?;
     let mut command = clean_command(program);
     command.args(&argv[1..]).current_dir(dir).envs(values);
@@ -117,6 +118,14 @@ pub(crate) async fn run_process(
     timeout: u64,
     record: Option<(&Store, &str)>,
 ) -> Result<Value> {
+    if let Some((db, attempt)) = record {
+        let task: String = db.conn.query_row(
+            "SELECT s.task FROM steps s JOIN attempts a ON a.step=s.id WHERE a.id=?",
+            [attempt],
+            |row| row.get(0),
+        )?;
+        crate::upstream_maintenance::check_online(db, &task).await?;
+    }
     let mut cmd = AsyncCommand::from(command);
     cmd.kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
@@ -199,6 +208,7 @@ impl Invocation<'_> {
     }
 }
 pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
+    crate::upstream_maintenance::check_online(i.db, i.task).await?;
     if i.spec.kind == "simulated" {
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         return Ok(
@@ -422,6 +432,10 @@ mod capacity_failure_tests {
 pub(crate) const CODEX_NETWORK_OVERRIDE: &str = "sandbox_workspace_write.network_access=true";
 
 async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
+    anyhow::ensure!(
+        crate::upstream_maintenance::binding(i.db, i.task)?.is_none(),
+        "external harness maintenance execution is not budget-qualified"
+    );
     let generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
     if !i.settings.allow_commands {
         bail!(
@@ -1416,6 +1430,8 @@ where
                 generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
             }
             crate::capacity::ensure_generation(i.db, config, generation.as_deref())?;
+            crate::upstream_maintenance::check_online(i.db, i.task).await?;
+            crate::upstream_maintenance::reserve_model(i.db, i.task, body.len())?;
             let response = client
                 .post(format!(
                     "{}/{}",
@@ -1492,12 +1508,17 @@ where
                             let mut response = response;
                             let mut bytes = Vec::new();
                             while let Some(chunk) = response.chunk().await? {
+                                crate::upstream_maintenance::consume_output(
+                                    i.db,
+                                    i.task,
+                                    chunk.len(),
+                                )?;
                                 if bytes.len() + chunk.len() > 4096 {
                                     return Ok((Vec::new(), true));
                                 }
                                 bytes.extend_from_slice(&chunk);
                             }
-                            Ok::<_, reqwest::Error>((bytes, false))
+                            Ok::<_, anyhow::Error>((bytes, false))
                         })
                         .await;
                     let (error, truncated) = match diagnostic {
@@ -1551,7 +1572,11 @@ where
                 Ok(())
             };
             let data = if chatgpt {
-                match crate::native_responses::read_response(response, progress).await {
+                match crate::native_responses::read_response_bounded(response, progress, |bytes| {
+                    crate::upstream_maintenance::consume_output(i.db, i.task, bytes)
+                })
+                .await
+                {
                     Ok(data) => data,
                     Err(error) => {
                         if error
@@ -1579,7 +1604,13 @@ where
                     }
                 }
             } else {
-                crate::native_protocol::read_response(response, config.stream, progress).await?
+                crate::native_protocol::read_response_bounded(
+                    response,
+                    config.stream,
+                    progress,
+                    |bytes| crate::upstream_maintenance::consume_output(i.db, i.task, bytes),
+                )
+                .await?
             };
             break data;
         };

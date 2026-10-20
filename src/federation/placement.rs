@@ -25,6 +25,17 @@ pub fn route_queued(db: &Store, task: &str) -> Result<bool> {
         && policy.as_ref().is_none_or(|p| {
             p["selected"].is_null() || p["selected"]["runtime"] == local["runtime"]
         });
+    if crate::upstream_maintenance::binding(db, task)?.is_some() {
+        crate::upstream_maintenance::check_local(db, task)?;
+        if !local_allowed {
+            crate::project_runtime::queue(
+                db,
+                task,
+                "maintenance execution has no budget-qualified local runtime",
+            )?;
+        }
+        return Ok(!local_allowed);
+    }
     let local_available = local["capacity"]["available"]
         .as_u64()
         .is_some_and(|slots| slots > 0)

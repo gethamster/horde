@@ -57,6 +57,7 @@ pub fn build(db: &Store, task: &str) -> Result<Value> {
             "reconciliation": crate::run::reconciliation_status(db, task)?,
         },
         "questions_pending": questions_pending,
+        "upstream_maintenance": crate::upstream_maintenance::inspection(db, task)?,
         "delivery": delivery,
     });
     if summary["delivery"]["outcome"] == "skipped" {

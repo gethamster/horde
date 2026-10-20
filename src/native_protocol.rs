@@ -509,7 +509,15 @@ fn append_fragment(
 pub(crate) async fn read_response(
     response: reqwest::Response,
     streaming: bool,
+    progress: impl FnMut(Value) -> Result<()>,
+) -> Result<Value> {
+    read_response_bounded(response, streaming, progress, |_| Ok(())).await
+}
+pub(crate) async fn read_response_bounded(
+    response: reqwest::Response,
+    streaming: bool,
     mut progress: impl FnMut(Value) -> Result<()>,
+    mut consumed: impl FnMut(usize) -> Result<()>,
 ) -> Result<Value> {
     use futures_util::StreamExt;
     let mut chunks = response.bytes_stream();
@@ -517,6 +525,7 @@ pub(crate) async fn read_response(
     let mut body = Vec::new();
     while let Some(chunk) = chunks.next().await {
         let chunk = chunk?;
+        consumed(chunk.len())?;
         if streaming {
             parser.feed(&chunk, &mut progress)?;
             if parser.done {

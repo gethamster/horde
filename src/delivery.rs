@@ -3,6 +3,7 @@ use crate::executor::{Invocation, run_command, run_command_env};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 pub(crate) async fn gh(i: &Invocation<'_>, args: &[&str]) -> Result<Value> {
+    crate::upstream_maintenance::check_online(i.db, i.task).await?;
     let program = if i.settings.automatic_delivery.enabled && i.settings.delivery.merge {
         i.settings.automatic_delivery.gh_program.clone()
     } else {
