@@ -9,7 +9,7 @@ pub(super) fn current_policy(i: &Invocation<'_>) -> Result<Option<AutomaticDeliv
     ensure!(
         project == crate::projects::DEFAULT_PROJECT
             || crate::upstream_maintenance::check_local(i.db, i.task)?.is_some(),
-        "automatic delivery outside the default project requires bound maintenance authority"
+        "automatic delivery is limited to the default project unless bound maintenance authority authorizes this project"
     );
     let operator = Settings::load_project_user(i.db, &project)
         .context("current operator delivery policy unavailable")?;
@@ -109,7 +109,7 @@ pub(super) fn scoped(i: &Invocation<'_>, policy: &AutomaticDelivery) -> Result<S
     ensure!(
         crate::projects::task_project(i.db, i.task)? == crate::projects::DEFAULT_PROJECT
             || crate::upstream_maintenance::check_local(i.db, i.task)?.is_some(),
-        "automatic delivery outside the default project requires bound maintenance authority"
+        "automatic delivery is limited to the default project unless bound maintenance authority authorizes this project"
     );
     let tree =
         i.db.rows(
