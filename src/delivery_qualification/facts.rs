@@ -1,0 +1,353 @@
+//! Reconstruct the production veto state from retained authoritative source data.
+use super::*;
+
+fn decoded(value: &Value) -> Result<Value> {
+    match value {
+        Value::String(raw) => Ok(serde_json::from_str(raw)?),
+        value => Ok(value.clone()),
+    }
+}
+
+pub(super) fn baseline(
+    case: &Case,
+    receipt: &Value,
+    oracle: &Value,
+    head: &str,
+    created: i64,
+    finished: i64,
+    recalled: bool,
+) -> Result<()> {
+    let settings: crate::config::Settings = serde_json::from_str(
+        receipt["task"]["settings"]
+            .as_str()
+            .context("baseline settings missing")?,
+    )?;
+    ensure!(
+        !settings.automatic_delivery.enabled,
+        "baseline used automatic delivery instead of conventional manual acceptance"
+    );
+    let question_id = oracle["manual_acceptance_question"]
+        .as_str()
+        .context("baseline has no actual manual-acceptance question receipt")?;
+    let question = receipt["questions"]
+        .as_array()
+        .context("baseline questions unavailable")?
+        .iter()
+        .find(|question| question["id"] == question_id)
+        .context("manual-acceptance question is not in the actual Run")?;
+    ensure!(
+        question["task"] == receipt["task"]["id"]
+            && crate::store::hash(
+                question["question"]
+                    .as_str()
+                    .context("manual-acceptance question text missing")?
+                    .as_bytes()
+            ) == case.baseline_acceptance_question_sha256,
+        "manual-acceptance question differs from the frozen baseline contract"
+    );
+    let expected = if case.critical && recalled {
+        "escalate"
+    } else {
+        "accept"
+    };
+    ensure!(
+        question["answer"] == expected
+            && oracle["manual_acceptance_answer"] == expected
+            && oracle["head_sha"] == head,
+        "baseline oracle does not match the actual manual decision"
+    );
+    let answered = receipt["events"]
+        .as_array()
+        .context("baseline manual decision events unavailable")?
+        .iter()
+        .find(|event| {
+            if event["kind"] != "question.answered" {
+                return false;
+            }
+            decoded(&event["data"])
+                .is_ok_and(|data| data["question"] == question_id && data["answer"] == expected)
+        })
+        .context("baseline lacks the protected operator answer event")?;
+    ensure!(
+        answered["created"]
+            .as_i64()
+            .is_some_and(|at| at >= created && at <= finished),
+        "manual decision was not included in actual baseline completion time"
+    );
+    Ok(())
+}
+
+fn reviewed_manifest<'a>(
+    frozen: &Frozen,
+    case: &Case,
+    receipt: &'a Value,
+    head: &str,
+) -> Result<(&'a Value, Value)> {
+    let rows = receipt["reviews"]
+        .as_array()
+        .context("actual runtime review checkpoint rows missing")?;
+    let row = rows
+        .iter()
+        .filter(|row| row["head"] == head)
+        .max_by_key(|row| row["event_seq"].as_i64().unwrap_or(0))
+        .context("candidate has no actual runtime review checkpoint")?;
+    let revision = row["revision"]
+        .as_i64()
+        .context("review revision unavailable")?;
+    let context = row["context_version"]
+        .as_i64()
+        .context("review context unavailable")?;
+    ensure!(
+        crate::delivery_policy::review_eligible(row, head, revision, context)
+            && crate::delivery_policy::review_signals_clear(
+                &row["result"],
+                frozen.manifest.delivery_policy.minimum_review_confidence
+            ),
+        "actual runtime review is stale, incomplete or flagged"
+    );
+    let evidence_hash = row["evidence_hash"]
+        .as_str()
+        .context("runtime review evidence hash unavailable")?;
+    let evidence = raw_artifact(receipt, evidence_hash)?;
+    ensure!(
+        evidence["catalog"] == "review-v1"
+            && evidence["objective"] == case.objective
+            && evidence["revision"] == revision
+            && evidence["context_version"] == context
+            && evidence["coverage"]["complete"] == true
+            && digest(&evidence["manifest"])? == row["manifest_hash"],
+        "review checkpoint is not bound to actual runtime-produced evidence"
+    );
+    let manifest = &evidence["manifest"];
+    ensure!(
+        manifest["base"] == case.base_commit
+            && manifest["head"] == head
+            && manifest["complete"] == true,
+        "runtime manifest differs from the frozen verified change"
+    );
+    let changes = &receipt["changes"];
+    ensure!(
+        changes["run_id"] == receipt["task"]["id"]
+            && changes["base_sha"] == case.base_commit
+            && changes["head_sha"] == head
+            && changes["truncated"] == false,
+        "actual Run changes are missing or incomplete"
+    );
+    let paths = manifest["paths"]
+        .as_array()
+        .context("runtime manifest paths unavailable")?;
+    let actual = changes["files"]
+        .as_array()
+        .context("actual committed file changes unavailable")?;
+    ensure!(
+        !paths.is_empty() && paths.len() <= 8 && paths.len() == actual.len(),
+        "delivery corpus must have the same complete routine change coverage"
+    );
+    let excerpts = manifest["excerpts"]
+        .as_array()
+        .context("actual reviewed excerpts unavailable")?;
+    ensure!(
+        manifest["path_count"].as_u64() == Some(paths.len() as u64)
+            && manifest["excerpted_paths"].as_u64() == Some(paths.len() as u64)
+            && excerpts.len() == paths.len(),
+        "actual reviewed excerpt coverage differs from complete changes"
+    );
+    for ((path, file), excerpt) in paths.iter().zip(actual).zip(excerpts) {
+        ensure!(
+            path["covered"] == true
+                && path["binary"] == false
+                && ["A", "M"].contains(&path["status"].as_str().unwrap_or(""))
+                && path["path"] == file["path"]
+                && path["status"] == file["status"]
+                && file["truncated"] == false
+                && excerpt["path"] == path["path"]
+                && excerpt["truncated"] == false
+                && !crate::delivery_policy::diff_has_sensitive_change(
+                    excerpt["excerpt"]
+                        .as_str()
+                        .context("actual reviewed excerpt missing")?
+                )
+                && !crate::delivery_policy::diff_has_sensitive_change(
+                    file["diff"]
+                        .as_str()
+                        .context("actual committed diff missing")?
+                ),
+            "actual committed change differs from runtime review coverage"
+        );
+    }
+    Ok((row, evidence["manifest"].clone()))
+}
+
+fn independent_review(receipt: &Value, head: &str, revision: i64, observed: i64) -> Result<Value> {
+    let integrations = receipt["integrations"]
+        .as_array()
+        .context("actual integration receipts unavailable")?;
+    let integrated_workers: BTreeSet<_> = integrations
+        .iter()
+        .filter(|row| row["state"] == "succeeded")
+        .filter_map(|row| row["worker"].as_str())
+        .collect();
+    let last = integrations
+        .iter()
+        .filter(|row| row["state"] == "succeeded")
+        .filter_map(|row| row["created"].as_i64())
+        .max()
+        .unwrap_or(0);
+    let steps = receipt["steps"]
+        .as_array()
+        .context("actual reviewer step definitions unavailable")?;
+    let attempts = receipt["attempts"]
+        .as_array()
+        .context("actual reviewer attempts unavailable")?;
+    let mut eligible = Vec::new();
+    for attempt in attempts {
+        let Some(worker) = attempt["worker"].as_str() else {
+            continue;
+        };
+        if integrated_workers.contains(worker) || attempt["started"].as_i64().unwrap_or(0) < last {
+            continue;
+        }
+        let Some(step) = steps.iter().find(|step| step["id"] == attempt["step"]) else {
+            continue;
+        };
+        let spec: crate::template::Step = serde_json::from_value(decoded(&step["spec"])?)?;
+        if spec.kind != "agent" || spec.role != "reviewer" {
+            continue;
+        }
+        for (name, kind) in [
+            ("reviewed_head", "string"),
+            ("reviewed_revision", "integer"),
+            ("verdict", "string"),
+            ("risk", "string"),
+            ("coverage_complete", "boolean"),
+            ("findings", "array"),
+        ] {
+            ensure!(
+                spec.output_types
+                    .get(name)
+                    .is_some_and(|value| value == kind),
+                "actual reviewer step lacks the production evidence contract"
+            );
+        }
+        eligible.push(attempt);
+    }
+    let attempt = eligible
+        .into_iter()
+        .max_by_key(|attempt| {
+            (
+                attempt["finished"].as_i64().unwrap_or(0),
+                attempt["started"].as_i64().unwrap_or(0),
+            )
+        })
+        .context("actual independent reviewer attempt unavailable")?;
+    let result = decoded(&attempt["result"])?;
+    ensure!(
+        attempt["state"] == "succeeded"
+            && attempt["finished"]
+                .as_i64()
+                .is_some_and(|at| at <= observed)
+            && crate::delivery_policy::reviewer_result_passes(&result, head, revision),
+        "actual latest independent reviewer did not pass the exact head/revision"
+    );
+    Ok(
+        json!({"attempt":attempt["id"],"worker":attempt["worker"],"result_hash":digest(&result)?,"reviewed_head":head,"reviewed_revision":revision}),
+    )
+}
+
+pub(super) fn production_state(
+    frozen: &Frozen,
+    case: &Case,
+    receipt: &Value,
+    head: &str,
+    created: i64,
+    finished: i64,
+) -> Result<Value> {
+    let settings: crate::config::Settings = serde_json::from_str(
+        receipt["task"]["settings"]
+            .as_str()
+            .context("actual candidate settings unavailable")?,
+    )?;
+    let policy = &frozen.manifest.delivery_policy;
+    ensure!(
+        settings.delivery.repository == case.repository
+            && policy.bases.contains(&settings.delivery.base),
+        "actual candidate repository/base configuration differs from frozen delivery scope"
+    );
+    let (review, mut manifest) = reviewed_manifest(frozen, case, receipt, head)?;
+    ensure!(
+        review["created"]
+            .as_i64()
+            .is_some_and(|at| at >= created && at <= finished)
+            && review["finished"]
+                .as_i64()
+                .is_some_and(|at| at >= created && at <= finished),
+        "actual runtime review did not finish before the advisory decision"
+    );
+    let revision = review["revision"]
+        .as_i64()
+        .context("actual reviewed revision unavailable")?;
+    let context = review["context_version"]
+        .as_i64()
+        .context("actual reviewed context unavailable")?;
+    let paths = manifest["paths"]
+        .as_array()
+        .context("runtime manifest paths missing")?
+        .iter()
+        .map(|row| {
+            row["path"]
+                .as_str()
+                .map(str::to_owned)
+                .context("changed path missing")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    crate::delivery_policy::validate_paths(&paths, &policy.allowed_paths)?;
+    let (_, github) = artifact(receipt, "qualification-github-receipts")?;
+    ensure!(
+        github["repository"] == case.repository
+            && github["base_oid"] == case.base_commit
+            && github["observed_at"]
+                .as_i64()
+                .is_some_and(|at| at >= created && at <= finished),
+        "actual GitHub snapshot has a different source identity or timing"
+    );
+    let pr = &github["pull_request"];
+    ensure!(
+        pr["state"] == "OPEN"
+            && pr["number"].as_u64().is_some_and(|id| id > 0)
+            && pr["headRefOid"] == head
+            && pr["baseRefName"] == settings.delivery.base,
+        "actual PR does not identify the verified Run head/base"
+    );
+    let checks =
+        crate::delivery_policy::check_runs(&github["check_runs"], head, &policy.required_checks)?;
+    let approvals = crate::delivery_policy::approvals(
+        &github["reviews"],
+        head,
+        pr["author"]["login"]
+            .as_str()
+            .context("actual PR author unavailable")?,
+        policy.minimum_approvals,
+    )?;
+    let environment = if let Some(package) = &policy.package_release {
+        format!("package:{}", package.repository)
+    } else {
+        let value = settings
+            .delivery
+            .environment
+            .as_deref()
+            .context("actual delivery environment missing")?;
+        ensure!(
+            policy.environments.iter().any(|allowed| allowed == value),
+            "actual environment is outside candidate policy"
+        );
+        value.to_owned()
+    };
+    // Review capture identifies its base by SHA; the production delivery manifest
+    // uses this branch label after independently pinning it to the same base SHA.
+    manifest["base"] = json!(format!("refs/remotes/origin/{}", settings.delivery.base));
+    let review_fact = json!({"id":review["id"],"head":head,"revision":revision,"context_version":context,"evidence_hash":review["evidence_hash"],"manifest_hash":review["manifest_hash"],"external_hash":review["external_hash"],"signals_hash":digest(&review["result"])?});
+    Ok(
+        json!({"head":head,"repo":case.repository,"base":settings.delivery.base,"base_oid":case.base_commit,"environment":environment,
+        "paths":paths,"manifest":manifest,"checks":checks,"approvals":approvals,"review":review_fact,"independent_review":independent_review(receipt,head,revision,finished)?,"context_version":context}),
+    )
+}

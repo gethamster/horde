@@ -20,6 +20,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Prepare and inspect genuine held-out delivery evidence without opening a Store.
+    DeliveryQualification {
+        #[command(subcommand)]
+        command: horde::delivery_qualification::Command,
+    },
     /// Print this binary's release compatibility without accessing runtime state.
     ReleaseCompatibility,
     /// Print native archive support without opening runtime state.
@@ -709,6 +714,22 @@ async fn main() -> Result<()> {
         .name(horde::branding::cli_name())
         .get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
+    if let Commands::DeliveryQualification { command } = &cli.command {
+        let result = horde::delivery_qualification::run(
+            command,
+            cli.data_dir.as_deref(),
+            cli.selected_project.as_deref(),
+        )?;
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        if matches!(
+            command,
+            horde::delivery_qualification::Command::Validate { .. }
+        ) && result["qualified"] != true
+        {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if matches!(&cli.command, Commands::NativeArtifactCapabilities) {
         println!(
             "{}",
@@ -756,7 +777,9 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&root)?;
     let root = root.canonicalize()?;
     let output = match cli.command {
-        Commands::ReleaseCompatibility | Commands::NativeArtifactCapabilities => unreachable!(),
+        Commands::ReleaseCompatibility
+        | Commands::NativeArtifactCapabilities
+        | Commands::DeliveryQualification { .. } => unreachable!(),
         Commands::ObservationsExport { config } => {
             horde::operational_observations::serve(&root, &config).await?;
             return Ok(());

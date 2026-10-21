@@ -5,6 +5,7 @@ pub mod credentials;
 pub mod decision;
 pub mod delivery;
 pub mod delivery_policy;
+pub mod delivery_qualification;
 pub mod executor;
 pub mod git;
 mod github_sync;

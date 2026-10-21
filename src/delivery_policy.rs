@@ -65,8 +65,12 @@ use qualification::*;
 mod evidence;
 pub use evidence::preflight;
 use evidence::*;
+pub(crate) use evidence::{
+    diff_has_sensitive_change, review_eligible, review_signals_clear, reviewer_result_passes,
+    validate_paths,
+};
 
-fn check_runs(value: &Value, head: &str, required: &[String]) -> Result<Value> {
+pub(crate) fn check_runs(value: &Value, head: &str, required: &[String]) -> Result<Value> {
     let total = value["total_count"].as_u64().context("check run count")?;
     ensure!(total <= 100, "check run list exceeds one complete page");
     let runs = value["check_runs"].as_array().context("check runs")?;
@@ -102,7 +106,7 @@ fn check_runs(value: &Value, head: &str, required: &[String]) -> Result<Value> {
     Ok(json!(evidence))
 }
 
-fn approvals(value: &Value, head: &str, author: &str, minimum: usize) -> Result<Value> {
+pub(crate) fn approvals(value: &Value, head: &str, author: &str, minimum: usize) -> Result<Value> {
     let reviews = value.as_array().context("PR reviews")?;
     ensure!(reviews.len() < 100, "review list may be paginated");
     let mut latest = BTreeMap::<String, (&str, u64, &Value)>::new();
@@ -270,8 +274,9 @@ fn preflight_snapshot(i: &Invocation<'_>, head: &str) -> Result<Value> {
     Ok(snapshot)
 }
 
-fn decision_request(i: &Invocation<'_>, facts: &Value) -> Result<DecisionRequest> {
-    let request = DecisionRequest { model:i.settings.decision.model.clone(), state:facts.clone(),
+/// Build the same tool-free veto question for runtime delivery and held-out evaluation.
+pub fn delivery_veto_request(model: &str, facts: &Value) -> Result<DecisionRequest> {
+    let request = DecisionRequest { model:model.into(), state:facts.clone(),
         questions: vec![Question::Choice(ChoiceQuestion {id:"delivery".into(),
             question:"Should this already policy-eligible routine change be escalated for manual delivery? Escalate on uncertainty, consequential API or migration effects, or security concerns.".into(),
             options:vec!["routine".into(),"escalate".into()]})] };
@@ -280,7 +285,7 @@ fn decision_request(i: &Invocation<'_>, facts: &Value) -> Result<DecisionRequest
 }
 
 async fn decision_veto(i: &Invocation<'_>, facts: &Value, minimum: f64) -> Result<String> {
-    let request = decision_request(i, facts)?;
+    let request = delivery_veto_request(&i.settings.decision.model, facts)?;
     let decision_id = id();
     let admitted = decisions::enqueue_bounded(
         i.db,

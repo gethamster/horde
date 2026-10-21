@@ -2,7 +2,16 @@
 
 ## Unreleased
 
-## 0.6.48 - 2026-10-20
+## 0.6.49 - 2026-10-20
+
+- Add native commands to freeze held-out delivery cases, collect existing Run
+  evidence without opening runtime state, validate genuine paired outcomes and
+  compute an operator-reviewable qualification report. Missing real baseline,
+  independent oracle, provider or budget evidence remains a blocker.
+- Preserve the revocation regression's no-effect assertion while accepting the
+  exact cancelled-task fence that can race the policy-revocation read.
+
+## 0.6.48 - 2026-10-20 (tagged, publication held)
 
 - Make native Chat Completions doctor probes honor the configured streaming mode
   and verify a bounded tool-result round trip. Retain opaque assistant metadata
