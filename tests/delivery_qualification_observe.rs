@@ -336,3 +336,25 @@ async fn remote_revocation_during_response_holds_the_observation_and_keeps_usage
         assert!(bodies.try_recv().is_err());
     }).await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn unusable_or_lost_wire_responses_never_become_verified_observations() {
+    let _lock = support::CONFIG_LOCK.lock().await;
+    tokio::task::LocalSet::new().run_until(async {
+        const ECHO: &str = r#"{"model":"jev-1.13.0","answers":{"delivery":{"type":"choice","choice":"routine","confidence":0.99,"probabilities":{"routine":0.99,"escalate":0.01}}},"debug":"qualification-loopback-key"}"#;
+        for (status, body) in [("201 Created", VETO), ("200 OK", ECHO), ("DROP", "")] {
+            let (url, mut bodies) = support::server(vec![("200 OK", REVIEW, 0), (status, body, 0), ("200 OK", VETO, 0)]).await;
+            let f = Fixture::new(url, 4).await;
+            bodies.recv().await.unwrap();
+            let denied = horde::protocol::dispatch(&f.db, "delivery_qualification_observe", f.args.clone(), Some("fixture-worker-token")).unwrap_err();
+            assert!(denied.to_string().contains("unavailable to worker"));
+            assert!(bodies.try_recv().is_err());
+            assert_eq!(f.call(f.args.clone()).await.unwrap()["state"], "held", "{status}");
+            bodies.recv().await.unwrap();
+            assert_eq!(f.call(f.args.clone()).await.unwrap()["state"], "held");
+            assert!(bodies.try_recv().is_err(), "{status} caused a resend");
+            assert_eq!(horde::upstream_maintenance::inspection(&f.db, &f.task).unwrap()["usage"]["model_calls"], 2);
+            assert!(f.db.rows("SELECT hash FROM artifact_links WHERE task=? AND name='qualification-decision'", &[&f.task]).unwrap().is_empty());
+        }
+    }).await;
+}
