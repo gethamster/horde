@@ -25,6 +25,10 @@ const DELIVERY_NAMES: &[&str] = &[
     "health",
     "version",
     "smoke",
+    "package-release.intent",
+    "package-release.tag",
+    "package-release.workflow",
+    "package-release.verified",
 ];
 
 pub fn migrate(conn: &rusqlite::Connection) -> Result<()> {
@@ -54,6 +58,8 @@ fn json_hash(value: &Value) -> Result<String> {
     Ok(hash(&serde_json::to_vec(value)?))
 }
 
+mod enrollment;
+pub use enrollment::enroll_qualification;
 mod qualification;
 use qualification::*;
 mod evidence;
@@ -657,3 +663,13 @@ pub async fn verify_smoke(url: &str, sha: &str, environment: &str) -> Result<()>
 
 #[cfg(test)]
 mod tests;
+/// Reuse the same operator policy and held-out evidence for the distinct package
+/// release contract. Only a bound maintenance root can select that contract.
+pub(crate) fn package_policy(i: &Invocation<'_>) -> Result<crate::config::PackageRelease> {
+    let policy =
+        current_policy(i)?.context("package release requires qualified automatic delivery")?;
+    scoped(i, &policy)?;
+    policy
+        .package_release
+        .context("operator package release contract is disabled")
+}

@@ -1,5 +1,21 @@
 pub const OPERATIONS: &[(&str, &str)] = &[
     (
+        "delivery_qualification_enroll",
+        "Enroll an operator-reviewed existing held-out delivery report without weakening qualification gates",
+    ),
+    (
+        "maintenance_policy_register",
+        "Register operator-owned upstream maintenance authority and worker budget",
+    ),
+    (
+        "maintenance_policy_get",
+        "Inspect the selected project maintenance policy and revocation state",
+    ),
+    (
+        "maintenance_policy_revoke",
+        "Revoke an existing project maintenance policy and cancel its tasks",
+    ),
+    (
         "runtime_storage_status",
         "Inspect local disk space and storage policy",
     ),

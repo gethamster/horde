@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.6.48 - 2026-10-20
+
+- Make native Chat Completions doctor probes honor the configured streaming mode
+  and verify a bounded tool-result round trip. Retain opaque assistant metadata
+  between turns and report streaming, extensions and model evidence separately.
+
+- Update the website dependencies with the existing security patch for Next.js,
+  Sharp and source-map-js.
+
+- Let System bind upstream maintenance to its original finite grant, occurrence,
+  frozen source commits and aggregate worker budget. Recheck the owning service
+  before admission and publication, and stop command groups when authority is
+  revoked or expires. Budget overrun persists a fence across descendants and retries.
+- Add operator-reviewed enrollment of retained delivery qualification evidence.
+  Keep existing quality, defect-recall, latency and exact-policy requirements.
+- Support a default-off immutable Adam CLI release contract after qualified
+  protected merging. Reconcile exact tag intent, verify the tag-push workflow,
+  check all four platform archives, and run the native binary's version command.
+  Live activation still requires valid accounts, repository authority and real
+  qualification evidence; this release does not activate a System routine.
+
 ## 0.6.47 - 2026-10-17
 
 - Keep the daemon and active workers running through temporary SQLite writer

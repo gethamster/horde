@@ -103,6 +103,7 @@ pub async fn run_task_command_env(
     attempt: Option<&str>,
     values: &std::collections::BTreeMap<String, String>,
 ) -> Result<Value> {
+    crate::upstream_maintenance::check_online(db, task).await?;
     let program = argv.first().context("empty command")?;
     let mut command = clean_command(program);
     command.args(&argv[1..]).current_dir(dir).envs(values);
@@ -117,6 +118,21 @@ pub(crate) async fn run_process(
     timeout: u64,
     record: Option<(&Store, &str)>,
 ) -> Result<Value> {
+    if let Some((db, attempt)) = record {
+        // Disposable environments retain task ownership independently of an
+        // attempt row (including older/direct lifecycle callers). Resolve only
+        // an unambiguous authoritative owner rather than skipping the fence.
+        let owners = db.rows(
+            "SELECT s.task FROM steps s JOIN attempts a ON a.step=s.id WHERE a.id=? UNION SELECT task FROM app_environments WHERE attempt=?",
+            &[&attempt, &attempt],
+        )?;
+        anyhow::ensure!(
+            owners.len() == 1,
+            "command record has no unambiguous task owner"
+        );
+        let task = owners[0]["task"].as_str().context("command task owner")?;
+        crate::upstream_maintenance::check_online(db, task).await?;
+    }
     let mut cmd = AsyncCommand::from(command);
     cmd.kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
@@ -183,7 +199,11 @@ pub struct Invocation<'a> {
 impl Invocation<'_> {
     pub fn prompt(&self) -> Result<String> {
         let skills = crate::skills::prompt(self.db, self.task, self.attempt, self.spec)?;
-        let feedback = crate::preview::feedback_prompt(self.db, self.task, self.spec)?;
+        let feedback = format!(
+            "{}{}",
+            crate::preview::feedback_prompt(self.db, self.task, self.spec)?,
+            crate::upstream_maintenance::prompt(self.db, self.task)?
+        );
         Ok(format!(
             "You are worker {} assigned step {} in task {}.\nInstructions: {}\nCompletion: once this assigned step meets its acceptance criteria, commit any code changes and return {{\"result\": string, \"accepted\": boolean, \"artifacts\": array of paths}} using the completion mechanism below. Do not repeat completed tool calls to signal completion. If blocked, explain why with accepted=false.\nAcceptance criteria: {}\nExpected artifacts: {}\nRequired named outputs (JSON types): {}\nWrite scope: {}\nContext with provenance: {}\n{skills}\nWhen delegating, retain inherited context and cite source IDs. Inspect child results with list_children and import changes with integrate_child plus a real parent verification command. Do not mark the parent complete until children are integrated and checked. Questions go to your immediate caller; answer child questions within your authority or escalate them unchanged. Read coordination messages BEFORE editing and BEFORE submitting. If Horde requests storage cleanup, remove only caches you own and can safely regenerate, using the relevant tool cleanup command; report what was reclaimed or why cleanup is unsafe. HORDE_STORAGE_PRESSURE_FILE describes host disk health. Do not delete arbitrary shared caches. Critical pressure may suspend your process until the host recovers. Use the coordination MCP tools for messages and claims. Messaging never changes ownership; acquire or transfer claims explicitly. Stay inside this workspace and your claimed paths. For code changes, read git rev-parse HEAD and use the coordination commit_work tool with expected_head, a short message, and a stable idempotency_key. Use the same request/key after a lost response. Do not use raw git add or git commit; the daemon owns Git metadata. The accepted field means THIS ASSIGNED STEP is complete. A planning-only step is accepted when its plan is complete, even when baseline repository tests fail. Return a JSON object with result (string), accepted (boolean), and artifacts (array of paths). For implementation or verification steps, do not claim acceptance if their required checks fail.\n",
             self.worker,
@@ -199,6 +219,7 @@ impl Invocation<'_> {
     }
 }
 pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
+    crate::upstream_maintenance::check_online(i.db, i.task).await?;
     if i.spec.kind == "simulated" {
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         return Ok(
@@ -422,6 +443,10 @@ mod capacity_failure_tests {
 pub(crate) const CODEX_NETWORK_OVERRIDE: &str = "sandbox_workspace_write.network_access=true";
 
 async fn harness(i: &Invocation<'_>, config: &ExecutorConfig) -> Result<Value> {
+    anyhow::ensure!(
+        crate::upstream_maintenance::binding(i.db, i.task)?.is_none(),
+        "external harness maintenance execution is not budget-qualified"
+    );
     let generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
     if !i.settings.allow_commands {
         bail!(
@@ -1416,6 +1441,8 @@ where
                 generation = crate::capacity::invocation_generation(i.db, i.attempt, config)?;
             }
             crate::capacity::ensure_generation(i.db, config, generation.as_deref())?;
+            crate::upstream_maintenance::check_online(i.db, i.task).await?;
+            crate::upstream_maintenance::reserve_model(i.db, i.task, body.len())?;
             let response = client
                 .post(format!(
                     "{}/{}",
@@ -1492,12 +1519,17 @@ where
                             let mut response = response;
                             let mut bytes = Vec::new();
                             while let Some(chunk) = response.chunk().await? {
+                                crate::upstream_maintenance::consume_output(
+                                    i.db,
+                                    i.task,
+                                    chunk.len(),
+                                )?;
                                 if bytes.len() + chunk.len() > 4096 {
                                     return Ok((Vec::new(), true));
                                 }
                                 bytes.extend_from_slice(&chunk);
                             }
-                            Ok::<_, reqwest::Error>((bytes, false))
+                            Ok::<_, anyhow::Error>((bytes, false))
                         })
                         .await;
                     let (error, truncated) = match diagnostic {
@@ -1551,7 +1583,11 @@ where
                 Ok(())
             };
             let data = if chatgpt {
-                match crate::native_responses::read_response(response, progress).await {
+                match crate::native_responses::read_response_bounded(response, progress, |bytes| {
+                    crate::upstream_maintenance::consume_output(i.db, i.task, bytes)
+                })
+                .await
+                {
                     Ok(data) => data,
                     Err(error) => {
                         if error
@@ -1579,7 +1615,13 @@ where
                     }
                 }
             } else {
-                crate::native_protocol::read_response(response, config.stream, progress).await?
+                crate::native_protocol::read_response_bounded(
+                    response,
+                    config.stream,
+                    progress,
+                    |bytes| crate::upstream_maintenance::consume_output(i.db, i.task, bytes),
+                )
+                .await?
             };
             break data;
         };
@@ -1895,6 +1937,9 @@ pub async fn probe_tools(config: &ExecutorConfig) -> Result<Value> {
     probe_tools_with_key(config, &key).await
 }
 pub async fn probe_tools_with_key(config: &ExecutorConfig, key: &str) -> Result<Value> {
+    if !matches!(config.kind.as_str(), "vertex" | "chatgpt") {
+        crate::native_probe::validate(config)?;
+    }
     let catalog = probe_with_key(config, key).await?;
     let model = catalog["model"].as_str().context("resolved model")?;
     if config.kind == "vertex" {
@@ -1939,44 +1984,7 @@ pub async fn probe_tools_with_key(config: &ExecutorConfig, key: &str) -> Result<
             json!({"model":model,"catalog_verified":true,"streaming_tool_calls_verified":true}),
         );
     }
-    crate::native_protocol::validate_extra_body(&config.extra_body)?;
-    let mut body = json!({"model":model,"messages":[{"role":"user","content":"Call ping with value ok."}],"stream":true,"max_tokens":128,"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}}],"tool_choice":{"type":"function","function":{"name":"ping"}}});
-    body.as_object_mut().expect("request object").extend(
-        crate::native_protocol::extra_body_with_usage(&config.extra_body, true),
-    );
-    body["tool_choice"] = json!({"type":"function","function":{"name":"ping"}});
-    if let Some(price) = &config.max_price {
-        body["max_price"] = json!(price);
-    }
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()?
-        .post(format!(
-            "{}/chat/completions",
-            config.base_url.trim_end_matches('/')
-        ))
-        .bearer_auth(key)
-        .json(&body)
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        bail!("Tuara streaming probe failed: {}", response.status());
-    }
-    let data = crate::native_protocol::read_response(response, true, |_| Ok(())).await?;
-    let calls = data["choices"][0]["message"]["tool_calls"]
-        .as_array()
-        .context("probe returned no tool calls")?;
-    if calls.len() != 1
-        || calls[0]["function"]["name"] != "ping"
-        || serde_json::from_str::<Value>(
-            calls[0]["function"]["arguments"]
-                .as_str()
-                .context("probe arguments")?,
-        )? != json!({"value":"ok"})
-    {
-        bail!("model did not satisfy streaming tool-call contract");
-    }
-    Ok(json!({"model":model,"catalog_verified":true,"streaming_tool_calls_verified":true}))
+    crate::native_probe::tools(config, key, model).await
 }
 
 #[cfg(test)]

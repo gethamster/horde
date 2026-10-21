@@ -18,6 +18,7 @@ pub fn rebind_model(
     expected_project_config_hash: &str,
     key: &str,
 ) -> Result<Value> {
+    crate::upstream_maintenance::check_online_sync(db, task)?;
     accounts::identifier(task)?;
     accounts::identifier(provider)?;
     for digest in [expected_settings_hash, expected_project_config_hash] {
@@ -43,6 +44,7 @@ pub fn rebind_model(
             ensure!(existing["state"] == "succeeded" && data["request"] == request, "idempotency key reused with different model recovery");
             return Ok(data["response"].clone());
         }
+        crate::upstream_maintenance::check_local(db, task)?;
         let row = db.task(task)?;
         ensure!(["failed", "blocked"].contains(&row["status"].as_str().unwrap_or("")), "Run must be failed or stopped before model recovery");
         ensure!(execution_selection::policy(db, task)?.is_none(), "immutable execution selection cannot be rebound");

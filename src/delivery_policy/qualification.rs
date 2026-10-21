@@ -5,11 +5,13 @@ pub(super) fn current_policy(i: &Invocation<'_>) -> Result<Option<AutomaticDeliv
     if !policy.enabled {
         return Ok(None);
     }
+    let project = crate::projects::task_project(i.db, i.task)?;
     ensure!(
-        crate::projects::task_project(i.db, i.task)? == crate::projects::DEFAULT_PROJECT,
-        "automatic delivery is limited to the default project"
+        project == crate::projects::DEFAULT_PROJECT
+            || crate::upstream_maintenance::check_local(i.db, i.task)?.is_some(),
+        "automatic delivery is limited to the default project unless bound maintenance authority authorizes this project"
     );
-    let operator = Settings::load_dir(&i.db.user_config_dir())
+    let operator = Settings::load_project_user(i.db, &project)
         .context("current operator delivery policy unavailable")?;
     ensure!(
         operator.automatic_delivery == *policy && operator.automatic_delivery.enabled,
@@ -105,8 +107,9 @@ pub(super) fn verify_qualification(
 
 pub(super) fn scoped(i: &Invocation<'_>, policy: &AutomaticDelivery) -> Result<String> {
     ensure!(
-        crate::projects::task_project(i.db, i.task)? == crate::projects::DEFAULT_PROJECT,
-        "automatic delivery is limited to the default project"
+        crate::projects::task_project(i.db, i.task)? == crate::projects::DEFAULT_PROJECT
+            || crate::upstream_maintenance::check_local(i.db, i.task)?.is_some(),
+        "automatic delivery is limited to the default project unless bound maintenance authority authorizes this project"
     );
     let tree =
         i.db.rows(
@@ -143,6 +146,20 @@ pub(super) fn scoped(i: &Invocation<'_>, policy: &AutomaticDelivery) -> Result<S
             && policy.bases.contains(&d.base),
         "repository or base is outside automatic-delivery scope"
     );
+    if let Some(package) = &policy.package_release {
+        let maintenance = crate::upstream_maintenance::check_local(i.db, i.task)?
+            .context("package release requires explicit maintenance authority")?;
+        ensure!(
+            package.repository == maintenance.repository
+                && package.repository == d.repository
+                && maintenance.base == d.base
+                && d.deploy_workflow.is_none()
+                && d.environment.is_none()
+                && d.health_url.is_none(),
+            "package release must not inherit application deployment authority"
+        );
+        return Ok(format!("package:{}", package.repository));
+    }
     let environment = d
         .environment
         .as_deref()

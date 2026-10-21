@@ -12,6 +12,7 @@ pub mod knowledge;
 pub mod metrics;
 pub mod native;
 mod native_context;
+mod native_probe;
 mod native_protocol;
 mod native_responses;
 pub mod network;
@@ -76,3 +77,7 @@ pub mod setup_operations;
 
 pub mod operational_observations;
 pub mod preview;
+
+pub mod upstream_maintenance;
+
+pub mod package_release;

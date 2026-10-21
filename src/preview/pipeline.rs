@@ -210,6 +210,7 @@ fn phase(db: &Store, id: &str, state: &str, error: Option<&str>) -> Result<()> {
 }
 pub(super) fn fresh(db: &Store, j: &Value, p: &Policy, generation: &str) -> Result<()> {
     let task = j["task"].as_str().context("task")?;
+    crate::upstream_maintenance::check_local(db, task)?;
     let (head, tree) = identity(db, task)?;
     let (current, current_generation, _) =
         policy(db, &p.project_id)?.context("preview policy removed during publication")?;
@@ -244,6 +245,15 @@ async fn check_fresh(db: &Store, job: &Value, policy: &Policy, generation: &str)
     .await
 }
 pub(super) async fn advance(db: &Store, id: &str) -> Result<()> {
+    let jobs = db.rows("SELECT task FROM preview_jobs WHERE id=?", &[&id])?;
+    let task = jobs
+        .first()
+        .and_then(|j| j["task"].as_str())
+        .context("preview task")?;
+    crate::upstream_maintenance::check_online(db, task).await?;
+    crate::upstream_maintenance::supervise(db, task, advance_authorized(db, id)).await
+}
+async fn advance_authorized(db: &Store, id: &str) -> Result<()> {
     let rows = db.rows("SELECT * FROM preview_jobs WHERE id=?", &[&id])?;
     let j = rows.first().context("job")?;
     let task = j["task"].as_str().context("task")?;

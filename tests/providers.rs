@@ -256,7 +256,7 @@ async fn native_streamed_completion_returns_through_the_shared_parser() {
 #[tokio::test]
 async fn exact_model_and_streaming_tool_fragments_are_validated() {
     let sse = concat!(
-        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"name\":\"ping\",\"arguments\":\"{\\\"value\\\":\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"ping1\",\"function\":{\"name\":\"ping\",\"arguments\":\"{\\\"value\\\":\"}}]}}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"\\\"ok\\\"}\"}}]}}]}\n\n",
         "data: [DONE]\n\n"
     );
@@ -266,9 +266,13 @@ async fn exact_model_and_streaming_tool_fragments_are_validated() {
             json!({"data":[{"id":"z-ai/glm-5.3-flash"}]}).to_string(),
         ),
         (200, sse.into()),
+        streamed(vec![json!({"choices":[{"delta":{"content":"OK"}}]})], true),
     ]);
-    let result = probe_tools(&config(url)).await.unwrap();
+    let mut configuration = config(url);
+    configuration.stream = true;
+    let result = probe_tools(&configuration).await.unwrap();
     assert_eq!(result["streaming_tool_calls_verified"], true);
+    assert_eq!(result["tool_round_trip_verified"], true);
     handle.join().unwrap();
     assert_eq!(requests.lock().unwrap()[1]["stream"], true);
     assert_eq!(
@@ -999,10 +1003,11 @@ fn doctor_probes_a_named_provider_with_auto_model() {
             ],
             true,
         ),
+        streamed(vec![json!({"choices":[{"delta":{"content":"OK"}}]})], true),
     ]);
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("config/horde")).unwrap();
-    std::fs::write(dir.path().join("config/horde/config.toml"), format!("[providers.local]\nkind = \"tuara\"\nauth_mode = \"api\"\nbase_url = {url:?}\napi_key_env = \"PATH\"\nmodel = \"auto\"\n")).unwrap();
+    std::fs::write(dir.path().join("config/horde/config.toml"), format!("[providers.local]\nkind = \"tuara\"\nauth_mode = \"api\"\nbase_url = {url:?}\napi_key_env = \"PATH\"\nmodel = \"auto\"\nstream = true\n")).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_horde"))
         .args(["doctor", "--probe", "--provider", "local", "--repo"])
         .arg(dir.path())
@@ -1209,5 +1214,119 @@ async fn native_knowledge_schema_uses_the_pinned_topic_vocabulary() {
             definition["function"]["parameters"]["properties"]["topic"]["enum"],
             json!(["performance", "correctness"])
         );
+    }
+}
+
+#[tokio::test]
+async fn configured_nonstream_tool_probe_round_trip_preserves_opaque_assistant_metadata() {
+    let model = "google/gemini-4-argon";
+    let assistant = json!({"role":"assistant","content":"","extra_content":{"vendor":"opaque-message"},"tool_calls":[{"id":"signed-ping","type":"function","extra_content":{"google":{"thought_signature":"opaque-signature"}},"function":{"name":"ping","arguments":"{\"value\":\"ok\"}"}}]});
+    let (url, requests, handle) = server(vec![
+        (200, json!({"data":[{"id":model}]}).to_string()),
+        (
+            200,
+            json!({"model":model,"choices":[{"message":assistant}]}).to_string(),
+        ),
+        (
+            200,
+            json!({"model":model,"choices":[{"message":{"role":"assistant","content":"OK"}}]})
+                .to_string(),
+        ),
+    ]);
+    let mut config = config(url);
+    config.model = Some(model.into());
+    config.stream = false;
+    config.max_price = Some("0.50".into());
+    let result = probe_tools(&config).await.unwrap();
+    handle.join().unwrap();
+    assert_eq!(result["tool_round_trip_verified"], true);
+    assert_eq!(result["streaming_tool_calls_verified"], false);
+    assert_eq!(result["tool_extensions_preserved"], true);
+    let sent = requests.lock().unwrap();
+    assert_eq!(
+        sent.len(),
+        3,
+        "one catalog read and exactly two inference requests"
+    );
+    for request in &sent[1..] {
+        assert_eq!(request["stream"], false);
+        assert_eq!(request["max_tokens"], 128);
+        assert_eq!(request["max_price"], "0.50");
+        assert!(request.get("stream_options").is_none());
+    }
+    assert_eq!(sent[2]["messages"][1], assistant);
+    assert_eq!(
+        sent[2]["messages"][2],
+        json!({"role":"tool","tool_call_id":"signed-ping","content":"ok"})
+    );
+    assert_eq!(sent[2]["tool_choice"], "none");
+}
+
+#[tokio::test]
+async fn tool_probe_rejects_missing_final_completion_without_more_inference() {
+    for final_message in [
+        json!({"role":"assistant","content":""}),
+        json!({"role":"assistant","content":"Still calling", "tool_calls":[{"id":"again"}]}),
+        json!({"role":"assistant","content":"Malformed", "tool_calls":{"id":"again"}}),
+    ] {
+        let (url, requests, handle) = server(vec![
+            (200, json!({"data":[{"id":"z-ai/glm-5.3-flash"}]}).to_string()),
+            (200, json!({"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"ping1","function":{"name":"ping","arguments":"{\"value\":\"ok\"}"}}]}}]}).to_string()),
+            (200, json!({"choices":[{"message":final_message}]}).to_string()),
+        ]);
+        assert!(
+            probe_tools(&config(url))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("no completion after")
+        );
+        handle.join().unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 3);
+    }
+}
+#[tokio::test]
+async fn bounded_tool_probe_rejects_competing_output_limits_before_network() {
+    for field in ["max_completion_tokens", "max_output_tokens"] {
+        let mut configuration = config("http://127.0.0.1:1".into());
+        configuration.extra_body.insert(field.into(), json!(65536));
+        let error = probe_tools(&configuration).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("probe reserves extra_body.{field}")),
+            "{error:#}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn tool_probe_bounds_response_bytes_and_refuses_another_reported_model() {
+    for (reply, expected) in [
+        (
+            json!({"choices":[{"message":{"content":"x".repeat(64*1024)}}]}),
+            "64 KiB",
+        ),
+        (
+            json!({"model":"another-model", "choices":[]}),
+            "another model",
+        ),
+    ] {
+        let (url, requests, handle) = server(vec![
+            (
+                200,
+                json!({"data":[{"id":"z-ai/glm-5.3-flash"}]}).to_string(),
+            ),
+            (200, reply.to_string()),
+        ]);
+        assert!(
+            probe_tools(&config(url))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+        handle.join().unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 2);
     }
 }

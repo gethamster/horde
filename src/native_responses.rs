@@ -281,7 +281,14 @@ impl Stream {
 
 pub(crate) async fn read_response(
     response: reqwest::Response,
+    progress: impl FnMut(Value) -> Result<()>,
+) -> Result<Value> {
+    read_response_bounded(response, progress, |_| Ok(())).await
+}
+pub(crate) async fn read_response_bounded(
+    response: reqwest::Response,
     mut progress: impl FnMut(Value) -> Result<()>,
+    mut consumed: impl FnMut(usize) -> Result<()>,
 ) -> Result<Value> {
     use futures_util::StreamExt;
     let status = response.status();
@@ -300,6 +307,7 @@ pub(crate) async fn read_response(
     let mut body = Vec::new();
     while let Some(chunk) = chunks.next().await {
         let chunk = chunk?;
+        consumed(chunk.len())?;
         if !status.is_success() {
             body.extend_from_slice(&chunk);
             ensure!(

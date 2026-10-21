@@ -200,11 +200,18 @@ impl DecisionHttpClient {
         Duration::from_millis(100_u64.saturating_mul(1_u64 << attempts.saturating_sub(1).min(6)))
     }
 
-    async fn body(response: reqwest::Response) -> Result<Value> {
+    async fn body(&self, response: reqwest::Response) -> Result<Value> {
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.context("decision response read failed")?;
+            if let Authority::Task { root, task, .. } = &self.authority {
+                crate::upstream_maintenance::consume_output(
+                    &crate::store::Store::open(root)?,
+                    task,
+                    chunk.len(),
+                )?;
+            }
             ensure!(
                 bytes.len() + chunk.len() <= MAX_RESPONSE_BYTES,
                 "decision response exceeds the size limit"
@@ -256,6 +263,14 @@ impl DecisionHttpClient {
                     attempts,
                 ));
             }
+            if let Authority::Task { root, task, .. } = &self.authority {
+                let db = crate::store::Store::open(root).map_err(|error| (error, attempts))?;
+                crate::upstream_maintenance::check_online(&db, task)
+                    .await
+                    .map_err(|error| (error, attempts))?;
+                crate::upstream_maintenance::reserve_model(&db, task, body.len())
+                    .map_err(|error| (error, attempts))?;
+            }
             attempts += 1;
             attempt_started(attempts);
             let sent = timeout_at(
@@ -271,7 +286,7 @@ impl DecisionHttpClient {
             match sent {
                 Err(_) => return Err((anyhow::anyhow!("decision deadline exceeded"), attempts)),
                 Ok(Ok(response)) if response.status().is_success() => {
-                    let value = match timeout_at(deadline, Self::body(response)).await {
+                    let value = match timeout_at(deadline, self.body(response)).await {
                         Ok(Ok(value)) => value,
                         Ok(Err(error)) => return Err((error, attempts)),
                         Err(_) => {

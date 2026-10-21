@@ -332,7 +332,7 @@ pub struct Delivery {
 }
 
 mod automatic_delivery;
-pub use automatic_delivery::AutomaticDelivery;
+pub use automatic_delivery::{AutomaticDelivery, PackageRelease};
 
 impl Default for Settings {
     fn default() -> Self {

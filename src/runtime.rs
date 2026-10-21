@@ -61,6 +61,16 @@ pub fn recover(db: &Store) -> Result<usize> {
     Ok(interrupted.len())
 }
 pub fn ready(db: &Store, oid: &str) -> Result<Vec<Value>> {
+    if let Err(error) = crate::upstream_maintenance::check_local(db, oid) {
+        let changed = db.conn.execute(
+            "UPDATE tasks SET status='blocked' WHERE id=? AND status='running'",
+            [oid],
+        )?;
+        if changed > 0 {
+            db.event(oid, "maintenance.held", json!({"reason":error.to_string()}))?;
+        }
+        return Ok(vec![]);
+    }
     if !db
         .rows("SELECT task FROM remote_links WHERE task=?", &[&oid])?
         .is_empty()
@@ -195,20 +205,24 @@ async fn run_step(
     let role = row["dispatch_role"].as_str().unwrap_or(&step.role);
     let seconds =
         (!step.step_budget_exempt).then(|| crate::budget::seconds(&settings, &step, role));
-    let result = crate::storage::pressure::supervise(
+    let result = crate::upstream_maintenance::supervise(
         &db,
         oid,
-        &attempt,
-        &wid,
-        pressure,
-        crate::budget::supervise(
+        crate::storage::pressure::supervise(
             &db,
             oid,
-            tid,
             &attempt,
             &wid,
-            seconds,
-            Box::pin(execute_step(&db, &row, &attempt, &wid, &token)),
+            pressure,
+            crate::budget::supervise(
+                &db,
+                oid,
+                tid,
+                &attempt,
+                &wid,
+                seconds,
+                Box::pin(execute_step(&db, &row, &attempt, &wid, &token)),
+            ),
         ),
     )
     .await;

@@ -316,12 +316,33 @@ a registered tool name becomes available. Arguments and text fragments are not
 included in those events. A complete `[DONE]` marker is required before any tool
 from that turn executes. Interrupted or oversized responses fail the attempt.
 
-Run `horde doctor --probe --provider local` to verify the catalog and request a
-small streamed `ping` call using the executor's parser. Omitting `--provider` probes
-`default`. `--probe-tuara` remains an alias for probing the `native` role. Ordinary
+For a `tuara` provider, run `horde doctor --probe --provider local` to verify the
+catalog and a complete Chat Completions `ping` round trip using the configured
+`stream` mode.
+The probe makes exactly two inference requests after the catalog read, limits each
+to 128 output tokens and 64 KiB of response data, and requires an assistant
+completion after the tool result. Probe configuration rejects competing
+`extra_body.max_completion_tokens` and `extra_body.max_output_tokens` limits.
+Nonstreaming probes retain the complete
+assistant turn, including opaque tool metadata, in the second request.
+`tool_round_trip_verified`, `streaming_tool_calls_verified`,
+`tool_extensions_preserved` and `model_verified` report separate observed facts.
+Omitting `--provider` probes `default`. `--probe-tuara` remains an alias for probing
+the `native` role. Ordinary
 `doctor` prints configuration and resolves native `auto` catalogs without making
 a chat-completions request. Use `doctor --provider NAME` to inspect one catalog. A probe consumes model
 capacity and must be requested explicitly.
+
+To qualify the wire behavior without opening an installed runtime's Store, use
+the opt-in `probe_tools` Cargo example. Pass a separate flat `ExecutorConfig`
+TOML file and a private file containing only the inference key. The example
+requires `kind='tuara'` and `stream=false`; set the exact `model`, `base_url` and
+any `max_price` in that TOML. Run
+`cargo run --locked --example probe_tools -- /private/provider.toml /private/key`.
+It reads only those explicit files, calls the same bounded library probe, and
+prints qualification flags. It neither resolves managed accounts nor opens a
+Store, starts a daemon or checks for updates. This qualifies the wire only;
+the installed managed-account path needs its own subsequent qualification.
 
 ## Events and metrics
 

@@ -494,11 +494,17 @@ pub async fn blocking<T: Send + 'static>(
 }
 
 pub fn command_output(command: &mut std::process::Command) -> Result<std::process::Output> {
+    command_output_guarded(command, None)
+}
+fn command_output_guarded(
+    command: &mut std::process::Command,
+    mut guard: Option<&mut dyn FnMut() -> Result<()>>,
+) -> Result<std::process::Output> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::sync::atomic::Ordering;
     let inherited = BLOCKING_CONTROL.with(|slot| slot.borrow().clone());
-    if inherited.is_none() && pressure::current().is_none() {
+    if inherited.is_none() && pressure::current().is_none() && guard.is_none() {
         return Ok(command.output()?);
     }
     let control = inherited.unwrap_or_else(|| CommandControl {
@@ -513,6 +519,9 @@ pub fn command_output(command: &mut std::process::Command) -> Result<std::proces
                     active_now(control.pressure.as_ref()).into_std() >= deadline
                 }))
     };
+    if let Some(guard) = guard.as_mut() {
+        guard()?;
+    }
     anyhow::ensure!(!expired(), "step budget exhausted");
     command
         .stdin(std::process::Stdio::null())
@@ -529,6 +538,9 @@ pub fn command_output(command: &mut std::process::Command) -> Result<std::proces
     // A newly launched command can write before SIGSTOP registration. Wait before
     // spawning, retaining cancellation so dropping a held attempt cannot launch it.
     loop {
+        if let Some(guard) = guard.as_mut() {
+            guard()?;
+        }
         anyhow::ensure!(!expired(), "step budget exhausted");
         if !control.pressure.as_ref().is_some_and(|p| p.is_paused()) {
             break;
@@ -560,6 +572,15 @@ pub fn command_output(command: &mut std::process::Command) -> Result<std::proces
         let out = scope.spawn(move || read(Box::new(stdout)));
         let err = scope.spawn(move || read(Box::new(stderr)));
         let status = loop {
+            if let Some(guard) = guard.as_mut()
+                && let Err(error) = guard()
+            {
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.wait();
+                return Err(error);
+            }
             if expired() {
                 unsafe {
                     libc::kill(-(child.id() as i32), libc::SIGKILL);
@@ -594,6 +615,14 @@ pub fn command_output_with_timeout(
     command: &mut std::process::Command,
     timeout: Duration,
 ) -> Result<std::process::Output> {
+    command_output_with_timeout_guard(command, timeout, None)
+}
+/// Preserve process-group cleanup while an owning authorization guard is polled.
+pub fn command_output_with_timeout_guard(
+    command: &mut std::process::Command,
+    timeout: Duration,
+    guard: Option<&mut dyn FnMut() -> Result<()>>,
+) -> Result<std::process::Output> {
     anyhow::ensure!(!timeout.is_zero(), "command timeout must be positive");
     let previous = BLOCKING_CONTROL.with(|slot| {
         slot.replace(Some(CommandControl {
@@ -611,7 +640,7 @@ pub fn command_output_with_timeout(
         }
     }
     let _restore = Restore(previous);
-    command_output(command)
+    command_output_guarded(command, guard)
 }
 
 #[cfg(test)]

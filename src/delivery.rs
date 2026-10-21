@@ -3,6 +3,7 @@ use crate::executor::{Invocation, run_command, run_command_env};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 pub(crate) async fn gh(i: &Invocation<'_>, args: &[&str]) -> Result<Value> {
+    crate::upstream_maintenance::check_online(i.db, i.task).await?;
     let program = if i.settings.automatic_delivery.enabled && i.settings.delivery.merge {
         i.settings.automatic_delivery.gh_program.clone()
     } else {
@@ -249,6 +250,9 @@ pub async fn execute(i: &Invocation<'_>) -> Result<Value> {
         }
     }
     save(i, "merge", "succeeded", &merged)?;
+    if i.settings.automatic_delivery.package_release.is_some() {
+        return crate::package_release::execute(i, &merged).await;
+    }
     if let Some(workflow) = &d.deploy_workflow {
         let sha = merged["mergeCommit"]["oid"]
             .as_str()
