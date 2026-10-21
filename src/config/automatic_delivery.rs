@@ -35,7 +35,7 @@ pub struct PackageRelease {
     pub workflow: String,
 }
 impl AutomaticDelivery {
-    pub(super) fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if !self.enabled {
             return Ok(());
         }

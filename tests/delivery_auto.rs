@@ -38,6 +38,7 @@ enum Scenario {
     WrongPrOnRestart,
     ForeignProject,
     ManualProject,
+    BudgetVeto,
 }
 
 fn fake_gh(path: &Path, ledger: &Path, base: &str, head: &str, merge: &str, scenario: Scenario) {
@@ -108,6 +109,7 @@ print('unexpected command',args,file=sys.stderr); sys.exit(3)
                 Scenario::WrongPrOnRestart => "wrong_pr",
                 Scenario::ForeignProject => "foreign_project",
                 Scenario::ManualProject => "manual_project",
+                Scenario::BudgetVeto => "budget_veto",
             })
             .unwrap(),
         );
@@ -255,6 +257,21 @@ async fn manual_delivery_keeps_its_pr_body_in_the_task_project() {
     } else {
         unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }
+    result.unwrap();
+}
+
+#[tokio::test]
+async fn delivery_veto_cannot_spend_an_exhausted_shared_maintenance_model_budget() {
+    let _lock = support::CONFIG_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let prior = std::env::var_os("XDG_CONFIG_HOME");
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config")) };
+    let result = run_case(dir.path(), Scenario::BudgetVeto).await;
+    if let Some(value) = prior {
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", value) }
+    } else {
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") }
+    };
     result.unwrap();
 }
 
@@ -473,7 +490,40 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
         settings: &settings,
         context: json!({}),
     };
+    if scenario == Scenario::BudgetVeto {
+        maintenance::bind(&db, &task, &repo, 1, 100_000, 100_000).await?;
+        horde::upstream_maintenance::reserve_model(&db, &task, 1)?;
+        let operations = db.rows(
+            "SELECT name,state,data FROM external_ops WHERE task=? ORDER BY name",
+            &[&task],
+        )?;
+        db.conn.execute(
+            "UPDATE review_checkpoints SET external_hash=? WHERE task=?",
+            params![hash(&serde_json::to_vec(&operations)?), task],
+        )?;
+    }
     let first = horde::delivery::execute(&invocation).await;
+    if scenario == Scenario::BudgetVeto {
+        let calls = std::fs::read_to_string(ledger.with_extension("calls"))?;
+        assert!(
+            !calls.contains("pr merge"),
+            "exhausted model authority cannot merge"
+        );
+        assert!(
+            jev_requests.try_recv().is_err(),
+            "delivery veto escaped the aggregate model budget"
+        );
+        let error = first.unwrap_err();
+        assert!(
+            format!("{error:#}").contains("maintenance worker execution budget exhausted"),
+            "{error:#}"
+        );
+        let state = horde::upstream_maintenance::inspection(&db, &task)?;
+        assert_eq!(state["usage"]["model_calls"], 1);
+        assert_eq!(state["usage"]["fenced"], true);
+        unsafe { std::env::remove_var(key_name) };
+        return Ok(());
+    }
     if scenario == Scenario::ForeignProject {
         assert!(
             first
@@ -560,3 +610,6 @@ async fn run_case(root: &Path, scenario: Scenario) -> anyhow::Result<()> {
 #[allow(dead_code)]
 #[path = "support/decisions.rs"]
 mod support;
+
+#[path = "support/maintenance.rs"]
+mod maintenance;

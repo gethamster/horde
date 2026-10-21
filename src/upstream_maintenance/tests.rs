@@ -417,8 +417,14 @@ fn in_flight_control_plane_command_group_is_killed_when_maintenance_is_revoked()
     );
     revoke_thread.join().unwrap();
     let error = result.unwrap_err();
-    assert!(error.to_string().contains("revoked"), "{error:#}");
     assert!(!effect.exists());
+    assert!(
+        matches!(
+            error.to_string().as_str(),
+            "maintenance authority is revoked or expired" | "maintenance task cancelled"
+        ),
+        "{error:#}"
+    );
 }
 
 #[test]

@@ -20,7 +20,7 @@ pub(super) fn revision_and_context(i: &Invocation<'_>) -> Result<(i64, i64)> {
     Ok((revision, context))
 }
 
-pub(super) fn review_eligible(row: &Value, head: &str, revision: i64, context: i64) -> bool {
+pub(crate) fn review_eligible(row: &Value, head: &str, revision: i64, context: i64) -> bool {
     row["state"] == "succeeded"
         && row["fresh"] == true
         && row["head"] == head
@@ -29,7 +29,7 @@ pub(super) fn review_eligible(row: &Value, head: &str, revision: i64, context: i
         && row["coverage"]["complete"] == true
 }
 
-pub(super) fn review_signals_clear(result: &Value, minimum_confidence: f64) -> bool {
+pub(crate) fn review_signals_clear(result: &Value, minimum_confidence: f64) -> bool {
     let Some(answers) = result["answers"].as_array() else {
         return false;
     };
@@ -59,7 +59,7 @@ pub(super) fn review_signals_clear(result: &Value, minimum_confidence: f64) -> b
     specialist && signals == 6
 }
 
-pub(super) fn reviewer_result_passes(result: &Value, head: &str, revision: i64) -> bool {
+pub(crate) fn reviewer_result_passes(result: &Value, head: &str, revision: i64) -> bool {
     result["accepted"] == true
         && result["verdict"] == "pass"
         && result["risk"] == "routine"
@@ -290,7 +290,7 @@ pub(super) fn routine_manifest(
     Ok((paths, manifest))
 }
 
-pub(super) fn diff_has_sensitive_change(excerpt: &str) -> bool {
+pub(crate) fn diff_has_sensitive_change(excerpt: &str) -> bool {
     excerpt
         .lines()
         .filter(|line| {
@@ -341,7 +341,7 @@ pub(super) fn redacted_manifest(i: &Invocation<'_>, manifest: &Value) -> Result<
     Ok(crate::secrets::redact_json(manifest, &values))
 }
 
-pub(super) fn validate_paths(paths: &[String], allowed: &[String]) -> Result<()> {
+pub(crate) fn validate_paths(paths: &[String], allowed: &[String]) -> Result<()> {
     for path in paths {
         ensure!(
             !path_is_sensitive(path),
