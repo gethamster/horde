@@ -322,7 +322,7 @@ async fn decision_veto(i: &Invocation<'_>, facts: &Value, minimum: f64) -> Resul
             artifact_hash: None,
         },
     )?;
-    let backend = DecisionHttpClient::new(i.settings.decision.clone())?;
+    let backend = DecisionHttpClient::new_project(i.settings.decision.clone(), &i.db.root, i.task)?;
     let start = Instant::now();
     let outcome = backend
         .decide_counted_with(&request, |_| {
