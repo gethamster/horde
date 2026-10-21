@@ -4,14 +4,28 @@ use std::{io::BufRead, os::unix::net::UnixStream, time::Duration};
 #[path = "facts.rs"]
 mod facts;
 
-fn request(root: &Path, project: &str, method: &str, args: Value) -> Result<Value> {
+pub(super) fn request(root: &Path, project: &str, method: &str, args: Value) -> Result<Value> {
+    socket_request(root, Some(project), method, args)
+}
+
+pub(super) fn operator_request(
+    root: &Path,
+    project: &str,
+    method: &str,
+    mut args: Value,
+) -> Result<Value> {
+    args["project"] = json!(project);
+    socket_request(root, None, method, args)
+}
+
+fn socket_request(root: &Path, binding: Option<&str>, method: &str, args: Value) -> Result<Value> {
     let mut socket = UnixStream::connect(root.join("daemon.sock"))?;
-    socket.set_read_timeout(Some(Duration::from_secs(30)))?;
+    socket.set_read_timeout(Some(Duration::from_secs(60)))?;
     socket.set_write_timeout(Some(Duration::from_secs(30)))?;
     writeln!(
         socket,
         "{}",
-        json!({"method":method,"args":args,"project":project,
+        json!({"method":method,"args":args,"project":binding,
         "token":crate::branding::var("HORDE_WORKER_TOKEN").ok()})
     )?;
     let mut line = String::new();
@@ -25,7 +39,8 @@ fn request(root: &Path, project: &str, method: &str, args: Value) -> Result<Valu
     let response: Value = serde_json::from_str(&line)?;
     ensure!(
         response.get("error").is_none(),
-        "qualification read-only RPC {method} failed"
+        "qualification RPC {method} failed: {}",
+        response["error"]
     );
     response
         .get("result")
@@ -56,10 +71,20 @@ fn pages(cursor: &str, mut read_page: impl FnMut(i64) -> Result<Value>) -> Resul
 }
 
 fn snapshot(root: &Path, project: &str, task: &str, base: &str) -> Result<Value> {
-    let get = |method: &str, mut args: Value| {
+    snapshot_with(base, |method, mut args| {
         args["task"] = json!(task);
         request(root, project, method, args)
-    };
+    })
+}
+
+pub(super) fn snapshot_local(db: &crate::store::Store, task: &str, base: &str) -> Result<Value> {
+    snapshot_with(base, |method, mut args| {
+        args["task"] = json!(task);
+        crate::protocol::dispatch(db, method, args, None)
+    })
+}
+
+fn snapshot_with(base: &str, mut get: impl FnMut(&str, Value) -> Result<Value>) -> Result<Value> {
     let inspection = get("inspect", json!({}))?;
     let summary = get("summary", json!({}))?;
     let events = pages("seq", |after| get("events", json!({"after":after})))?;
@@ -136,6 +161,25 @@ fn snapshot(root: &Path, project: &str, task: &str, base: &str) -> Result<Value>
         "summary":{"task":summary["task"],"project":summary["project"],"status":summary["status"],
             "integrated_head":summary["integrated_head"],"run": {"run_id":summary["run"]["run_id"],"checkpoint":summary["run"]["checkpoint"]},
             "upstream_maintenance":summary["upstream_maintenance"]}}),
+    )
+}
+
+pub(super) fn advisory_state(
+    frozen: &Frozen,
+    case: &Case,
+    receipt: &Value,
+    head: &str,
+    observed: i64,
+) -> Result<Value> {
+    facts::production_state(
+        frozen,
+        case,
+        receipt,
+        head,
+        receipt["task"]["created"]
+            .as_i64()
+            .context("task creation time")?,
+        observed,
     )
 }
 

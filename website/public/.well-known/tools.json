@@ -1,5 +1,5 @@
 {
-  "count": 125,
+  "count": 126,
   "product": "Horde",
   "scopes": {
     "admin": "Available to the operator's own MCP bridge (`horde mcp`).",
@@ -7,6 +7,43 @@
   },
   "specVersion": "1.0",
   "tools": [
+    {
+      "description": "Record one operator-requested, task-metered advisory delivery observation without publishing or enrollment",
+      "name": "delivery_qualification_observe",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "expected_head": {
+            "type": "string"
+          },
+          "frozen": {
+            "type": "object"
+          },
+          "project": {
+            "description": "Project ID or slug; cannot change a project-bound connection.",
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "frozen",
+          "case_id",
+          "task",
+          "expected_head",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "scope": "admin"
+    },
     {
       "description": "Enroll an operator-reviewed existing held-out delivery report without weakening qualification gates",
       "name": "delivery_qualification_enroll",

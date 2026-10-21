@@ -75,6 +75,14 @@ enum Authority {
     },
 }
 
+fn ensure_task_authority(authority: &Authority) -> Result<()> {
+    ensure!(
+        matches!(authority, Authority::Task { .. }),
+        "advisory observation requires task-bound authority"
+    );
+    Ok(())
+}
+
 /// Jev-compatible SystemOne HTTP transport, independent of provider identity.
 impl DecisionHttpClient {
     pub fn new(config: Decision) -> Result<Self> {
@@ -235,6 +243,39 @@ impl DecisionHttpClient {
         request: &DecisionRequest,
         attempt_started: impl Fn(usize),
     ) -> std::result::Result<(DecisionResponse, usize), (anyhow::Error, usize)> {
+        self.execute_counted(
+            request,
+            || Ok(()),
+            |attempt| {
+                attempt_started(attempt);
+                Ok(())
+            },
+            true,
+        )
+        .await
+        .map(|(response, _, attempts)| (response, attempts))
+    }
+
+    /// Retain the real wire response for a durable advisory observation. A
+    /// transport failure may have sent the request, so it must never be resent.
+    pub(crate) async fn observe_counted_with(
+        &self,
+        request: &DecisionRequest,
+        before_attempt: impl Fn() -> Result<()>,
+        attempt_started: impl Fn(usize) -> Result<()>,
+    ) -> std::result::Result<(DecisionResponse, Value, usize), (anyhow::Error, usize)> {
+        ensure_task_authority(&self.authority).map_err(|error| (error, 0))?;
+        self.execute_counted(request, before_attempt, attempt_started, false)
+            .await
+    }
+
+    async fn execute_counted(
+        &self,
+        request: &DecisionRequest,
+        before_attempt: impl Fn() -> Result<()>,
+        attempt_started: impl Fn(usize) -> Result<()>,
+        retry_uncertain: bool,
+    ) -> std::result::Result<(DecisionResponse, Value, usize), (anyhow::Error, usize)> {
         let prepared = (|| -> Result<Vec<u8>> {
             request.validate()?;
             ensure!(
@@ -252,6 +293,7 @@ impl DecisionHttpClient {
         let deadline = Instant::now() + Duration::from_millis(self.config.deadline_ms);
         let mut attempts = 0;
         loop {
+            before_attempt().map_err(|error| (error, attempts))?;
             let key = self.authorize().map_err(|error| (error, attempts))?;
             if key.is_empty()
                 || body
@@ -268,16 +310,17 @@ impl DecisionHttpClient {
                 crate::upstream_maintenance::check_online(&db, task)
                     .await
                     .map_err(|error| (error, attempts))?;
+                before_attempt().map_err(|error| (error, attempts))?;
                 crate::upstream_maintenance::reserve_model(&db, task, body.len())
                     .map_err(|error| (error, attempts))?;
             }
             attempts += 1;
-            attempt_started(attempts);
+            attempt_started(attempts).map_err(|error| (error, attempts.saturating_sub(1)))?;
             let sent = timeout_at(
                 deadline,
                 self.client
                     .post(self.endpoint.clone())
-                    .bearer_auth(key)
+                    .bearer_auth(&key)
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
                     .body(body.clone())
                     .send(),
@@ -286,6 +329,9 @@ impl DecisionHttpClient {
             match sent {
                 Err(_) => return Err((anyhow::anyhow!("decision deadline exceeded"), attempts)),
                 Ok(Ok(response)) if response.status().is_success() => {
+                    if !retry_uncertain && response.status() != StatusCode::OK {
+                        return Err((anyhow::anyhow!("observation requires HTTP 200"), attempts));
+                    }
                     let value = match timeout_at(deadline, self.body(response)).await {
                         Ok(Ok(value)) => value,
                         Ok(Err(error)) => return Err((error, attempts)),
@@ -293,8 +339,16 @@ impl DecisionHttpClient {
                             return Err((anyhow::anyhow!("decision deadline exceeded"), attempts));
                         }
                     };
+                    if !retry_uncertain
+                        && serde_json::to_string(&value).is_ok_and(|raw| raw.contains(&key))
+                    {
+                        return Err((
+                            anyhow::anyhow!("observation response contains the active credential"),
+                            attempts,
+                        ));
+                    }
                     return validate_response(request, &value)
-                        .map(|response| (response, attempts))
+                        .map(|response| (response, value, attempts))
                         .map_err(|error| (error, attempts));
                 }
                 Ok(Ok(response)) => {
@@ -318,7 +372,8 @@ impl DecisionHttpClient {
                     sleep_until(wake).await;
                 }
                 Ok(Err(error)) => {
-                    if !(error.is_connect() || error.is_timeout())
+                    if !retry_uncertain
+                        || !(error.is_connect() || error.is_timeout())
                         || attempts >= self.config.max_attempts
                     {
                         return Err((

@@ -3,6 +3,14 @@ use crate::store::{Store, operator_id};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+pub(super) fn questions(db: &Store, task: &str) -> Result<Vec<Value>> {
+    db.rows(
+        "SELECT q.*,r.origin AS route_origin,r.human_only,r.answerer FROM questions q
+         LEFT JOIN question_routes r ON r.question=q.id WHERE q.task=?",
+        &[&task],
+    )
+}
+
 pub(super) fn feedback_receipts(db: &Store, task: &str) -> Result<Vec<Value>> {
     db.rows(
         "WITH acks AS MATERIALIZED (

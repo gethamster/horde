@@ -79,6 +79,7 @@ pub fn project_allowed(name: &str) -> bool {
             | "run_rebind_model"
             | "maintenance_policy_register"
             | "delivery_qualification_enroll"
+            | "delivery_qualification_observe"
             | "project_repo_add"
             | "project_runtime_grant"
             | "project_runtime_revoke"
@@ -303,6 +304,9 @@ fn dispatch_authorized(
     }
     if name == "delivery_qualification_enroll" {
         return crate::delivery_policy::enroll_qualification(db, &args);
+    }
+    if name == "delivery_qualification_observe" {
+        return crate::delivery_qualification::observe(db, &args);
     }
     if let Some(result) = crate::upstream_maintenance::dispatch(db, name, &args)? {
         return Ok(result);
@@ -558,7 +562,7 @@ fn dispatch_authorized(
             args["limit"].as_i64().unwrap_or(50),
         )?)),
         "inspect" => Ok(
-            json!({"task":db.task(oid)?,"project_runtime":crate::project_runtime::inspection(db,oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started ASC,a.rowid ASC",&[&oid])?)?,"questions":db.rows("SELECT * FROM questions WHERE task=?",&[&oid])?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"feedback_receipts":inspect::feedback_receipts(db,oid)?,"checkpoint_event":inspect::checkpoint_event(db,oid)?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
+            json!({"task":db.task(oid)?,"project_runtime":crate::project_runtime::inspection(db,oid)?,"execution":crate::execution_selection::policy(db,oid)?,"outputs":db.rows("SELECT outputs FROM workflow_outputs WHERE task=?",&[&oid])?,"steps":db.steps(oid)?,"workers":db.rows("SELECT id,step,status,workspace,branch,base FROM workers WHERE task=? AND status<>?",&[&oid,&OPERATOR_STATUS])?,"attempts":crate::budget::annotate(db, db.rows("SELECT a.* FROM attempts a JOIN steps t ON a.step=t.id WHERE t.task=? ORDER BY a.started ASC,a.rowid ASC",&[&oid])?)?,"questions":inspect::questions(db,oid)?,"claims":db.rows("SELECT * FROM claims WHERE task=?",&[&oid])?,"integrations":db.rows("SELECT * FROM integrations WHERE task=?",&[&oid])?,"feedback_receipts":inspect::feedback_receipts(db,oid)?,"checkpoint_event":inspect::checkpoint_event(db,oid)?,"external_ops":db.rows("SELECT * FROM external_ops WHERE task=?",&[&oid])?,"remote":db.rows("SELECT * FROM remote_links WHERE task=?",&[&oid])?,"artifacts":db.rows("SELECT name,hash,verified FROM artifact_links WHERE task=?",&[&oid])?}),
         ),
         "summary" => crate::summary::build(db, oid),
         "run_changes" => crate::run::run_changes(db, oid, string(&args, "expected_base")?, string(&args, "expected_head")?),
