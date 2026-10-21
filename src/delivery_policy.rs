@@ -28,6 +28,7 @@ const DELIVERY_NAMES: &[&str] = &[
     "package-release.intent",
     "package-release.tag",
     "package-release.workflow",
+    "package-release.publication",
     "package-release.verified",
 ];
 

@@ -8,6 +8,8 @@
   evidence without opening runtime state, validate genuine paired outcomes and
   compute an operator-reviewable qualification report. Missing real baseline,
   independent oracle, provider or budget evidence remains a blocker.
+- Require GitHub-immutable Adam releases with pinned release/asset identities,
+  matching API digests and verified release/asset attestations before qualification.
 - Charge delivery-veto requests and retries to the same maintenance model-call
   and byte budget as routing, review and native worker inference.
 - Preserve the revocation regression's no-effect assertion while accepting the

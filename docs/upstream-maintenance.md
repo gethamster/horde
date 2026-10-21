@@ -134,3 +134,13 @@ Task summaries distinguish implemented package-release support from a verified
 release receipt. Configuring this path does not establish held-out qualification,
 GitHub credentials, repository protections, or a successful release. Completion
 requires the actual published receipt and downstream consumer qualification.
+
+The package gate requires GitHub's published release API to report
+`immutable: true`. A matching tag alone does not qualify. Horde retains the
+release ID and stable asset IDs, sizes, URLs and SHA-256 digests before downloading,
+checks those identities again on retry and at completion, and requires successful
+`gh release verify` and `gh release verify-asset` for the consumed archives and
+checksum files. Missing immutability, an unsupported verifier, a changed release
+identity or failed attestation holds publication qualification. Operators must
+enable immutable releases and provide a GitHub CLI with these verification
+commands before activating the default-off package contract.

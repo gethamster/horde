@@ -2,6 +2,7 @@
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 mod artifacts;
+mod publication;
 const TARGETS: [&str; 4] = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -261,39 +262,36 @@ pub(crate) async fn execute(i: &crate::executor::Invocation<'_>, merged: &Value)
             && checked["conclusion"] == "success",
         "release workflow did not qualify the exact tag and source"
     );
+    let release_endpoint = format!("repos/{}/releases/tags/{tag}", contract.repository);
     let release = gh(
         i,
         &[
-            "release",
-            "view",
-            &tag,
-            "--repo",
-            &contract.repository,
-            "--json",
-            "tagName,isDraft,isPrerelease,url,assets",
+            "api",
+            "-H",
+            "X-GitHub-Api-Version: 2026-03-10",
+            &release_endpoint,
         ],
     )
     .await?;
-    ensure!(
-        release["tagName"] == tag
-            && release["isDraft"] == false
-            && release["isPrerelease"] == false,
-        "release is not publicly published for the exact stable tag"
-    );
-    let asset_names = release["assets"]
-        .as_array()
-        .context("release assets")?
-        .iter()
-        .filter_map(|asset| asset["name"].as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    ensure!(
-        TARGETS.iter().all(|target| {
-            let name = format!("adam-{tag}-{target}.tar.gz");
-            asset_names.contains(name.as_str())
-                && asset_names.contains(format!("{name}.sha256").as_str())
-        }),
-        "release lacks one of four platform archives/checksums"
-    );
+    let previous = stored(i, "package-release.publication")?;
+    let publication =
+        publication::identity(&release, &contract.repository, &tag, previous.as_ref())?;
+    if previous.is_none() {
+        save(i, "package-release.publication", "observing", &publication)?;
+    }
+    let attestation = gh(
+        i,
+        &[
+            "release",
+            "verify",
+            &tag,
+            "--repo",
+            &contract.repository,
+            "--format",
+            "json",
+        ],
+    )
+    .await?;
     let directory = tempfile::tempdir_in(&i.db.root)?;
     gh(
         i,
@@ -315,6 +313,29 @@ pub(crate) async fn execute(i: &crate::executor::Invocation<'_>, merged: &Value)
         ],
     )
     .await?;
+    publication::verify_files(directory.path(), &publication, &tag)?;
+    let mut asset_attestations = Vec::new();
+    for target in TARGETS {
+        for suffix in ["", ".sha256"] {
+            let name = format!("adam-{tag}-{target}.tar.gz{suffix}");
+            let path = directory.path().join(&name);
+            let proof = gh(
+                i,
+                &[
+                    "release",
+                    "verify-asset",
+                    &tag,
+                    path.to_str().context("release asset path")?,
+                    "--repo",
+                    &contract.repository,
+                    "--format",
+                    "json",
+                ],
+            )
+            .await?;
+            asset_attestations.push(json!({"name":name,"attestation":proof}));
+        }
+    }
     let verified = artifacts::verify(directory.path(), &tag)?;
     let binary = verified
         .native_binary
@@ -342,12 +363,28 @@ pub(crate) async fn execute(i: &crate::executor::Invocation<'_>, merged: &Value)
         !tag_action(&final_refs, &tag, commit, true)?,
         "published tag is missing during final verification"
     );
+    let final_release = gh(
+        i,
+        &[
+            "api",
+            "-H",
+            "X-GitHub-Api-Version: 2026-03-10",
+            &release_endpoint,
+        ],
+    )
+    .await?;
+    publication::identity(
+        &final_release,
+        &contract.repository,
+        &tag,
+        Some(&publication),
+    )?;
     crate::upstream_maintenance::check_online(i.db, i.task).await?;
     crate::delivery_policy::package_policy(i)?;
-    let result = json!({"repository":contract.repository,"tag":tag,"commit":commit,"workflow_run_id":run["databaseId"],"release_url":release["url"],"assets":verified.assets,"release_assets":release["assets"],"native_version":version,"verified":true});
+    let result = json!({"repository":contract.repository,"tag":tag,"commit":commit,"workflow_run_id":run["databaseId"],"release_id":publication["id"],"immutable":true,"release_url":publication["html_url"],"assets":verified.assets,"release_assets":publication["assets"],"release_attestation":attestation,"asset_attestations":asset_attestations,"native_version":version,"verified":true});
     save(i, "package-release.verified", "succeeded", &result)?;
     Ok(
-        json!({"result":release["url"],"accepted":true,"delivery":"package_released","release":result}),
+        json!({"result":publication["html_url"],"accepted":true,"delivery":"package_released","release":result}),
     )
 }
 
