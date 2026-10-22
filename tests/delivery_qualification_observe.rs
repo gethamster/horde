@@ -14,6 +14,8 @@ mod maintenance;
 mod support;
 const REVIEW: &str = r#"{"model":"jev-1.13.0","answers":{"requirements":{"type":"noul","noul":0.0,"confidence":0.99},"correctness":{"type":"noul","noul":0.0,"confidence":0.99},"security":{"type":"noul","noul":0.0,"confidence":0.99},"tests":{"type":"noul","noul":0.0,"confidence":0.99},"integration":{"type":"noul","noul":0.0,"confidence":0.99},"insufficient_evidence":{"type":"noul","noul":0.0,"confidence":0.99},"specialist":{"type":"choice","choice":"none","confidence":0.99,"probabilities":{"none":0.99,"correctness":0.002,"security":0.002,"testing":0.002,"operations":0.002,"abstain":0.002}}}}"#;
 const VETO: &str = r#"{"model":"jev-1.13.0","answers":{"delivery":{"type":"choice","choice":"routine","confidence":0.99,"probabilities":{"routine":0.99,"escalate":0.01}}}}"#;
+// The fixture exercises repeated real Git/source checks before the HTTP send.
+const LOOPBACK_DEADLINE_MS: u64 = 10_000;
 fn hash(value: &impl serde::Serialize) -> String {
     horde::store::hash(&serde_json::to_vec(value).unwrap())
 }
@@ -28,6 +30,22 @@ struct Fixture {
     authority_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl Fixture {
+    fn diagnostics(&self) -> Value {
+        json!({"decisions":self.db.rows("SELECT purpose,state,error,provider_attempts FROM decisions WHERE task=?", &[&self.task]).unwrap(),
+            "usage":horde::upstream_maintenance::inspection(&self.db, &self.task).unwrap()})
+    }
+    async fn request_body(
+        &self,
+        bodies: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    ) -> Vec<u8> {
+        match tokio::time::timeout(std::time::Duration::from_secs(15), bodies.recv()).await {
+            Ok(Some(body)) => body,
+            result => panic!(
+                "expected loopback request was not observed: {result:?}; {}",
+                self.diagnostics()
+            ),
+        }
+    }
     async fn new(url: String, calls: u64) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
@@ -49,7 +67,7 @@ impl Fixture {
             review_enabled: true,
             base_url: url,
             api_key_env: "HORDE_QUALIFICATION_LOOPBACK_KEY".into(),
-            deadline_ms: 1000,
+            deadline_ms: LOOPBACK_DEADLINE_MS,
             ..Default::default()
         };
         unsafe {
@@ -173,11 +191,11 @@ async fn routed_observation_retains_real_wire_and_replays_without_another_call()
             let (url, mut bodies) =
                 support::server(vec![("200 OK", REVIEW, 0), ("200 OK", VETO, 0)]).await;
             let f = Fixture::new(url, 3).await;
-            bodies.recv().await.unwrap();
+            f.request_body(&mut bodies).await;
             let before = review::list(&f.db, &f.task, 0, 200).unwrap();
             let first = f.call(f.args.clone()).await.unwrap();
-            assert_eq!(first["state"], "succeeded", "{first}");
-            let body: Value = serde_json::from_slice(&bodies.recv().await.unwrap()).unwrap();
+            assert_eq!(first["state"], "succeeded", "{first}; {}", f.diagnostics());
+            let body: Value = serde_json::from_slice(&f.request_body(&mut bodies).await).unwrap();
             assert_eq!(
                 body["questions"]["delivery"]["criteria"],
                 json!({"routine":null, "escalate":null})
@@ -256,9 +274,9 @@ async fn routed_observation_retains_real_wire_and_replays_without_another_call()
 async fn unknown_send_remains_held_without_resend_or_new_identity() {
     let _lock = support::CONFIG_LOCK.lock().await;
     tokio::task::LocalSet::new().run_until(async {
-        let (url,mut bodies)=support::server(vec![("200 OK",REVIEW,0),("200 OK",VETO,1500),("200 OK",VETO,0)]).await;
-        let f=Fixture::new(url,4).await; bodies.recv().await.unwrap();
-        assert_eq!(f.call(f.args.clone()).await.unwrap()["state"],"held"); bodies.recv().await.unwrap();
+        let (url,mut bodies)=support::server(vec![("200 OK",REVIEW,0),("200 OK",VETO,LOOPBACK_DEADLINE_MS+500),("200 OK",VETO,0)]).await;
+        let f=Fixture::new(url,4).await; f.request_body(&mut bodies).await;
+        assert_eq!(f.call(f.args.clone()).await.unwrap()["state"],"held"); f.request_body(&mut bodies).await;
         assert_eq!(f.call(f.args.clone()).await.unwrap()["state"],"held"); assert!(bodies.try_recv().is_err());
         let mut changed=f.args.clone();changed["request_id"]=json!("replacement"); assert!(f.call(changed).await.is_err());
         assert_eq!(horde::upstream_maintenance::inspection(&f.db,&f.task).unwrap()["usage"]["model_calls"],2);
@@ -272,7 +290,7 @@ async fn cancellation_revocation_budget_and_changed_config_prevent_dispatch() {
     tokio::task::LocalSet::new().run_until(async {
         for veto in ["cancel","revoke","budget","config","head","context","succeeded","failed"] {
             let (url,mut bodies)=support::server(vec![("200 OK",REVIEW,0),("200 OK",VETO,0)]).await;
-            let f=Fixture::new(url,if veto=="budget" {1}else{4}).await; bodies.recv().await.unwrap();
+            let f=Fixture::new(url,if veto=="budget" {1}else{4}).await; f.request_body(&mut bodies).await;
             match veto {
                 "cancel"=>{ f.db.conn.execute("UPDATE tasks SET status='cancelled' WHERE id=?",[&f.task]).unwrap(); },
                 "revoke"=>{horde::upstream_maintenance::dispatch(&f.db,"maintenance_policy_revoke",&json!({"project":"default","policy_id":"decision-maintenance","policy_revision":1})).unwrap();},
@@ -297,11 +315,11 @@ async fn every_retry_rechecks_revocation_cancellation_head_config_and_the_same_b
         for change in ["cancel", "revoke", "head", "config", "budget"] {
             let (url, mut bodies) = support::server(vec![("200 OK", REVIEW, 0), ("429 Too Many Requests", "{}", 250), ("200 OK", VETO, 0)]).await;
             let f = Fixture::new(url, if change == "budget" {2} else {4}).await;
-            bodies.recv().await.unwrap();
+            f.request_body(&mut bodies).await;
             let root = f.db.root.clone();
             let args = f.args.clone();
             let call = tokio::task::spawn_blocking(move || horde::protocol::dispatch(&Store::open(&root)?, "delivery_qualification_observe", args, None));
-            bodies.recv().await.unwrap();
+            f.request_body(&mut bodies).await;
             match change {
                 "cancel" => { f.db.conn.execute("UPDATE tasks SET status='cancelled' WHERE id=?", [&f.task]).unwrap(); },
                 "revoke" => { horde::upstream_maintenance::dispatch(&f.db, "maintenance_policy_revoke", &json!({"project":"default","policy_id":"decision-maintenance","policy_revision":1})).unwrap(); },
@@ -323,11 +341,11 @@ async fn remote_revocation_during_response_holds_the_observation_and_keeps_usage
     tokio::task::LocalSet::new().run_until(async {
         let (url, mut bodies) = support::server(vec![("200 OK", REVIEW, 0), ("200 OK", VETO, 250)]).await;
         let f = Fixture::new(url, 4).await;
-        bodies.recv().await.unwrap();
+        f.request_body(&mut bodies).await;
         let root = f.db.root.clone();
         let args = f.args.clone();
         let call = tokio::task::spawn_blocking(move || horde::protocol::dispatch(&Store::open(&root)?, "delivery_qualification_observe", args, None));
-        bodies.recv().await.unwrap();
+        f.request_body(&mut bodies).await;
         f.authority_active.store(false, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(call.await.unwrap().unwrap()["state"], "held");
         assert_eq!(horde::upstream_maintenance::inspection(&f.db,&f.task).unwrap()["usage"]["model_calls"], 2);
@@ -345,12 +363,12 @@ async fn unusable_or_lost_wire_responses_never_become_verified_observations() {
         for (status, body) in [("201 Created", VETO), ("200 OK", ECHO), ("DROP", "")] {
             let (url, mut bodies) = support::server(vec![("200 OK", REVIEW, 0), (status, body, 0), ("200 OK", VETO, 0)]).await;
             let f = Fixture::new(url, 4).await;
-            bodies.recv().await.unwrap();
+            f.request_body(&mut bodies).await;
             let denied = horde::protocol::dispatch(&f.db, "delivery_qualification_observe", f.args.clone(), Some("fixture-worker-token")).unwrap_err();
             assert!(denied.to_string().contains("unavailable to worker"));
             assert!(bodies.try_recv().is_err());
             assert_eq!(f.call(f.args.clone()).await.unwrap()["state"], "held", "{status}");
-            bodies.recv().await.unwrap();
+            f.request_body(&mut bodies).await;
             assert_eq!(f.call(f.args.clone()).await.unwrap()["state"], "held");
             assert!(bodies.try_recv().is_err(), "{status} caused a resend");
             assert_eq!(horde::upstream_maintenance::inspection(&f.db, &f.task).unwrap()["usage"]["model_calls"], 2);
