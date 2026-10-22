@@ -37,6 +37,9 @@ pub(super) fn baseline(
         .context("manual-acceptance question is not in the actual Run")?;
     ensure!(
         question["task"] == receipt["task"]["id"]
+            && question["route_origin"] == receipt["task"]["id"]
+            && question["human_only"] == 1
+            && question["answerer"] == "external caller"
             && crate::store::hash(
                 question["question"]
                     .as_str()
@@ -56,18 +59,35 @@ pub(super) fn baseline(
             && oracle["head_sha"] == head,
         "baseline oracle does not match the actual manual decision"
     );
-    let answered = receipt["events"]
+    let events = receipt["events"]
         .as_array()
-        .context("baseline manual decision events unavailable")?
+        .context("baseline manual decision events unavailable")?;
+    let mut answered = None;
+    for event in events
         .iter()
-        .find(|event| {
-            if event["kind"] != "question.answered" {
-                return false;
+        .filter(|event| event["kind"] == "question.answered")
+    {
+        let data = decoded(&event["data"])?;
+        let identity = match (data.get("id"), data.get("question")) {
+            (Some(id), Some(legacy)) => {
+                ensure!(
+                    id == legacy,
+                    "conflicting manual decision question identities"
+                );
+                Some(id)
             }
-            decoded(&event["data"])
-                .is_ok_and(|data| data["question"] == question_id && data["answer"] == expected)
-        })
-        .context("baseline lacks the protected operator answer event")?;
+            (id, legacy) => id.or(legacy),
+        };
+        if identity == Some(&json!(question_id)) && data["answer"] == expected {
+            ensure!(
+                data["origin"] == receipt["task"]["id"] && data["author"] == "external caller",
+                "manual decision lacks protected human provenance"
+            );
+            ensure!(answered.is_none(), "duplicate manual decision event");
+            answered = Some(event);
+        }
+    }
+    let answered = answered.context("baseline lacks the protected operator answer event")?;
     ensure!(
         answered["created"]
             .as_i64()
@@ -350,4 +370,89 @@ pub(super) fn production_state(
         json!({"head":head,"repo":case.repository,"base":settings.delivery.base,"base_oid":case.base_commit,"environment":environment,
         "paths":paths,"manifest":manifest,"checks":checks,"approvals":approvals,"review":review_fact,"independent_review":independent_review(receipt,head,revision,finished)?,"context_version":context}),
     )
+}
+
+#[cfg(test)]
+mod routed_baseline_tests {
+    use super::*;
+
+    #[test]
+    fn supported_protected_human_answer_is_a_baseline_receipt() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = directory.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        for argv in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.name", "Test"],
+            vec!["config", "user.email", "test@localhost"],
+            vec!["commit", "--allow-empty", "-m", "initial"],
+        ] {
+            crate::git::run(&repo, &argv).unwrap();
+        }
+        let db = crate::store::Store::open(&directory.path().join("data")).unwrap();
+        let settings = crate::config::Settings::default();
+        let plan = crate::template::compile(
+            "simulated",
+            &crate::template::load_templates(&repo).unwrap(),
+            std::collections::BTreeMap::from([("task".into(), "baseline".into())]),
+        )
+        .unwrap();
+        let task = db.submit("baseline", &repo, &settings, &plan).unwrap();
+        let question = crate::protocol::dispatch(&db, "request_question", json!({"task":task,"id":"acceptance","question":"Accept this exact evaluated change or escalate.","human_only":true}), None).unwrap();
+        assert!(
+            crate::protocol::dispatch(
+                &db,
+                "answer_question",
+                json!({"task":task,"question":question["id"],"answer":"accept"}),
+                None
+            )
+            .is_err()
+        );
+        crate::protocol::dispatch(
+            &db,
+            "answer_question",
+            json!({"task":task,"question":question["id"],"answer":"accept","human":true}),
+            None,
+        )
+        .unwrap();
+        let inspection =
+            crate::protocol::dispatch(&db, "inspect", json!({"task":task}), None).unwrap();
+        let receipt = json!({"task":inspection["task"],"questions":inspection["questions"],"events":db.rows("SELECT * FROM events WHERE task=? ORDER BY seq", &[&task]).unwrap()});
+        let mut case = crate::delivery_qualification::parse_manifest(
+            &crate::delivery_qualification::manifest_tests::input(),
+        )
+        .unwrap()
+        .cases[1]
+            .clone();
+        case.baseline_task = task;
+        let oracle = json!({"manual_acceptance_question":question["id"],"manual_acceptance_answer":"accept","head_sha":"head"});
+        baseline(
+            &case,
+            &receipt,
+            &oracle,
+            "head",
+            crate::store::now() - 10,
+            crate::store::now() + 10,
+            false,
+        )
+        .unwrap();
+        for field in ["human_only", "answerer", "route_origin"] {
+            let mut unprotected = receipt.clone();
+            unprotected["questions"][0][field] = Value::Null;
+            assert!(baseline(&case, &unprotected, &oracle, "head", 0, i64::MAX, false).is_err());
+        }
+        let mut conflict = receipt.clone();
+        let event = conflict["events"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|event| event["kind"] == "question.answered")
+            .unwrap();
+        let mut data = decoded(&event["data"]).unwrap();
+        data["question"] = json!("different-question");
+        event["data"] = data;
+        assert!(baseline(&case, &conflict, &oracle, "head", 0, i64::MAX, false).is_err());
+        assert!(baseline(&case, &receipt, &oracle, "changed-head", 0, i64::MAX, false).is_err());
+        assert!(baseline(&case, &receipt, &oracle, "head", 0, 1, false).is_err());
+    }
 }

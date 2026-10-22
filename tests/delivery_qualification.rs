@@ -102,4 +102,127 @@ fn retained_evidence_collection_uses_read_only_project_scoped_rpc_without_openin
         report.get("held_out").is_none(),
         "missing real Run/oracle evidence must not become qualification metrics"
     );
+    let report_path = directory.path().join("blocked-report.json");
+    let save_report = || {
+        Command::new(env!("CARGO_BIN_EXE_horde"))
+            .arg("--data-dir")
+            .arg(&untouched)
+            .args(["delivery-qualification", "report", "--frozen"])
+            .arg(&frozen)
+            .arg("--evidence")
+            .arg(&evidence)
+            .arg("--output")
+            .arg(&report_path)
+            .output()
+            .unwrap()
+    };
+    let first = save_report();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let receipt: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(receipt["qualified"], false);
+    assert_eq!(receipt["enrolled"], false);
+    let bytes = std::fs::read(&report_path).unwrap();
+    assert_eq!(receipt["report_sha256"], horde::store::hash(&bytes));
+    assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), report);
+    let replay = save_report();
+    assert!(replay.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&replay.stdout).unwrap(),
+        receipt
+    );
+    std::fs::write(&report_path, b"{\"replaced\":true}").unwrap();
+    let conflict = save_report();
+    assert!(!conflict.status.success());
+    assert!(
+        String::from_utf8_lossy(&conflict.stderr)
+            .contains("already exists with different evidence")
+    );
+    assert_eq!(std::fs::read(&report_path).unwrap(), b"{\"replaced\":true}");
+    assert!(!untouched.exists());
+}
+
+#[test]
+fn advisory_observe_cli_routes_the_explicit_operator_request_without_opening_a_store() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = directory.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    let listener = UnixListener::bind(runtime.join("daemon.sock")).unwrap();
+    let frozen = directory.path().join("frozen.json");
+    let document = json!({"manifest_hash":"fixture-frozen-identity"});
+    std::fs::write(&frozen, document.to_string()).unwrap();
+    let server = std::thread::spawn(move || {
+        for rejected in [false, true] {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(socket.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let packet: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(packet["project"], Value::Null);
+            assert_eq!(packet["token"], Value::Null);
+            assert_eq!(packet["method"], "delivery_qualification_observe");
+            assert_eq!(
+                packet["args"],
+                json!({"project":"owning-project","frozen":document,"case_id":"case-1","task":"candidate-1","expected_head":"c".repeat(40),"request_id":"observation-1"})
+            );
+            let response = if rejected {
+                json!({"error":"operator observation denied"})
+            } else {
+                json!({"result":{"state":"held","advisory":true,"enrolled":false}})
+            };
+            writeln!(socket, "{response}").unwrap();
+        }
+    });
+    for rejected in [false, true] {
+        let output = Command::new(env!("CARGO_BIN_EXE_horde"))
+            .arg("--data-dir")
+            .arg(&runtime)
+            .args([
+                "--project",
+                "owning-project",
+                "delivery-qualification",
+                "observe",
+                "--frozen",
+            ])
+            .arg(&frozen)
+            .args([
+                "--case-id",
+                "case-1",
+                "--task",
+                "candidate-1",
+                "--expected-head",
+                &"c".repeat(40),
+                "--request-id",
+                "observation-1",
+            ])
+            .env_remove("HORDE_WORKER_TOKEN")
+            .output()
+            .unwrap();
+        if rejected {
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("operator observation denied")
+            );
+        } else {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap()["state"],
+                "held"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(&runtime).unwrap().count(),
+            1,
+            "CLI must only connect to the existing socket"
+        );
+    }
+    server.join().unwrap();
 }

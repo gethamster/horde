@@ -2,6 +2,36 @@
 use super::super::manifest_tests::input;
 use super::*;
 
+#[test]
+fn operator_observation_selects_project_without_binding_the_connection() {
+    let directory = tempfile::tempdir().unwrap();
+    let listener =
+        std::os::unix::net::UnixListener::bind(directory.path().join("daemon.sock")).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(stream.try_clone().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        let packet: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(packet["project"], Value::Null);
+        assert_eq!(packet["args"]["project"], "owning-project");
+        assert_eq!(packet["method"], "delivery_qualification_observe");
+        writeln!(stream, "{}", json!({"result":{"advisory":true}})).unwrap();
+    });
+    let result = operator_request(
+        directory.path(),
+        "owning-project",
+        "delivery_qualification_observe",
+        json!({"task":"candidate"}),
+    )
+    .unwrap();
+    assert_eq!(result["advisory"], true);
+    server.join().unwrap();
+}
+
 fn add_artifact(receipt: &mut Value, name: &str, value: Value) -> String {
     let hash = digest(&value).unwrap();
     receipt["artifacts"][&hash] = json!(serde_json::to_string(&value).unwrap());
@@ -44,8 +74,8 @@ fn receipt(frozen: &Frozen, case: &Case, arm: &str) -> Value {
     );
     if arm == "baseline" {
         let answer = if case.critical { "escalate" } else { "accept" };
-        result["questions"] = json!([{"id":"acceptance-1","task":task,"question":"Accept this exact evaluated change or escalate.","answer":answer}]);
-        result["events"].as_array_mut().unwrap().insert(0,json!({"seq":1,"kind":"question.answered","created":created+19,"data":{"question":"acceptance-1","answer":answer}}));
+        result["questions"] = json!([{"id":"acceptance-1","task":task,"question":"Accept this exact evaluated change or escalate.","answer":answer,"route_origin":task,"human_only":1,"answerer":"external caller"}]);
+        result["events"].as_array_mut().unwrap().insert(0,json!({"seq":1,"kind":"question.answered","created":created+19,"data":{"id":"acceptance-1","origin":task,"author":"external caller","answer":answer}}));
     }
     if arm == "candidate" {
         candidate_facts(&mut result, case, &head, created);

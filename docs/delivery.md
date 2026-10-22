@@ -55,10 +55,11 @@ This policy covers the existing merge-triggered deployment contract and the expl
 
 ## Producing genuine held-out evidence
 
-`horde delivery-qualification` prepares a frozen corpus, collects existing Run
-evidence through read-only daemon RPCs, validates it and computes a reviewable
-report. It does not select cases, dispatch agents, invoke providers, authorize
-spend, open a Store, mark worker artifacts verified or enroll the report.
+The `prepare`, `collect`, `validate` and `report` subcommands freeze a corpus,
+read existing Run evidence and compute a reviewable report. They do not select
+cases, dispatch agents, invoke providers, authorize spend or enroll the report.
+The separate operator-only `observe` command explicitly requests one metered
+advisory evaluation through the existing daemon, as described below.
 
 ```sh
 horde delivery-qualification prepare --manifest /private/corpus.json --output /private/frozen.json
@@ -102,7 +103,12 @@ case inputs, verifier and independent oracle. Existing historical Runs are usabl
 only when those facts and their real completion events can be established.
 The baseline must have automatic delivery disabled, the frozen acceptance
 question on the actual Run, and a matching protected `question.answered` event
-within its measured completion interval. The oracle records that question ID
+within its measured completion interval. Create the question through
+`request_question` with `human_only:true`; an external person answers through
+`answer_question` with `human:true`. Collection retains the route's origin,
+human-only flag and external answerer. The answer event's `id` identifies the
+question; a legacy `question` identity must agree if both fields appear.
+The oracle records that question ID
 and observed answer. Otherwise, genuine paired execution and baseline human participation are missing
 inputs. A requested change is not evidence of what a human would have accepted,
 how long that would have taken or which defects they would have found.
@@ -132,12 +138,36 @@ The retained transport trace must
 bind the normalized endpoint and canonical request/response hashes. Credential
 values and private provider transcripts do not belong in committed fixtures.
 
-Advisory evaluation does not require an automatic merge to run. Before the first
-qualified installation, a separately authorized operator may retain actual
-non-publishing Jev request/response traces on the candidate Run for review. This
-driver only collects them; it does not issue that paid evaluation. A currently failing
-Jev connection, missing account, absent spend approval or missing real trace is a
-blocker, not permission to insert a decision or qualification row.
+An owning operator can explicitly observe a running candidate while automatic
+delivery remains disabled:
+
+```sh
+horde --data-dir /existing/daemon --project PROJECT delivery-qualification observe --frozen /private/frozen.json --case-id CASE --task CANDIDATE --expected-head FULL_SHA --request-id STABLE_ID
+```
+
+The operator-only `delivery_qualification_observe` RPC accepts the same frozen
+manifest, case, task, head and request identity. It reconstructs the production
+delivery facts from the current verified Run, runtime review, independent reviewer
+and retained GitHub receipts, then asks the existing delivery-veto question. The
+task must have its original approved maintenance binding and matching spend
+reference; every HTTP attempt and consumed output uses that ledger. New calls
+require a running task, and a completed task can only replay an existing receipt.
+Worker and project-bound connections cannot invoke this operation.
+
+Horde records immutable intent before dispatch and retains the actual validated
+HTTP 200 request/response hashes. Exact retries reconcile that observation;
+unknown sends remain held without resending. A new request ID cannot bypass the
+task's held observation, and changed heads, source facts, configuration or request
+identities fail closed. The operation never pushes, opens or merges a PR, releases,
+enrolls qualification or enables delivery.
+
+The configured service must already be authorized and speak `systemone-v1` at
+`/v1/systemone`, accepting `model`, `state` and `questions` and returning the full
+choice probability distribution. An OpenAI chat endpoint does not establish
+compatibility. Horde does not adapt probabilities or switch models or services.
+Missing service compatibility, spend approval, real paired execution, an
+independent oracle or protected human baseline participation still blocks actual
+qualification. Code tests and loopback fixtures do not supply those inputs.
 
 Quality and critical recall are computed from the independent oracle's observed
 outcomes across the complete frozen corpus. Completion time comes from actual

@@ -1,5 +1,9 @@
 pub const OPERATIONS: &[(&str, &str)] = &[
     (
+        "delivery_qualification_observe",
+        "Record one operator-requested, task-metered advisory delivery observation without publishing or enrollment",
+    ),
+    (
         "delivery_qualification_enroll",
         "Enroll an operator-reviewed existing held-out delivery report without weakening qualification gates",
     ),

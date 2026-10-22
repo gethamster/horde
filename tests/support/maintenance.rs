@@ -14,6 +14,19 @@ pub async fn bind(
     input: u64,
     output: u64,
 ) -> anyhow::Result<()> {
+    bind_controlled(db, task, repo, calls, input, output)
+        .await
+        .map(|_| ())
+}
+
+pub async fn bind_controlled(
+    db: &Store,
+    task: &str,
+    repo: &Path,
+    calls: u64,
+    input: u64,
+    output: u64,
+) -> anyhow::Result<std::sync::Arc<std::sync::atomic::AtomicBool>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let expires = now() + 3600;
@@ -33,7 +46,8 @@ pub async fn bind(
     horde::upstream_maintenance::register(db, policy)?;
     horde::upstream_maintenance::pin(db, task, &binding)?;
     let mut reply = serde_json::to_value(binding)?;
-    reply["active"] = json!(true);
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let callback_active = active.clone();
     tokio::spawn(async move {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else {
@@ -41,9 +55,10 @@ pub async fn bind(
             };
             let mut request = [0; 4096];
             let _ = socket.read(&mut request).await;
+            reply["active"] = json!(callback_active.load(std::sync::atomic::Ordering::SeqCst));
             let body = reply.to_string();
             let _=socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await;
         }
     });
-    Ok(())
+    Ok(active)
 }

@@ -125,6 +125,10 @@ pub async fn server(
                 .unwrap();
             send.send(bytes[header_end + 4..].to_vec()).unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            // Model a request received by the service whose HTTP reply is lost.
+            if status == "DROP" {
+                continue;
+            }
             let retry = if status == "429 Too Many Requests" {
                 "Retry-After: 0\r\n"
             } else {

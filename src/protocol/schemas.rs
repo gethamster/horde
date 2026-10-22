@@ -23,6 +23,13 @@ pub fn schema(name: &str) -> Value {
 /// Operator tools keep explicit task selection and verification controls.
 pub fn admin_schema(name: &str) -> Value {
     let fields: &[(&str, &str)] = match name {
+        "delivery_qualification_observe" => &[
+            ("frozen", "object"),
+            ("case_id", "string"),
+            ("task", "string"),
+            ("expected_head", "string"),
+            ("request_id", "string"),
+        ],
         "delivery_qualification_enroll" => &[
             ("qualification_id", "string"),
             ("evidence_hash", "string"),
@@ -638,6 +645,9 @@ pub fn admin_schema(name: &str) -> Value {
         "management_ack" => &["consumer", "seq"],
         "decisions" | "reviews" => &["task"],
         "submit_task" => &["objective", "repo"],
+        "delivery_qualification_observe" => {
+            &["frozen", "case_id", "task", "expected_head", "request_id"]
+        }
         "delivery_qualification_enroll" => &[
             "qualification_id",
             "evidence_hash",

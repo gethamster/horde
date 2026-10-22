@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.6.50 - 2026-10-21
+
+- Read protected human acceptance from the actual routed question identity,
+  preserving origin, human-only provenance, answerer, exact head and timing checks.
+- Add an operator-only command for one advisory delivery observation on a running
+  candidate. Retain immutable intent and the real SystemOne response, charge the
+  original maintenance budget, and hold unknown sends without resending.
+- Recheck current source, cancellation and authority before retries and before
+  recording an observation. Keep automatic delivery disabled during bootstrap;
+  publication does not establish service compatibility or held-out qualification.
+
 ## 0.6.49 - 2026-10-20
 
 - Add native commands to freeze held-out delivery cases, collect existing Run

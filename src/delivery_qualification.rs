@@ -9,9 +9,24 @@ use std::{
 };
 mod evidence;
 pub use evidence::{assess, collect};
+mod observe;
+pub use observe::observe;
 
 #[derive(clap::Subcommand)]
 pub enum Command {
+    /// Make one explicitly requested, metered advisory observation; never publish.
+    Observe {
+        #[arg(long)]
+        frozen: std::path::PathBuf,
+        #[arg(long)]
+        case_id: String,
+        #[arg(long)]
+        task: String,
+        #[arg(long)]
+        expected_head: String,
+        #[arg(long)]
+        request_id: String,
+    },
     /// Freeze the operator-reviewed held-out cases before candidate execution.
     Prepare {
         #[arg(long)]
@@ -45,6 +60,18 @@ pub enum Command {
 }
 pub fn run(command: &Command, root: Option<&Path>, project: Option<&str>) -> Result<Value> {
     match command {
+        Command::Observe {
+            frozen,
+            case_id,
+            task,
+            expected_head,
+            request_id,
+        } => evidence::operator_request(
+            root.context("observation requires explicit --data-dir of the existing daemon")?,
+            project.context("observation requires explicit --project")?,
+            "delivery_qualification_observe",
+            json!({"frozen":read(frozen)?,"case_id":case_id,"task":task,"expected_head":expected_head,"request_id":request_id}),
+        ),
         Command::Prepare { manifest, output } => prepare(manifest, output),
         Command::Collect { frozen, output } => collect(
             frozen,
@@ -104,7 +131,7 @@ struct Case {
     baseline_task: String,
     candidate_task: String,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Frozen {
     manifest_hash: String,
@@ -222,7 +249,9 @@ fn persist(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 fn frozen(path: &Path) -> Result<Frozen> {
-    let value = read(path)?;
+    frozen_value(read(path)?)
+}
+fn frozen_value(value: Value) -> Result<Frozen> {
     let result: Frozen = serde_json::from_value(value.clone())?;
     parse_manifest(&value["manifest"])?;
     ensure!(
