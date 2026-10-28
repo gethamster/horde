@@ -22,6 +22,24 @@ pub fn schema(name: &str) -> Value {
 }
 /// Operator tools keep explicit task selection and verification controls.
 pub fn admin_schema(name: &str) -> Value {
+    if name == "submission_close_unadmitted" {
+        return json!({"type":"object","additionalProperties":false,
+        "required":["schema_version","project","request_id","system_binding","repair_actor_id","continuity_evidence_sha256"],
+        "properties":{
+            "schema_version":{"type":"integer","const":1},"project":{"type":"string"},"request_id":{"type":"string"},
+            "repair_actor_id":{"type":"string","format":"uuid"},"continuity_evidence_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+            "system_binding":{"type":"object","additionalProperties":false,
+                "required":["organization_id","project_id","tenant_id","thread_id","original_actor_id","operation_id","action","request_hash","objective_sha256","invocation_id"],
+                "properties":{
+                    "organization_id":{"type":"string","format":"uuid"},"project_id":{"type":"string","format":"uuid"},
+                    "tenant_id":{"type":"string"},"thread_id":{"type":"string","format":"uuid"},
+                    "original_actor_id":{"type":"string","format":"uuid"},"operation_id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9:_.-]+$"},
+                    "action":{"type":"string","const":"build"},"request_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                    "objective_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"invocation_id":{"type":"string","format":"uuid"}
+                }
+            }
+        }});
+    }
     let fields: &[(&str, &str)] = match name {
         "delivery_qualification_observe" => &[
             ("frozen", "object"),

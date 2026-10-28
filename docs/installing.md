@@ -195,6 +195,23 @@ stopped daemon and inspection of later local and remote effects before execution
 can resume. Do not replace a running daemon's database or discard its WAL files
 as a rollback shortcut.
 
+### Terminal submission receipts (schema 14)
+
+Schema 14 adds an immutable journal for project-scoped stable requests that were
+not admitted. Stop the daemon and preserve the normal consistent backup before
+upgrading. Existing tasks, positive submission receipts, usage and worker
+history remain intact. Binaries supporting only schema 13 cannot reopen the
+upgraded store; do not downgrade or clear its journal to bypass that boundary.
+
+The private `submission_close_unadmitted` operation serializes with submission.
+A committed positive receipt returns its real task identity. A negative receipt
+permanently fences that exact project/request key, including delayed copies of
+the original stable submission. It creates no task and performs no retry,
+provider call, Run recovery or publication. The configured installation's store
+continuity still requires source-backed operator inspection; an empty task list
+is not a historical no-effect proof. See [delivery](delivery.md#terminal-recovery-of-an-unadmitted-system-build)
+for the private operator boundary.
+
 ## Release operator setup
 
 Configure GitHub Actions with:
