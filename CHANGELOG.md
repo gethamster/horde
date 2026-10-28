@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.6.51 - 2026-10-27
+
+- Add a private operator/service operation that permanently fences one exact
+  unadmitted System Build request without creating a task or replaying its
+  expired invocation. Existing admission receipts retain their actual task IDs.
+- Serialize negative receipts with stable submission and retain immutable
+  project/request bindings. Late stable submissions roll back through the native
+  receipt guard; worker credentials and MCP cannot invoke this recovery control.
+- Advance the native store to schema 14 while preserving existing tasks and
+  receipts. This producer release does not settle a System UNKNOWN by itself or
+  qualify a successful scheduled maintenance occurrence.
+
 ## 0.6.50 - 2026-10-21
 
 - Read protected human acceptance from the actual routed question identity,

@@ -111,6 +111,12 @@ pub fn dispatch_scoped(
     if !args.is_object() {
         bail!("arguments must be an object");
     }
+    if name == "submission_close_unadmitted"
+        && bound_project.is_none()
+        && !args["project"].is_string()
+    {
+        bail!("submission settlement requires an explicit project");
+    }
     if name == "commit_work" {
         if token.is_none() {
             bail!("commit_work requires worker credentials");
@@ -478,6 +484,9 @@ fn dispatch_authorized(
             }
             Ok(json!({"id":oid}))
         });
+    }
+    if name == "submission_close_unadmitted" {
+        return crate::submission::close_unadmitted(db, &args);
     }
     if name == "list_tasks" {
         return if args["all_projects"] == true {
@@ -970,6 +979,9 @@ pub fn mcp_response(
         "ping" => Ok(json!({})),
         "tools/list" => Ok(
             json!({"tools":OPERATIONS.iter().map(|(n,d)|json!({"name":n,"description":d,"inputSchema":admin_schema(n)})).collect::<Vec<_>>()}),
+        ),
+        "tools/call" if request["params"]["name"] == "submission_close_unadmitted" => Err(
+            anyhow::anyhow!("submission settlement is a private operator/service operation"),
         ),
         "tools/call" => {
             let p = &request["params"];

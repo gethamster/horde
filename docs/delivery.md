@@ -183,3 +183,31 @@ Jev transport evidence, a matching approved worker-budget reference and the
 operator's review of the final report hash. `delivery_qualification_enroll` remains
 a separate operator-only step. A computed passing report does not grant shipping
 authority or waive repository protections, acceptance, expiry or revocation.
+
+
+## Terminal recovery of an unadmitted System Build
+
+`submission_close_unadmitted` is a private native operator/service operation,
+not an MCP or worker tool. Its authenticated transport fixes the Horde project;
+System derives the original actor, Build operation and stable request key from
+its durable rows. A current repair actor is recorded separately for audit.
+Unknown input fields, changed original bindings and cross-project requests are
+rejected. The continuity evidence hash is an audit reference, not a credential
+or a new approval mechanism.
+
+The operation checks the project's durable submission journal in the same
+immediate write transaction that records a negative fence. Default-project
+legacy receipts are considered only in that namespace. A prior admission returns
+`state: admitted` with its actual task and receipt. Otherwise `state: not_admitted`
+with `admission_fenced: true` and `task_id: null` permanently closes that exact
+request key. An exact retry returns the first immutable negative receipt. A late
+stable submission cannot commit a task through the guarded receipt insertion.
+Storage errors, lock timeouts and unresolved installation lineage remain holds.
+
+This receipt does not close System's original UNKNOWN record automatically.
+The matching System settlement-only consumer must verify the exact original
+request binding, current access and configured transport, preserve the original
+UNKNOWN observation, and append its separate owning settlement. It must not
+redispatch the Build, spend the expired invocation, edit usage or manufacture a
+completion report. A producer release or negative receipt does not establish
+successful future scheduled delivery.

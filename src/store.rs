@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: u32 = 14;
 /// Status of the per-task synthetic worker row that carries operator steering messages.
 /// Operator rows never receive mail, never wake, and are hidden from worker listings.
 pub const OPERATOR_STATUS: &str = "operator";
