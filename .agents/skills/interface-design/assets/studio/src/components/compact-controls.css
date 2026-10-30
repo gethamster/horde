@@ -1,0 +1,12 @@
+.compact-controls button:not(.field-shell *),
+.compact-controls input:not(.field-shell *) {
+  height: 32px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  border-radius: 999px;
+  padding-block: 0;
+}
+.compact-controls input:not(.field-shell *),
+.compact-controls input:not(.field-shell *):focus,
+.compact-controls input:not(.field-shell *):focus-visible { border-color: var(--stroke-default); }

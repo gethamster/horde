@@ -1,0 +1,5 @@
+interface:
+  display_name: "Interface Design"
+  short_description: "Build consistent interfaces with Studio design resources"
+policy:
+  allow_implicit_invocation: true

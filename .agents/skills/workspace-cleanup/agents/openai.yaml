@@ -1,0 +1,5 @@
+interface:
+  display_name: "Workspace Cleanup"
+  short_description: "Retire task resources while preserving work and evidence"
+policy:
+  allow_implicit_invocation: true

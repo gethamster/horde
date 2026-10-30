@@ -1,0 +1,5 @@
+interface:
+  display_name: "Domain Language"
+  short_description: "Keep terminology consistent and renames compatible"
+policy:
+  allow_implicit_invocation: true

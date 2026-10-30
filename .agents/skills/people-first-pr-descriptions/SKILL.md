@@ -9,12 +9,13 @@ Write PR descriptions for readers who need to understand the change before they 
 
 This skill mirrors Studio’s `people-first-pr-descriptions`. Keep the same structure on Horde PRs so crew and humans get one familiar shape.
 
-## Before opening or marking ready
+## Scope
 
-1. `cargo fmt --all --check`
-2. `cargo clippy --locked --all-targets -- -D warnings`
-3. `cargo test --locked` (or the focused suite that covers the change)
-4. Write this people-first description. Do not open with a bullet-only “Summary / Test plan” dump.
+Follow [verified-delivery](../verified-delivery/SKILL.md) for checks, review, and
+publication. This writing skill adds no build, test, review, or approval stage.
+Use the existing diff and valid verification evidence; don't rerun checks just
+to write a description. A small change usually needs the problem, result, and
+actual validation in a few sentences. Use the sections below only when useful.
 
 ## Ground the description first
 

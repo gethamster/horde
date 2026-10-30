@@ -1,0 +1,195 @@
+/* Extracted Studio token blocks; see source-manifest.json for provenance. */
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: "Geist Variable", sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  color-scheme: light;
+  --color-white: oklch(1 0 0);
+  --radius: 0.65rem;
+  --background: oklch(0.985 0.001 106.423); /* stone-50 */
+  --foreground: oklch(0.147 0.004 49.25); /* stone-950 */
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.147 0.004 49.25); /* stone-950 */
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.147 0.004 49.25); /* stone-950 */
+  --primary: oklch(0.268 0.007 34.298); /* stone-800 */
+  --primary-foreground: oklch(0.985 0.001 106.423); /* stone-50 */
+  /* Soft fill SSoT (stone-125). muted/accent/sidebar-accent alias; dark accent diverges. */
+  --secondary: oklch(0.9583 0.0013 77.57);
+  --secondary-foreground: oklch(0.216 0.006 56.043); /* stone-900 */
+  --muted: var(--secondary);
+  --muted-foreground: oklch(0.374 0.01 67.558); /* stone-700 */
+  --accent: var(--secondary);
+  --accent-foreground: oklch(0.216 0.006 56.043); /* stone-900 */
+  /* Use Studio’s opaque soft-fill twin instead of blended hover layers. */
+  --hover: var(--hover-solid);
+  /* Opaque twin of --muted so chips match hovered-card fills. */
+  --hover-solid: var(--muted);
+  /* Foundry keeps hover surfaces opaque. */
+  --hover-secondary: var(--secondary);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: var(--color-white);
+  --success: oklch(0.62 0.19 145);
+  --warning: oklch(0.75 0.18 55);
+  --info: oklch(0.55 0.2 255);
+  --border: oklch(0.923 0.003 48.717); /* stone-200 */
+  --input: oklch(0.923 0.003 48.717); /* stone-200 */
+  --ring: var(--info);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: var(--background);
+  --sidebar-foreground: oklch(0.147 0.004 49.25); /* stone-950 */
+  --sidebar-primary: oklch(0.268 0.007 34.298); /* stone-800 */
+  --sidebar-primary-foreground: oklch(0.985 0.001 106.423); /* stone-50 */
+  --sidebar-accent: var(--muted);
+  --sidebar-accent-foreground: oklch(0.216 0.006 56.043); /* stone-900 */
+  --sidebar-border: oklch(0.923 0.003 48.717); /* stone-200 */
+  --sidebar-ring: var(--info);
+  --stone-950: oklch(0.147 0.004 49.25);
+  --stone-940: oklch(0.167 0.01 51);
+  --stone-925: oklch(0.185 0.01 53);
+  --stone-900: oklch(0.216 0.006 56.043);
+  --stone-850: oklch(0.245 0.01 45);
+  --stone-800: oklch(0.268 0.007 34.298);
+  --neutral-990: oklch(0.191 0 0);
+  --neutral-980: oklch(0.205 0 0);
+  --neutral-970: oklch(0.248 0 0);
+  --neutral-950: oklch(0.14 0 0);
+  --neutral-900: oklch(0.2 0 0);
+  --neutral-850: oklch(0.235 0 0);
+  --neutral-800: oklch(0.27 0 0);
+  --neutral-700: oklch(0.371 0 0); /* Tailwind neutral-700 */
+
+  /* Foundry surface roles map to Studio’s named palette. */
+  --surface-canvas: var(--secondary);
+  --surface-navigation: var(--sidebar);
+  --surface-page: var(--background);
+  --surface-edge: oklch(0.978 0.001 106.423);
+  --surface-panel: var(--card);
+  --surface-control: var(--popover);
+  --surface-hover: var(--hover-solid);
+  --surface-subtle: color-mix(in oklch, var(--surface-panel) 65%, var(--surface-hover));
+  --surface-selected: var(--secondary);
+  --control-hover: var(--hover-solid);
+  --text-primary: var(--foreground);
+  --text-secondary: var(--secondary-foreground);
+  --text-muted: var(--muted-foreground);
+  --stroke-default: var(--border);
+  --stroke-hover: oklch(0.89 0.003 48.717);
+  --stroke-strong: var(--muted-foreground);
+  --action-primary: var(--primary);
+  --action-foreground: var(--primary-foreground);
+  --destructive-surface: var(--secondary);
+  --destructive-hover: var(--hover-solid);
+  --action-hover: var(--stone-900);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: var(--neutral-990);
+  --color-background: var(--neutral-990);
+  --foreground: oklch(0.985 0 0);
+  --card: var(--neutral-980);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: var(--neutral-980);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.9 0 0);
+  --primary-foreground: oklch(0.2 0 0);
+  --secondary: var(--neutral-800);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: var(--secondary);
+  --muted-foreground: oklch(0.705 0 0);
+  --accent: var(--neutral-980);
+  --accent-foreground: oklch(0.985 0 0);
+  --hover: var(--hover-solid);
+  --hover-solid: var(--muted);
+  --hover-secondary: var(--secondary);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: var(--color-white);
+  --success: oklch(0.72 0.19 145);
+  --warning: oklch(0.78 0.16 55);
+  --info: oklch(0.65 0.2 255);
+  --border: var(--neutral-970);
+  --input: var(--neutral-970);
+  --ring: var(--info);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: var(--background);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.9 0 0);
+  --sidebar-primary-foreground: oklch(0.2 0 0);
+  /* Alias muted (not card) so active rows match soft fills. */
+  --sidebar-accent: var(--muted);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--info);
+
+  --surface-canvas: var(--secondary);
+  --surface-navigation: var(--sidebar);
+  --surface-page: var(--background);
+  --surface-edge: oklch(0.184 0 0);
+  --surface-panel: var(--card);
+  --surface-control: var(--popover);
+  --surface-hover: var(--hover-solid);
+  --surface-subtle: color-mix(in oklch, var(--surface-panel) 65%, var(--surface-hover));
+  --surface-selected: var(--secondary);
+  --control-hover: var(--hover-solid);
+  --text-primary: var(--foreground);
+  --text-secondary: var(--secondary-foreground);
+  --text-muted: var(--muted-foreground);
+  --stroke-default: var(--border);
+  --stroke-hover: oklch(0.29 0 0);
+  --stroke-strong: var(--muted-foreground);
+  --action-primary: var(--primary);
+  --action-foreground: var(--primary-foreground);
+  --destructive-surface: var(--secondary);
+  --destructive-hover: var(--hover-solid);
+  --action-hover: var(--foreground);
+}

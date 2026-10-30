@@ -1,0 +1,61 @@
+.page-header {
+  margin-bottom: 18px;
+}
+.page-header[data-align="center"] .page-heading {
+  justify-content: center;
+  text-align: center;
+}
+.page-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.page-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+.page-heading h1 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.page-count {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.page-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.page-subtitle {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+
+.workspace-panes [data-panel-id="chat"] .page-header-row {
+  flex-wrap: nowrap;
+}
+.page-heading > :not(h1) {
+  flex-shrink: 0;
+}
+
+.page-heading:has(> .thread-back-flush) {
+  gap: 4px;
+}

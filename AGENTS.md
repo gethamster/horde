@@ -1,70 +1,54 @@
-## gstack
+# Horde
 
-Use the `/browse` skill from gstack for all web browsing. Never use
-`mcp__claude-in-chrome__*` tools directly.
+Read and apply the [shared contributor guide](.agents/oss-delivery/AGENTS.md)
+from [oss-delivery](https://github.com/gethamster/oss-delivery), pinned at
+`1fa9eb4630de5885ae521d6af3b080245a3e9965` in [.agents/oss-delivery/lock.json](.agents/oss-delivery/lock.json).
+The complete pack is available locally in `.agents/skills/`; `.claude/skills/`
+contains regular-file entrypoints to the same instructions.
 
-## Project
+Always apply [verified-delivery](.agents/skills/verified-delivery/SKILL.md) and
+[workspace-cleanup](.agents/skills/workspace-cleanup/SKILL.md). Solve the requested
+problem, use proportionate proof, run relevant existing staging smoke/evals,
+and ship once the outcome and actual repository gates pass. Reuse valid evidence.
+Temporary repro tests may be removed when they add no continuing value. Do not
+add coverage quotas, mandatory test-first work, independent review, full-suite
+reruns, or another approval round by default. Carry existing user authorization
+through delivery; ask only for a genuinely missing decision or permission.
 
-This is a Rust daemon with embedded SQLite, CLI and MCP interfaces. Read
-`docs/architecture.md` before changing persistence or recovery. Keep worker
-conversation separate from authoritative workflow and ownership state.
+These notes and nested contributor files add repository facts and affected
+commands, not extra process gates. Product authorization and data boundaries
+remain part of correct behavior. Runtime-agent instructions describe agents
+running inside the product and do not override this contributor workflow.
+Update shared guidance in oss-delivery, then sync the pinned copy; do not fork
+its managed files locally.
 
-For Rust changes, use `cargo fmt --all --check`,
-`cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`
-for verification. Choose checks by the changed behavior; documentation-only
-edits need content and link checks, not Rust builds. Apply this scope when
-following the PR-writing skills too. Tests must use temporary repositories
-and mock external writes by default. Live provider scripts are opt-in and may
-consume subscription/API capacity. Never commit credentials, runtime databases,
-or worker transcripts.
+## Repository scope
 
-## Deliver without process churn
+Horde is a Rust daemon with SQLite, CLI, and MCP interfaces. Read the relevant
+[architecture](docs/architecture.md) before changing persistence or recovery.
+Keep worker conversation separate from authoritative workflow/ownership state.
+Preserve claims, durable operation identities, and correct provider usage.
+Choosing a contributor model does not authorize substituting the customer's
+configured model or provider in the product.
 
-- Carry the user's authorization and constraints through the whole task. Do
-  routine implementation, checks, publication, and authorized release without
-  asking again. Ask only for an unresolved decision the user must make; first
-  finish the independent work and present the concrete decision and evidence.
-- Give each distinct root cause one owner through verified delivery. Check for
-  existing investigations and patches before assigning more agents. Parallelize
-  independent fixes and review alongside builds; avoid overlapping diagnosis,
-  chains of coordinating agents, and completed patches waiting for a handoff.
-- Use one independent review. Reuse its evidence for unchanged patches and
-  mechanical rebases; review substantive changes. A reviewer blocks on a concrete
-  defect or violated requirement with evidence, not speculative reassurance.
-- Run checks that establish the changed behavior once. Repeat only for changed
-  behavior, a failure, or unresolved evidence. Add no approval, cooldown, test,
-  or release requirement merely to make the agent feel more certain. Use the
-  existing build and release mechanisms rather than starting duplicate runs.
-- Reuse traces, reproduction results, and review evidence. Record the current
-  conclusion and next action so another agent can continue without rediscovery.
-  Repeat an investigation only when new evidence can change the decision.
-- Fix a demonstrated queue or publication bottleneck before feeding it more
-  agents. Preserve necessary authorization, financial correctness, ownership,
-  and customer restrictions at their authoritative boundary; remove redundant
-  checks and keep unrelated provider failures scoped to their own evidence.
-- Report merged, released, installed, and positively verified work separately.
-  Say "not shipped", "unverified", or "unknown" when applicable, and name the
-  actual blocker and next action. Count distinct verified fixes separately from
-  stale closures, duplicates, PRs, busy agents, tokens, and checks. Label daily
-  counts with their time window and source; activity is not a delivery outcome.
+Use temporary repositories and existing fake endpoints for checks that would
+otherwise mutate external systems. Do not add a mock architecture by default.
+Live provider scripts may consume account/API capacity; run them only within
+the requested scope and authorization. Keep credentials, runtime databases, and
+worker transcripts out of Git.
 
-Choosing a model or provider for development agents authorizes no substitution
-of the models or providers in the system being built, operated, or tested.
-Preserve the customer's requested model and restrictions. Success with one
-model or provider is not evidence that another works.
+## Relevant checks and delivery
 
-## Writing
+Use focused Rust checks while fixing a bounded issue. [CI](.github/workflows/ci.yml)
+and [Rust checks](.github/workflows/rust-checks.yml) define existing verification;
+do not repeat the full matrix locally or add an independent review by default.
+Documentation-only changes need content and link checks. Follow
+[CONTRIBUTING.md](CONTRIBUTING.md) for affected generated catalogs and release
+commands. Guidance-only changes do not require a binary release.
 
-Use [people-first-pr-descriptions](.agents/skills/people-first-pr-descriptions/SKILL.md)
-for every pull-request title and body (Studio’s people-first structure: What
-changed → Why it matters → How it works → User impact → Scope → Validation →
-optional Technical details). Use
-[writer-responsible-prose](.agents/skills/writer-responsible-prose/SKILL.md)
-when drafting or revising that prose so it stays human. Read its instructions
-and the references relevant to the edit. Claude uses a regular-file entrypoint in
-`.claude/skills/writer-responsible-prose` that points to the shared skill. Keep
-repository skill entrypoints free of symlinks because remote snapshots reject them.
-
-Include a Mermaid diagram of the relevant flow when it clarifies the change, and
-validate it before publishing. State only checks that actually ran and any
-remaining limits.
+Use [people-first PR writing](.agents/skills/people-first-pr-descriptions/SKILL.md)
+and [writer-responsible-prose](.agents/skills/writer-responsible-prose/SKILL.md)
+for concise, factual descriptions. Neither adds validation stages. Keep skill
+entrypoints as regular files because remote snapshots reject symlinks.
+The `skills/` directory ships Horde workflows for runtime users; it does not
+require contributors to execute those workflows for every repository change.

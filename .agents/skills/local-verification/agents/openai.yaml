@@ -1,0 +1,5 @@
+interface:
+  display_name: "Local Verification"
+  short_description: "Verify running services through real user operations"
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,6 @@
+body:has(.pill-picker-positioner[data-side="none"]) .pill-picker-trigger[data-popup-open] { opacity: 0; }
+.pill-picker-positioner { z-index: 110; max-width: calc(100vw - 24px); }
+.pill-picker-popup { padding: 0; border: 0; background: transparent; box-shadow: none; color: var(--text-primary); max-height: var(--available-height); overflow: auto; }
+.pill-picker-list { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.pill-picker-option { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-height: 32px; padding: 0 10px; border-radius: 999px; background: var(--surface-hover); font-size: 12px; font-weight: 500; line-height: 18px; cursor: pointer; outline: none; }
+.pill-picker-option[data-highlighted] { background: var(--surface-selected); }

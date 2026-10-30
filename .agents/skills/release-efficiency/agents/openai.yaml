@@ -1,0 +1,5 @@
+interface:
+  display_name: "Release Efficiency"
+  short_description: "Improve build and release time without weakening checks"
+policy:
+  allow_implicit_invocation: true

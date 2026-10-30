@@ -1,0 +1,7 @@
+.panel-add-action {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
+.panel-add-action-compact { margin: 0; }

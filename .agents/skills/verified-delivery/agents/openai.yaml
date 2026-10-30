@@ -1,0 +1,5 @@
+interface:
+  display_name: "Verified Delivery"
+  short_description: "Fix the problem, smoke-test, decide, and ship"
+policy:
+  allow_implicit_invocation: true

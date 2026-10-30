@@ -1,0 +1,8 @@
+.action-feedback-viewport { position: fixed; z-index: 100; top: max(24px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); outline: none; }
+.action-feedback { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 18px; border: 1px solid var(--stroke-default); border-radius: 24px; background: var(--surface-control); color: var(--text-primary); box-shadow: 0 4px 20px rgb(0 0 0 / 10%); font-size: 14px; line-height: 20px; opacity: 1; transition: opacity 220ms ease; }
+.action-feedback > svg, .action-feedback > button { flex-shrink: 0; }
+.action-feedback[data-limited] { display: none; }
+.action-feedback[data-starting-style], .action-feedback[data-ending-style] { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .action-feedback { transition: none; } }
+
+.action-feedback-content { min-width: 0; overflow-wrap: anywhere; }

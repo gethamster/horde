@@ -1,19 +1,18 @@
 # Contributing
 
-Use the pinned Rust toolchain and keep the lockfile committed. Run formatting,
-Clippy with warnings denied, and the full test suite before proposing a change:
+Follow [AGENTS.md](AGENTS.md) and the pinned oss-delivery contributor policy.
+Use the pinned Rust toolchain and keep the lockfile committed. Run focused checks
+for the affected behavior; CI owns its existing full matrix. Available commands
+include `cargo fmt --all --check`, `cargo clippy --locked --all-targets -- -D warnings`,
+and `cargo test --locked`; this is not a requirement to rerun all three for every
+edit. Documentation-only work needs content and link checks.
 
-```sh
-cargo fmt --all --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-```
-
-Add behavioral tests for changes to ownership, persistence, recovery, provider
-contracts, and external writes. Use isolated temporary repositories and fake
-provider endpoints by default. Live scripts are opt-in and may consume account
-capacity; never require personal credentials in CI. Do not commit keys, runtime
-databases, transcripts, or temporary worktrees.
+Use a reproduction or behavioral test when it helps establish correctness.
+Keep new permanent tests only when they protect a meaningful contract or likely
+recurrence. Existing tests and required CI remain in place. Use temporary
+repositories and fake endpoints for checks that would otherwise write to external
+systems; live scripts need appropriate scope and authorization. Never commit
+credentials, runtime databases, transcripts, or temporary worktrees.
 
 Treat schema changes as migrations. Never silently downgrade an unknown database
 version, release an uncertain worker's claims, retry an un-reconciled external

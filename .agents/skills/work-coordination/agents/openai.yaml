@@ -1,0 +1,5 @@
+interface:
+  display_name: "Work Coordination"
+  short_description: "Coordinate contributors, handoffs, and shared services"
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Technical Documentation"
+  short_description: "Keep contracts, architecture, and runbooks accurate"
+policy:
+  allow_implicit_invocation: true

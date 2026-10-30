@@ -1,0 +1,95 @@
+{
+  "source_repository": "https://github.com/gethamster/oss-system",
+  "source_revision": "491ebdc11fe5f8270049474f7aeff86849acdc83",
+  "files": [
+    {
+      "source_path": "apps/studio/web/components.json",
+      "asset_path": "assets/studio/components.json",
+      "sha256": "156858e2da20785ac0f1853580c7e34d5b8496f519e8839d2176e85947d4f779"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/ui/button.tsx",
+      "asset_path": "assets/studio/src/components/ui/button.tsx",
+      "sha256": "ebffd619c771bc1faa436e731aadb16a0ed7ce3c0b99d39d5dd21d2d9ae94547"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/ui/input.tsx",
+      "asset_path": "assets/studio/src/components/ui/input.tsx",
+      "sha256": "714f399fcc7baccf9ada36c304de0e24a7b8303bbf9868d67963909b6fe9e779"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/ui/badge.tsx",
+      "asset_path": "assets/studio/src/components/ui/badge.tsx",
+      "sha256": "9349e64f8d8b8d047a964460a850d259b185fd40a768d9edbb395618b11af8da"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/compact-controls.css",
+      "asset_path": "assets/studio/src/components/compact-controls.css",
+      "sha256": "9c927ad07c54226f08f793531f215240b77a8757875894cfe0fe4daba31c6326"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/PanelAddAction.tsx",
+      "asset_path": "assets/studio/src/components/PanelAddAction.tsx",
+      "sha256": "ea847c8c2b63dae9d52b185eebf38f72aa2603dff70708b1e349490101f74888"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/panel-add-action.css",
+      "asset_path": "assets/studio/src/components/panel-add-action.css",
+      "sha256": "3d1ee2bdead6214583dd20294042acd31ef1493b1f7267409280639c6a10c211"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/FieldShell.tsx",
+      "asset_path": "assets/studio/src/components/FieldShell.tsx",
+      "sha256": "dfda809f58fe4e651c01b8a46b33abcfa06f01c170a79cf9c816b0b8d428a69c"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/field-shell.css",
+      "asset_path": "assets/studio/src/components/field-shell.css",
+      "sha256": "b59ef78b71820c8f12d60f6214eb762032846fb0dcac487c5023a86cac5e32cd"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/PillPicker.tsx",
+      "asset_path": "assets/studio/src/components/PillPicker.tsx",
+      "sha256": "b1bae25c1eaf0c23a22963fc4375dddb15998db21bbb7aad66996f44c17fed46"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/pill-picker.css",
+      "asset_path": "assets/studio/src/components/pill-picker.css",
+      "sha256": "db05d3c9d07cd0f9bfad100eb53c321da34cfe75df5a59c577cbe9fcc3233ea0"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/PageHeader.tsx",
+      "asset_path": "assets/studio/src/components/PageHeader.tsx",
+      "sha256": "dc143f305b37df00f454ed563e9cc4a97af84706091c2f49871fbb02c6a25c6f"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/page-header.css",
+      "asset_path": "assets/studio/src/components/page-header.css",
+      "sha256": "171d8116c8139510d003a489bef175f2c09a48f6a2cd15ba66991b77a0b99092"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/ActionFeedback.tsx",
+      "asset_path": "assets/studio/src/components/ActionFeedback.tsx",
+      "sha256": "f18ddd9d9880000cb642f2231b0540253be7dbfa4129e1a8f83c4e990e0d4513"
+    },
+    {
+      "source_path": "apps/studio/web/src/components/action-feedback.css",
+      "asset_path": "assets/studio/src/components/action-feedback.css",
+      "sha256": "ced136bd0a85b489e5fd41ea84252d94140ec3541f27328ee37a6b313ad989b8"
+    },
+    {
+      "source_path": "apps/studio/web/src/styles/shadcn-LICENSE.md",
+      "asset_path": "assets/studio/src/styles/shadcn-LICENSE.md",
+      "sha256": "1564074e13439397221ffd522e2e504d56561994a23d371aa5e3ad43e4f5423f"
+    }
+  ],
+  "derived": [
+    {
+      "source_path": "apps/studio/web/src/index.css",
+      "source_sha256": "91d5f6f4f68e6c02535a84c4d2ed1a485bd66251d10821a0418c70a3809058cd",
+      "asset_path": "assets/studio/src/tokens.css",
+      "sha256": "fa519a7bb7e8843d2f1da59786934b29f0e345a8fd5b969a29e460f18706f95c",
+      "extraction": "Exact @theme inline, :root, and .dark blocks; application styles, imports, and global base rules excluded."
+    }
+  ]
+}

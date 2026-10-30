@@ -1,0 +1,846 @@
+{
+  "repository": "https://github.com/gethamster/oss-delivery",
+  "revision": "1fa9eb4630de5885ae521d6af3b080245a3e9965",
+  "files": {
+    ".agents/oss-delivery/AGENTS.md": {
+      "sha256": "fcc55a13055600a559d2081d68a86ce94699b2bc77542a3d820bc0448f116b2c",
+      "mode": 420
+    },
+    ".agents/skills/domain-language/SKILL.md": {
+      "sha256": "1f09976d1f665b2bc0e448c318a94bb3e1bb424bebb5783228b9ab2f1f788f7e",
+      "mode": 420
+    },
+    ".agents/skills/domain-language/agents/openai.yaml": {
+      "sha256": "4c4b80e3a7d22b22e204b843af734c260369ab41821236412c8c54dd440fd46c",
+      "mode": 420
+    },
+    ".agents/skills/domain-language/references/compatibility-renames.md": {
+      "sha256": "ca0e973fc18bf2a3c3c471e33e4d2a954a5a4f630dc9d21e175d04bde1d37bc1",
+      "mode": 420
+    },
+    ".agents/skills/domain-language/references/naming-decisions.md": {
+      "sha256": "32066b944cffd0750392195cdcd47db9a3d05dfafb39523dc9ad1b9ed26213c6",
+      "mode": 420
+    },
+    ".agents/skills/domain-language/references/source.md": {
+      "sha256": "3deab3552b45c4543d76e9811a2571297c14c8a18ec3b9805552a71e766b22e4",
+      "mode": 420
+    },
+    ".agents/skills/incident-recovery/SKILL.md": {
+      "sha256": "3460316351f06918fbcab1d427ee84444eaa090923baacc4061fd6b83c4b9838",
+      "mode": 420
+    },
+    ".agents/skills/incident-recovery/agents/openai.yaml": {
+      "sha256": "e732a1093ed36ba9bdab447bf9ac611dd4bbc96ab1928acf72f3c61800ab73a3",
+      "mode": 420
+    },
+    ".agents/skills/incident-recovery/references/incident-evidence.md": {
+      "sha256": "953e9de789e8d5b892f8881bf104b3baecbf13286205b0f8cb16a98a790c0871",
+      "mode": 420
+    },
+    ".agents/skills/incident-recovery/references/recovery.md": {
+      "sha256": "9916100475eb9636f094d86f205d55e823f242fbef946491736e10f5fe42094b",
+      "mode": 420
+    },
+    ".agents/skills/incident-recovery/references/source.md": {
+      "sha256": "85c3db5b8dcbb0c79a443bdfa9341f7db102c1a2c865c4395d1cbd842e8fb51d",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/SKILL.md": {
+      "sha256": "d40ce0b015837ff639aae996475a773469ac3f41714680bebc4cc44b3c429e25",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/agents/openai.yaml": {
+      "sha256": "815d63a314b1430d8150b45b6f5d69e78977d251d34c9413640d4b445f568a6b",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/components.json": {
+      "sha256": "156858e2da20785ac0f1853580c7e34d5b8496f519e8839d2176e85947d4f779",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/source-manifest.json": {
+      "sha256": "f717cafac5f5d97dfc395cf12948639fab47b7744e517844d884eb854a38bdcb",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/ActionFeedback.tsx": {
+      "sha256": "f18ddd9d9880000cb642f2231b0540253be7dbfa4129e1a8f83c4e990e0d4513",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/FieldShell.tsx": {
+      "sha256": "dfda809f58fe4e651c01b8a46b33abcfa06f01c170a79cf9c816b0b8d428a69c",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/PageHeader.tsx": {
+      "sha256": "dc143f305b37df00f454ed563e9cc4a97af84706091c2f49871fbb02c6a25c6f",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/PanelAddAction.tsx": {
+      "sha256": "ea847c8c2b63dae9d52b185eebf38f72aa2603dff70708b1e349490101f74888",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/PillPicker.tsx": {
+      "sha256": "b1bae25c1eaf0c23a22963fc4375dddb15998db21bbb7aad66996f44c17fed46",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/action-feedback.css": {
+      "sha256": "ced136bd0a85b489e5fd41ea84252d94140ec3541f27328ee37a6b313ad989b8",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/compact-controls.css": {
+      "sha256": "9c927ad07c54226f08f793531f215240b77a8757875894cfe0fe4daba31c6326",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/field-shell.css": {
+      "sha256": "b59ef78b71820c8f12d60f6214eb762032846fb0dcac487c5023a86cac5e32cd",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/page-header.css": {
+      "sha256": "171d8116c8139510d003a489bef175f2c09a48f6a2cd15ba66991b77a0b99092",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/panel-add-action.css": {
+      "sha256": "3d1ee2bdead6214583dd20294042acd31ef1493b1f7267409280639c6a10c211",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/pill-picker.css": {
+      "sha256": "db05d3c9d07cd0f9bfad100eb53c321da34cfe75df5a59c577cbe9fcc3233ea0",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/ui/badge.tsx": {
+      "sha256": "9349e64f8d8b8d047a964460a850d259b185fd40a768d9edbb395618b11af8da",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/ui/button.tsx": {
+      "sha256": "ebffd619c771bc1faa436e731aadb16a0ed7ce3c0b99d39d5dd21d2d9ae94547",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/components/ui/input.tsx": {
+      "sha256": "714f399fcc7baccf9ada36c304de0e24a7b8303bbf9868d67963909b6fe9e779",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/styles/shadcn-LICENSE.md": {
+      "sha256": "1564074e13439397221ffd522e2e504d56561994a23d371aa5e3ad43e4f5423f",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/assets/studio/src/tokens.css": {
+      "sha256": "fa519a7bb7e8843d2f1da59786934b29f0e345a8fd5b969a29e460f18706f95c",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/references/feedback-and-accessibility.md": {
+      "sha256": "e6b33556f1884dd0eb0421edbedb39977d5d8bc3e55505478ea2d7153330d3ec",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/references/source.md": {
+      "sha256": "c425a07e49fc8d48dc0ed03805e70b502958eb56677ff79243e3b1edc1524420",
+      "mode": 420
+    },
+    ".agents/skills/interface-design/references/studio-design.md": {
+      "sha256": "307149a27d2d7b4a340099a1b910d684ff066406210cfa1e90a2b9d58028871d",
+      "mode": 420
+    },
+    ".agents/skills/local-verification/SKILL.md": {
+      "sha256": "9079fb4d45f6cf17e81de234acdab9f54f422f9e85a3424a2818e2e291d0c654",
+      "mode": 420
+    },
+    ".agents/skills/local-verification/agents/openai.yaml": {
+      "sha256": "e3f35ef7011f2369315d430754a085386ee741cdc8f1b4b905b3b58a61f7f50f",
+      "mode": 420
+    },
+    ".agents/skills/local-verification/references/service-lifecycle.md": {
+      "sha256": "ca3286e28e9748f75a17475104a9e3ea5f33a1ba69044239ee8429e2f1338f6d",
+      "mode": 420
+    },
+    ".agents/skills/local-verification/references/source.md": {
+      "sha256": "cee3d786e3a4f204f94f136f3443e8a3abbd5020aa06ffdb9ae7f7860842287e",
+      "mode": 420
+    },
+    ".agents/skills/local-verification/references/user-journeys.md": {
+      "sha256": "3f394c1d33774ae73b8c2bb296e5ea19f585aa4ae60aca6e37a674a9721197e9",
+      "mode": 420
+    },
+    ".agents/skills/release-efficiency/SKILL.md": {
+      "sha256": "a853a102bdcb7d0e1b8cf46d06dbd8cbf092d0979f102d46504e2da53f7a3bd1",
+      "mode": 420
+    },
+    ".agents/skills/release-efficiency/agents/openai.yaml": {
+      "sha256": "31d6f675f81b8a7383b386156b8ee8d7148dca4d9ceb347b7f0445e5740b9f8d",
+      "mode": 420
+    },
+    ".agents/skills/release-efficiency/references/pipeline-compatibility.md": {
+      "sha256": "7368b7418c1763e83e88ae103601fc6878b1f6b87d3a63a07b5c531d4969f769",
+      "mode": 420
+    },
+    ".agents/skills/release-efficiency/references/source.md": {
+      "sha256": "25f335ea74398d581e3aee2681d2e966379f2789ceebd37557680e184c444783",
+      "mode": 420
+    },
+    ".agents/skills/release-efficiency/references/timing-and-caches.md": {
+      "sha256": "415e8f17f526e809c358bd5bdd0e13dee3980e1365bfaad69a5d604c57da4f33",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/LICENSE": {
+      "sha256": "fe7214bea08bfb3d6b8c34841b54f7bc8ee84b080c83888aed9b0df321705d7c",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/SKILL.md": {
+      "sha256": "42b2e31b5c1f6a0082e20340c49431037abd6646bef59ae631a629fd3e92de9a",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/case.yaml": {
+      "sha256": "5950689c9d31cf56fa7142510b5966ff5940b394965c7118739415965e47605d",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/files/Cargo.lock": {
+      "sha256": "e600ab9927c3cbf9242c99e5907fb0320fa9f5baa9e3258c456eed0b2ef7a54a",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/files/Cargo.toml": {
+      "sha256": "51c0f40a4291e19672e290a06a76b3f4175369b7724c129fe86d82e16c1dd138",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/files/src/lib.rs": {
+      "sha256": "67cde35eb3083ab11c48315615cf08e3b46c1247db09240df8baa8db01ac81db",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/files/tests/arena.rs": {
+      "sha256": "76e3f1507e775f30f336579a782cd3b02fb3a3c50416432f2abd51b1319518e0",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/graders/01-builds-and-tests-pass.md": {
+      "sha256": "edbb6ad404cc81a2fd839414c89b818a8b310172221228f32d65445b474ddec0",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/graders/02-regen-tested-headless.md": {
+      "sha256": "2c957f88a28903907599b713ca86775d0ce54756cc0961d74e66c56ca242effa",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/graders/03-system-params-by-value.md": {
+      "sha256": "86bf0402ec280d0610c12d7e1c2b3bd84e649f43c32b9ae26a78c178b8bdfd14",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/graders/04-keeps-bevy-prelude.md": {
+      "sha256": "0d80d3926c6073f469525c5d4fa4631619aad6a85f077af6d8ad165de11fa676",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/graders/05-plain-data-components.md": {
+      "sha256": "b6bbb9510fd160094883a2dfd09958b204e5a80343bc7f0c763df3f68d548a7b",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/graders/06-ordered-after-damage.md": {
+      "sha256": "7979e7fe11696cea9088c5815d6938ae1193060f692934588daf5ea91a8e7d57",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/graders/07-no-panicking-queries.md": {
+      "sha256": "b7d02f4a4a7346805c0a10b8097df2b4f1c8d8fadd14d289df0d9496c67d243d",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/graders/08-clippy-clean.md": {
+      "sha256": "fe76d8a14543365ca5a938b344437e88eab3dac18a19dfb1a3566da850dd48b2",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/graders/09-health-never-exceeds-max.md": {
+      "sha256": "0942591879e29881af8984c8e5d66c06d478c1c249f3381599b7d468f0b308f2",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/graders/10-existing-code-not-rewritten.md": {
+      "sha256": "da70d97732bb6d60510b2f72928f6f8c0f836f83466b582691ac5a838797e078",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/place-files.sh": {
+      "sha256": "841ddfa163cad7bfb1217717eca171b8464dea243cf19f3cf449d9a60b01251d",
+      "mode": 493
+    },
+    ".agents/skills/rust-best-practices/evals/bevy-arena-regen/prompt.md": {
+      "sha256": "66a38ef4ee2cbfb0a555bb115563b71753ed0a0929b8e625d73a1f2bb6be8542",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/log-summary-cli/case.yaml": {
+      "sha256": "11b06f4c0d6d5486d818583c200fefa75c171dc8306aa3948c09fdd5f03f91cd",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/log-summary-cli/graders/01-never-panics-on-bad-input.md": {
+      "sha256": "736c1d3a2799444df398070502b42c6ae1e515a80773783c5aeb20eaaece1796",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/log-summary-cli/graders/02-errors-name-the-file.md": {
+      "sha256": "43ac9cd2498b9c2ef8f1d754d2b7e43cc7a86cbfc6f107cdef770d700ba8cb58",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/log-summary-cli/graders/03-malformed-lines-counted.md": {
+      "sha256": "2e09e0eccef46cc8ed747f1111c6551a087df23b3ddd9f18d87a5f2584180cfe",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/log-summary-cli/graders/04-paths-as-path-types.md": {
+      "sha256": "3c8cc7730d85398556cc1d3e738d0ff8de2f6b53ccf0758f15221ec36ac9095f",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/log-summary-cli/graders/05-sorted-and-skipped-count.md": {
+      "sha256": "284381900b54b7e07335757faeb4486663d359f3c2d3bc7658c5e7d8dcdc42ef",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/log-summary-cli/graders/06-dependency-ranges.md": {
+      "sha256": "d4076d13b3432953fbfb4e48e0146f8c184c240d839897797e60f69a02a45858",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/log-summary-cli/graders/07-map-based-counting.md": {
+      "sha256": "a26b387a63e4a8e2455277d9608e58ea9318f0fe2024bc5a14e3263599e960a0",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/log-summary-cli/graders/08-aggregation-verified.md": {
+      "sha256": "aa42e52ed2a83b7697df8755e09161ad2943bfe1687a81e54f8aec7ca1515cb6",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/log-summary-cli/prompt.md": {
+      "sha256": "869fb3495d57db2b0bbb1d3cab0a367f9c0e99e1c97b82f442697cbb1f2022ec",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/case.yaml": {
+      "sha256": "c1a2d36e9cc12790ee6b4fe3eb17ff986d5d672f66164ffecf0350d568adc350",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/files/inventory.rs": {
+      "sha256": "da0d9d63a50e01fc56d815c3cd6b6bc8f59fe07938b0e6e4a9e34722957571da",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/01-deny-warnings-removed.md": {
+      "sha256": "8ee03ca3de16a7ef568b19b55b727a2ff3c3d1677965835ee187447de96d75ef",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/02-no-rc-refcell-in-api.md": {
+      "sha256": "58ab79f9a7d8fca3eff16cdd8079ba357fd01295f4bd5d7d2d3ba6506190238e",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/03-borrowed-param-types.md": {
+      "sha256": "b93b12e2410f3831688c13afc7689e6a4c70af5d655a748ba17856df8d388c7a",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/04-error-implements-error.md": {
+      "sha256": "875d83ad6e7d1ade58decc8d77b73e039f597dcd11b02698699f75795227e011",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/05-no-unwrap-on-fallible-paths.md": {
+      "sha256": "115ff30817867e0484dcc307857dd87dc24b6f115c49027899dbdf5b3d616227",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/06-getter-renamed.md": {
+      "sha256": "b1ad9dcd86f1d1561b8d8529d9cc166655a661d8fb4008bd7e5fdf4061612bbb",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/07-bool-param-replaced.md": {
+      "sha256": "fec5cfc16ad8b6471a4dcae339eef3c4f9bdb29fa62fc24775d17e02d04bec3a",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/08-deterministic-report.md": {
+      "sha256": "5d156f60430f31cfab617491762bc825023f4cebbc8323f5206b480c54af33eb",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/09-format-over-concat.md": {
+      "sha256": "fa5c3f445099145c2f2a80f96b05d9d3ca3257f610620f3349954279183d94af",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/10-no-check-then-unwrap.md": {
+      "sha256": "0538f879ff5ff29958a7ac2ec02f81ced21a13f32c5608c85d5ad8508dba292f",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/11-changes-listed-with-reasons.md": {
+      "sha256": "b200c101aeee5852d8ac3b6ac9296d331e7e82802acc036dde83bb926ca1f3d7",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/graders/12-signature-changes-called-out.md": {
+      "sha256": "8382adeb1aefdb181fda7eb18ce2af7e17337907513c8800d55357fb69a6fe6f",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/place-files.sh": {
+      "sha256": "841ddfa163cad7bfb1217717eca171b8464dea243cf19f3cf449d9a60b01251d",
+      "mode": 493
+    },
+    ".agents/skills/rust-best-practices/evals/refactor-inventory-module/prompt.md": {
+      "sha256": "e216aca10839bc2e6706b44262a15eee77b2cedaeac0fd8af6da1f1d910f453c",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/case.yaml": {
+      "sha256": "886225ec97701df3ad1f4ea8e5841d70ce4edcd7297e2389d17f733e3e9c290e",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/graders/01-implements-fromstr.md": {
+      "sha256": "dbf99eff3c48412ea8c9aa2ec93102484af911d018cf7e7446592259e9d16c60",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/graders/02-implements-display.md": {
+      "sha256": "8965bde45ebe995e1654c86363c65d4e2c39a68105c24bab182b9f244744cb57",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/graders/03-dedicated-error-type.md": {
+      "sha256": "bc4fb09e89510043960e58eedc1b2410fd0de56e750ae8a7f8ef7b66ca9ed6c9",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/graders/04-common-traits-derived.md": {
+      "sha256": "a02a779c06dfba6e9c05c7a294c35a4a2a7aeb51344482a6d46ebff5d1bf9f09",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/graders/05-fields-private.md": {
+      "sha256": "d9556c35ba8e2d0ad9cf932ef58de47a56abb26d1b6e0a38bdf7b753d2e72fe3",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/graders/06-rustdoc-with-errors-section.md": {
+      "sha256": "d21f822ad9c78d43428e077a3cc31809fb3187092cd2c7e861232e82615051eb",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/graders/07-doc-examples-use-question-mark.md": {
+      "sha256": "353f155493d064c76e2a6931cb775f4e92dd56ef347174d3a30fa1feedc48776",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/graders/08-precedence-rules-tested.md": {
+      "sha256": "a511448bbaf85ee40f614eab72a9d68f0ed41903cc052711f3a6f9ca225f04c1",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/graders/09-no-unwrap-in-library-code.md": {
+      "sha256": "0ad37cc7dc9c5ae0373eb3cb0f31ce32ac159bc5adbc24b93941bc1743109474",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/graders/10-eq-hash-agree-with-ord.md": {
+      "sha256": "2bbc3e0ee2bc285938e49af5fdafa1d2012578947efac3f05689ab014734076d",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/evals/semver-library-api/prompt.md": {
+      "sha256": "9367bdf7273debb1f66239c72a35c8f17431e56fbf6d98a797e6c698b5acd35e",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/references/bevy.md": {
+      "sha256": "05b1de464f1adad6974abdb2b3eb2e005d09507834ff21e08e43cb2b5cdb1a94",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/references/effective-rust.md": {
+      "sha256": "d0746999659a03d95da661c16a37d0951bfe5c6efc3a57d9ada0de45f516ed24",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/references/google-rust-style-guide.md": {
+      "sha256": "d8b822eafe88a1264d02a0f108225969a1830eff6b328e2e511b2864449b18b6",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/references/microsoft-rust-guidelines.md": {
+      "sha256": "65ea6b1c41d8a21c89f7123d48f68b5f1d22a7d6ca4aa8e12b618ff4a9534bea",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/references/rust-api-guidelines.md": {
+      "sha256": "39eda589cd57f6d0c55f0767365b0f66441dd40d22f833eeeddbb549462ceb3b",
+      "mode": 420
+    },
+    ".agents/skills/rust-best-practices/references/rust-design-patterns.md": {
+      "sha256": "f7ea9e3bb35d86a66fab7f53f043dc38df7053db5e302e23850da64092f79f4b",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/LICENSE": {
+      "sha256": "fe7214bea08bfb3d6b8c34841b54f7bc8ee84b080c83888aed9b0df321705d7c",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/SKILL.md": {
+      "sha256": "84d74392828c41e3c87f244c9a2c541ee2f8c4d321d7d57cd0a94584cc95e0bc",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/case.yaml": {
+      "sha256": "8f1e3292a2b06a257d94b11021bbc770eca3724bbfde5ac9326657308c29efa2",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/files/config.c": {
+      "sha256": "bdf52cdcfa15a2e6c557a5da8bb5b181bee6f147e36dd292a4ae6bd84ec494e3",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/files/config.h": {
+      "sha256": "670378f55c07b92c25e624c31c3e774c38f5fc248eccad19d643dfd1f0b97577",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/files/test_config.c": {
+      "sha256": "8ea75dbd5d632fcd420f530fac3a668060a0ce7e72a7b2fa4605da95ebf9372c",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/01-builds-and-tests-pass.md": {
+      "sha256": "488ca6542373205a72e0f956ec47b6ee8c85eb6c8bfdcb67f8b378afa6cd9422",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/02-clippy-clean.md": {
+      "sha256": "74ac82c250ba94cb6ad5951cf57adf2c29d4f1449771f7a5935d04625adcaed2",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/03-no-unsafe.md": {
+      "sha256": "1a536fa028660dbcf4bfdac27fbed7734901013e94202900331e04ac46a3358b",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/04-every-test-ported.md": {
+      "sha256": "6723382fe01c603f396538ddacbe1f290e1dd0d1dae8a8f57f7dc5fc959477b5",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/05-errors-as-result.md": {
+      "sha256": "1a9d229c0b16ef794394d6f36c0efd237d18c664e6ec41d10898eb72fb2f20d3",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/06-error-implements-error.md": {
+      "sha256": "49d8f459296518b7a6370dd3f6379a7019227ad5a3f88c06c11bcc58eeef04f6",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/07-option-for-absent.md": {
+      "sha256": "0127d942511f688e106253dea62f5b800891ccdd22ad6a730bfbcd70e81166e5",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/08-typed-flags.md": {
+      "sha256": "a12ef2cb2eec0ffbd45363bccdcdfa5c4b026042e378442d897bcf975e5a0138",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/09-behavior-preserved.md": {
+      "sha256": "786bb6d2bf8a63ec69a067345704e98e40f7a3f734b8f3bba5ff27febf5635eb",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/10-porting-notes.md": {
+      "sha256": "c0e0a51569cc3ab18c372bd41b41bb6ededabae88aa9446329baf18f7fd97411",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/graders/11-proportionate.md": {
+      "sha256": "3d87f6b43cbe915012c3c64e995c34a85297404b92801986033ef6d3a7794f5d",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/place-files.sh": {
+      "sha256": "841ddfa163cad7bfb1217717eca171b8464dea243cf19f3cf449d9a60b01251d",
+      "mode": 493
+    },
+    ".agents/skills/rust-port/evals/port-c-config-parser/prompt.md": {
+      "sha256": "3baac25dc4d15437a1b5fc9563efc783a1146cd354a4257823bf746b1130dd61",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/case.yaml": {
+      "sha256": "6b8314b7bc2388d7e85d4a04764c23969f73b7a58a3fa39258b41c81bda91719",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/files/taskgraph.py": {
+      "sha256": "81a1f48f8d585ecf7d762f6704a5c99edb2235670b69f9e2bda01135db7f4d64",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/files/test_taskgraph.py": {
+      "sha256": "3d738bf25df2f91d91fc27fcd9201dadfe295879167783cd91928ffbb3b8c6b0",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/01-builds-and-tests-pass.md": {
+      "sha256": "488ca6542373205a72e0f956ec47b6ee8c85eb6c8bfdcb67f8b378afa6cd9422",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/02-clippy-clean.md": {
+      "sha256": "74ac82c250ba94cb6ad5951cf57adf2c29d4f1449771f7a5935d04625adcaed2",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/03-every-test-ported.md": {
+      "sha256": "6f4d0a4ba8981c335167fdd2c25ff4c3ca4460fc96652a86b718f8fa5e7becf6",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/04-exceptions-as-error-enum.md": {
+      "sha256": "69d3e3a39287d382970c268fee1eb02e724c043a142272f4b79c157dcd91dccd",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/05-kind-is-enum.md": {
+      "sha256": "99273cee30555653e0a036b53b8e690c7949399c7324fae30a7705985b925630",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/06-priority-is-option.md": {
+      "sha256": "613ff7b61e03c9055f69b983a1a02eeb4081fe15114deacc14e1d3cba9e9ec84",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/07-definition-order-preserved.md": {
+      "sha256": "8df54693e551f8b4b8610132732fd9dab8aa4c545bef1378dbea1cad086c4723",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/08-order-and-cycle-match.md": {
+      "sha256": "fda3487f4ccc7a87394623efac8f88e1d94fef99a94d7c96d4d9148d9e166803",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/09-summary-every-kind-in-order.md": {
+      "sha256": "f24f39476f12802fc4442e444b80424c287c872b50ca9d536a95326d49bbf7ac",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/10-porting-notes.md": {
+      "sha256": "7d27b8d0c48ef21b9df596d16e251bb040e70abd298adb90bcd61ed2afd50693",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/graders/11-proportionate.md": {
+      "sha256": "3d87f6b43cbe915012c3c64e995c34a85297404b92801986033ef6d3a7794f5d",
+      "mode": 420
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/place-files.sh": {
+      "sha256": "841ddfa163cad7bfb1217717eca171b8464dea243cf19f3cf449d9a60b01251d",
+      "mode": 493
+    },
+    ".agents/skills/rust-port/evals/port-python-task-graph/prompt.md": {
+      "sha256": "778390737b81b2da4e1a3af677cfd0ec9d4f3424102304f10eced720057a52b2",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/LICENSE": {
+      "sha256": "fe7214bea08bfb3d6b8c34841b54f7bc8ee84b080c83888aed9b0df321705d7c",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/SKILL.md": {
+      "sha256": "4f478da567e8546cb3e9221cc5a548062ff82e8d2f482bc87d01da065fda2355",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/case.yaml": {
+      "sha256": "984e3b91c53b9356f295886428c2ccf067e9aca13bc4f9aaabcea2ea6e83222c",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/files/Cargo.lock": {
+      "sha256": "e600ab9927c3cbf9242c99e5907fb0320fa9f5baa9e3258c456eed0b2ef7a54a",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/files/Cargo.toml": {
+      "sha256": "3539445fe6404b9d2344a0431790e1a233b9081ef89fb22c4115cf33d69f1cb9",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/files/src/lib.rs": {
+      "sha256": "b8779913a993e93d0e20abc55be1855d20c9e90148752f221dfdfec443be8e3c",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/files/tests/arena.rs": {
+      "sha256": "40d86e555caabc9ad25850e4987d2472f4a46385489e6b127c0c1a6f164155f9",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/01-flags-query-conflict.md": {
+      "sha256": "9c188e08da1c687d5adff763e74971e1de4c795099a85c13cdc5307161bddb6d",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/02-flags-deferred-wave-ordering.md": {
+      "sha256": "760815d8b9592a26c816d41c7b98bfc468f22c0650c114fa3b4a77b28b8b00b5",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/03-flags-single-unwrap.md": {
+      "sha256": "d2526360c8bb97138aa34bdb38fff7d0ff3ae38b62ad5052cfa36c9a55e64748",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/04-flags-bool-parameter.md": {
+      "sha256": "16d56cbd6ffcc6502ced780cbcf9fb587ebc5afc430727f9ebc3c6a40b55eedf",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/05-keeps-system-params-by-value.md": {
+      "sha256": "792bd5f9aa2660230b35f988119e32577e343d3c124fda09d69319392f85e600",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/06-accepts-bevy-prelude.md": {
+      "sha256": "fff2b198e6c371e8ffdf5119ae5486dbbb00db9ce9d9f43c43b8d6a660e23f32",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/07-passive-components-keep-pub-fields.md": {
+      "sha256": "92ef2b97c7f83dea99c2aca02bc135bad95cec6d58ece20a437722055e19dd6b",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/08-type-complexity-handled-as-ecs.md": {
+      "sha256": "5ede724bac867ed6097a2ac7439eaae83da6c01ae7be2e3ab48989c7ab56487f",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/09-findings-cite-locations-and-rules.md": {
+      "sha256": "e9f64389e13c913b4f5654da5001d2aa2d20327a3f9b6fbc2648678dbfa66f1b",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/10-fixes-shown-as-code.md": {
+      "sha256": "e1165316d24878d7e5e541b8afbecaaf73cfdd53086790ef2adc404b2f9b1e65",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/graders/11-code-left-unchanged.md": {
+      "sha256": "ad56654b5cfce97315d968b267667abada121fe5ffd3996aec05f6a12a606eee",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/place-files.sh": {
+      "sha256": "841ddfa163cad7bfb1217717eca171b8464dea243cf19f3cf449d9a60b01251d",
+      "mode": 493
+    },
+    ".agents/skills/rust-review/evals/review-bevy-arena/prompt.md": {
+      "sha256": "cfeb2780a40fdd5c404d50f2ebb7c0959c5bac515e2f3aaf00b3036d0368c3d3",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/case.yaml": {
+      "sha256": "285e8f7fc9e983f352c8ea23175d7d21bf650b42ad504a49fe77ed39f137cf38",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/files/inventory.rs": {
+      "sha256": "da0d9d63a50e01fc56d815c3cd6b6bc8f59fe07938b0e6e4a9e34722957571da",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/01-flags-panics-as-top-priority.md": {
+      "sha256": "6995a28c4a61a79599a1daaf4a7c62224b58589ba3bacd92607b074910896f09",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/02-flags-rc-refcell-api.md": {
+      "sha256": "6c230b13aabf4ab7bfda1383606e07b381f12c9d151875bb0fa8d707c831bb52",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/03-flags-borrowed-param-types.md": {
+      "sha256": "557cca38b60605d40f831e4ba92f1e61ef244543bbc96fbe2aad866ef8a0d885",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/04-flags-error-type.md": {
+      "sha256": "c610e832602b626cceed2f7c4c8352d0426b186e3777f26be63a3c745df6a78c",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/05-flags-bool-parameter.md": {
+      "sha256": "f133c8c90ea05650f480f361ba766992314ec3d1b95ab47a12498f1720f5432c",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/06-flags-nondeterministic-output.md": {
+      "sha256": "16fa886170f26c20c46b4ba997b58ab84585c21efba0743bceef611d27a1ef58",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/07-flags-deny-warnings.md": {
+      "sha256": "9cabd2ac21fa366008e36a80b7247380f5667b8a00ee38af0b775756b4acdc86",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/08-findings-cite-locations.md": {
+      "sha256": "f4cdcc762549c228d109c907b2ce3c0c41e3198eb38829831e66b6f4446585c6",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/09-findings-cite-named-rules.md": {
+      "sha256": "66234f21ead99752a8ac3c6b38761433e34aee0df00e3fd541bc5cd5d246fd1a",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/10-fixes-shown-as-code.md": {
+      "sha256": "613ca96aa4fb62495313144736570fab8b97b9f87609acd17eb1a3b72f1d2921",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/11-report-proportionate.md": {
+      "sha256": "204ea9de116aabb88885ca5e93cc8f0030b851ae9d3732bb0addbd1745784736",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/graders/12-code-left-unchanged.md": {
+      "sha256": "661f500134ae3b483b6e04725619c5f986e29023332bce220884685e3d8683b1",
+      "mode": 420
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/place-files.sh": {
+      "sha256": "841ddfa163cad7bfb1217717eca171b8464dea243cf19f3cf449d9a60b01251d",
+      "mode": 493
+    },
+    ".agents/skills/rust-review/evals/review-inventory-module/prompt.md": {
+      "sha256": "4a7ab79aa08e2e84fce3151e78baef05bd59b9556c13313bd6809f3856544c55",
+      "mode": 420
+    },
+    ".agents/skills/technical-documentation/SKILL.md": {
+      "sha256": "86fb36ac36dacb1eb6986515a978f6b5c00d89b91605f9d22e04c254c8334bff",
+      "mode": 420
+    },
+    ".agents/skills/technical-documentation/agents/openai.yaml": {
+      "sha256": "e73578982d5c2b4524c4689d51b583a7a4d7d9b4f3010952355e7deb13c61bd8",
+      "mode": 420
+    },
+    ".agents/skills/technical-documentation/references/architecture-and-operations.md": {
+      "sha256": "3bdd1d390c257947eb62abfae16f788a65c80f253e3bd0b7010d6ed13097e1f7",
+      "mode": 420
+    },
+    ".agents/skills/technical-documentation/references/documentation-verification.md": {
+      "sha256": "7006ba121c16d5cd136b730ceb0108ca8fb25170d8aab34da3a7b566c997bc19",
+      "mode": 420
+    },
+    ".agents/skills/technical-documentation/references/service-contracts.md": {
+      "sha256": "6a83d04066bfbfaa3610f4e074ee2312f6a384a1627bda48bbf60491121e7061",
+      "mode": 420
+    },
+    ".agents/skills/technical-documentation/references/source.md": {
+      "sha256": "ba33df35fe7dad5d219f61df5e299740204f91affd20bdbcddf743b7c15f001e",
+      "mode": 420
+    },
+    ".agents/skills/verified-delivery/SKILL.md": {
+      "sha256": "0738b9b99d645f5df6167c0109049a1ada8ee5f8094295ea378e1ad280c1304b",
+      "mode": 420
+    },
+    ".agents/skills/verified-delivery/agents/openai.yaml": {
+      "sha256": "d67ce1677472459e58ad94bbeaf87ee31979d29d1fc5c97cd3e360343c626f1f",
+      "mode": 420
+    },
+    ".agents/skills/verified-delivery/references/source.md": {
+      "sha256": "33e221ca682996ea509305aa48e2ef134dbe8782e26a29338800ff2c5c8715cd",
+      "mode": 420
+    },
+    ".agents/skills/verified-delivery/references/verification.md": {
+      "sha256": "b2245472dfd71648de4f51e1c553fa94ae4c6b706889fa77e0ed96244f3b6e59",
+      "mode": 420
+    },
+    ".agents/skills/work-coordination/SKILL.md": {
+      "sha256": "5286dd14622005fbc30a479b57749f1b7312e00f5d3cb8390f82a45778d7806a",
+      "mode": 420
+    },
+    ".agents/skills/work-coordination/agents/openai.yaml": {
+      "sha256": "4c2b14045c5e939414f9cc272dcb984da29420d41bf035fc52e539d524300713",
+      "mode": 420
+    },
+    ".agents/skills/work-coordination/references/ownership-and-handoffs.md": {
+      "sha256": "8114a923f7e3daabd270452b44307fb5777663c162e7e63747d1df95045e6852",
+      "mode": 420
+    },
+    ".agents/skills/work-coordination/references/shared-environments.md": {
+      "sha256": "7427652ceb3d8d1306eeec1fbe599e588824d5d66e670246b2c530e0c162d88b",
+      "mode": 420
+    },
+    ".agents/skills/work-coordination/references/source.md": {
+      "sha256": "23177fc2d6dcaa9b2e062df3f0f0f51916652feb2af0c114034f0c3c6987461b",
+      "mode": 420
+    },
+    ".agents/skills/workspace-cleanup/SKILL.md": {
+      "sha256": "521019db0e98652f8006085ec6d7fed758ff2355f94992bcd3f3097f2a59348d",
+      "mode": 420
+    },
+    ".agents/skills/workspace-cleanup/agents/openai.yaml": {
+      "sha256": "8f0678bfa91996a8d9eb97c10d24739b80e3078a7f451dd863a9b621ff98bfaa",
+      "mode": 420
+    },
+    ".agents/skills/workspace-cleanup/references/preservation-and-evidence.md": {
+      "sha256": "6d7924b456d8bb3bd9cbcccaff20c6c7e15d0b39d69f9d0770b8c6695f331fa1",
+      "mode": 420
+    },
+    ".agents/skills/workspace-cleanup/references/processes-and-caches.md": {
+      "sha256": "c8382de234d51798c777a92c02c085073f1310fa2e1991d0a75bd8a82086d8f0",
+      "mode": 420
+    },
+    ".agents/skills/workspace-cleanup/references/worktrees.md": {
+      "sha256": "74ff55d83f8faaca5b83d43e550941d1e64803d9b7e50befebc0a541d5d55396",
+      "mode": 420
+    },
+    ".claude/skills/domain-language/SKILL.md": {
+      "sha256": "a077539eba66385d918033150019533e32d88267211e401da652979cc94d2d08",
+      "mode": 420
+    },
+    ".claude/skills/incident-recovery/SKILL.md": {
+      "sha256": "6736f460ca721e3b41b52d665bd093a4f8ec8391850448923caa30ef2c8918d9",
+      "mode": 420
+    },
+    ".claude/skills/interface-design/SKILL.md": {
+      "sha256": "0e0fd57e609ada1c02d10ce01b146b4177a23c2d8ef324fd8f5b309b11c8df42",
+      "mode": 420
+    },
+    ".claude/skills/local-verification/SKILL.md": {
+      "sha256": "caabdcbdffa707cccd8c02fd4c9457380c79f601b6fca5e34b03f974815cce81",
+      "mode": 420
+    },
+    ".claude/skills/release-efficiency/SKILL.md": {
+      "sha256": "b78f2f0f53000643df7baa97d9bc98bf62b443a8c0138c4f236a48c8a4801006",
+      "mode": 420
+    },
+    ".claude/skills/rust-best-practices/SKILL.md": {
+      "sha256": "526c9066f4179f3b6de0f6b0bbbfa019a18be1acacdfa5ddf7c9587e35852efa",
+      "mode": 420
+    },
+    ".claude/skills/rust-port/SKILL.md": {
+      "sha256": "a683089f65028a4df9a938a20cbcd2770ab39fdcab59342bb2a24de8cee4b7af",
+      "mode": 420
+    },
+    ".claude/skills/rust-review/SKILL.md": {
+      "sha256": "eac6978f579f290e9a363a20973f776e318120aecc0967f50a2ca21e6ae6714d",
+      "mode": 420
+    },
+    ".claude/skills/technical-documentation/SKILL.md": {
+      "sha256": "062db879f1c4ff8ca6dc74aeb902957bb7e8dcdbec3c33a184b3f0a8943a54a9",
+      "mode": 420
+    },
+    ".claude/skills/verified-delivery/SKILL.md": {
+      "sha256": "a303500eaab6567eeba0d1013cffac088be3c2068fad9f24c9f0b35d1862e54c",
+      "mode": 420
+    },
+    ".claude/skills/work-coordination/SKILL.md": {
+      "sha256": "988038fddf745dbad15c52eff750aa4839b8d40b1eabac65434a5cc2f5858c36",
+      "mode": 420
+    },
+    ".claude/skills/workspace-cleanup/SKILL.md": {
+      "sha256": "a0bd121d8e6949e0b600e0b015ad69d442636e4897941e4f76376bedb423b182",
+      "mode": 420
+    }
+  }
+}

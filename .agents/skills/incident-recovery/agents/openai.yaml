@@ -1,0 +1,5 @@
+interface:
+  display_name: "Incident Recovery"
+  short_description: "Resolve concrete incidents and uncertain operation outcomes"
+policy:
+  allow_implicit_invocation: true
