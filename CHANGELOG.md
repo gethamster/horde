@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.52 - 2026-11-01
+
+- Use generic standalone installation scopes and operator-selected tenant IDs
+  for setup and preview configuration. Registration keeps each batch within one
+  tenant and rejects changes to existing tenant bindings.
+- Use Studio request IDs for fenced System submissions and remove retired
+  product naming from configuration documentation and fixtures.
+
 ## 0.6.51 - 2026-10-27
 
 - Add a private operator/service operation that permanently fences one exact
