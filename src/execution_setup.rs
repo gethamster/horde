@@ -195,7 +195,7 @@ fn validate(db: &Store, args: &Value) -> Result<Request> {
     let request: Request = serde_json::from_value(args.clone())
         .map_err(|_| anyhow::anyhow!("invalid execution configuration"))?;
     ensure!(
-        ["foundry", "local"].contains(&request.scope.as_str()),
+        ["standalone", "local"].contains(&request.scope.as_str()),
         "invalid installation scope"
     );
     ensure!(

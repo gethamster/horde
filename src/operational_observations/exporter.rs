@@ -182,7 +182,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("exporter.json");
-        let value = json!({"schema_version":1,"endpoint":"http://signals:8080/v1/observations","token_file":"/run/system/telemetry/token","tenant_id":"foundry","telemetry_project_id":"system-operations","diagnostic_thread_id":"foundry-operations","project_ids":["source-project"]});
+        let value = json!({"schema_version":1,"endpoint":"http://signals:8080/v1/observations","token_file":"/run/system/telemetry/token","tenant_id":"standalone","telemetry_project_id":"system-operations","diagnostic_thread_id":"standalone-operations","project_ids":["source-project"]});
         std::fs::write(&path, value.to_string()).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(Trusted::load(&path).is_ok());

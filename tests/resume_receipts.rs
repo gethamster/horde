@@ -24,7 +24,7 @@ fn lost_resume_response_replays_durably_without_resetting_a_later_failure() {
     db.conn
         .execute("UPDATE steps SET state='failed' WHERE task=?", [&task])
         .unwrap();
-    let input = json!({"task":task,"request_id":"foundry:stable-operation"});
+    let input = json!({"task":task,"request_id":"studio:stable-operation"});
     let first =
         protocol::dispatch_scoped(&db, "resume", input.clone(), None, Some("default")).unwrap();
     assert_eq!(first, json!({"resumed":true}));

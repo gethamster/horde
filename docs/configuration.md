@@ -747,7 +747,7 @@ credential in worker containers.
 `GET` on that URL inspects the durable receipt. IDs contain 1–128 ASCII letters,
 digits, hyphens, or underscores. Supported configurations are:
 
-- `execution-profile`: `{scope: "foundry" | "local", projects: [{id, slug,
+- `execution-profile`: `{scope: "standalone" | "local", projects: [{id, slug,
   git_proxy_token}]}`. This upserts profiles; omitted projects retain their
   existing profiles. IDs and slugs must match registered projects. Credentials
   remain in component-owned private storage, never in receipts.
@@ -756,13 +756,13 @@ digits, hyphens, or underscores. Supported configurations are:
   `${HORDE_EXECUTION_WORKSPACE_ROOT:-/workspace}/.horde-workspaces/{id}`.
   Existing workspaces require quiescence, are copied with the original retained
   as `workspaces.pre-api-migration`, and are never overwritten on collision.
-- `account-pool`: `{scope: "foundry" | "local", projects: [id]}`. Explicitly opts
+- `account-pool`: `{scope: "standalone" | "local", projects: [id]}`. Explicitly opts
   in to granted-account selection after at least two compatible authenticated
-  accounts are ready. Local retains one slot; Foundry uses two. Running or
-  unsettled work blocks configuration. Existing drain state is retained, and
+  accounts are ready. Local installations retain one slot; standalone installations
+  use two. Running or unsettled work blocks configuration. Existing drain state is retained, and
   unexpected runtime concurrency overrides require reconciliation.
 - `storage`: the fields accepted by `runtime_storage_configure`.
-- `project-registration`: registers existing local checkouts for Foundry projects.
+- `project-registration`: registers existing local checkouts for standalone projects.
   Its version 1 contract and recovery behavior are described below.
 
 Receipts contain `id`, `kind`, `state`, and nonsecret `result` metadata. A claim is
@@ -803,12 +803,12 @@ An I/O failure can leave partial filesystem changes. Failed receipts preserve th
 uncertainty and prohibit automatic replay. All setup routes share a per-listener
 limit of 120 requests per second; authentication runs before JSON extraction.
 
-#### Registering Foundry projects
+#### Registering standalone projects
 
 Send `kind: "project-registration"` with this required configuration:
 
 ```json
-{"schema_version":1,"scope":"foundry","projects":[{"id":"11111111-1111-4111-8111-111111111111","slug":"deliver","name":"Deliver","tenant_id":"foundry","concurrency":1,"isolation":"native","repository_slug":"deliver","runtime":"local"}]}
+{"schema_version":1,"scope":"standalone","projects":[{"id":"11111111-1111-4111-8111-111111111111","slug":"deliver","name":"Deliver","tenant_id":"development-team","concurrency":1,"isolation":"native","repository_slug":"deliver","runtime":"local"}]}
 ```
 
 The example UUID is illustrative. Supply the installation's agreed project UUID.
@@ -818,7 +818,10 @@ slugs and repository slugs. Slugs contain 1 to 64 lowercase ASCII letters, digit
 hyphens or underscores and cannot be UUID aliases. Names must be nonblank, at most
 256 UTF-8 bytes, and contain no control characters. Concurrency is an integer from
 1 to 64. Isolation accepts `native` or `vm` without provisioning a VM. Version 1
-requires scope and tenant `foundry` and runtime `local`.
+requires scope `standalone` and runtime `local`. The operator selects the tenant;
+all projects in a batch must share that tenant. Tenant IDs contain 1 to 128 ASCII
+letters, digits, hyphens or underscores. Existing projects must match their
+recorded tenant exactly; registration cannot transfer them between tenants.
 
 The service captures the absolute `HORDE_EXECUTION_WORKSPACE_ROOT` at startup
 (default `/workspace`). Each repository must already exist at that root plus its

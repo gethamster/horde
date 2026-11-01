@@ -177,13 +177,13 @@
 
 ## 0.6.29 - 2026-10-02
 
-- Let Foundry show committed file changes from an exact verified Run checkpoint.
+- Let Studio show committed file changes from an exact verified Run checkpoint.
   Keep repository selection with the server, reject stale checkpoint refs, and
   bound source previews without reading uncommitted files or following symlinks.
 - Preserve a later failed attempt when a caller retries a lost resume response
   with the same request ID. Persist the response with the original step reset.
 - Expose operator feedback acknowledgements and checkpoint event ordering so
-  Foundry can associate updated source snapshots with a new verified checkpoint.
+  Studio can associate updated source snapshots with a new verified checkpoint.
   Keep message bodies and arbitrary source references out of this evidence.
 
 ## 0.6.28 - 2026-09-30
@@ -208,7 +208,7 @@
 
 ## 0.6.26 - 2026-09-30
 
-- Register existing Foundry project repositories through the private setup API.
+- Register existing Studio project repositories through the private setup API.
   Validate strict typed requests and immutable project bindings, atomically
   persist repository/runtime grants with their success receipt, and reconcile
   the original operation after interruption. Registration preserves revoked

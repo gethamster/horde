@@ -81,7 +81,7 @@ impl Fixture {
     }
 }
 fn payload(slug: &str, id: &str) -> Value {
-    json!({"kind":"project-registration","config":{"schema_version":1,"scope":"foundry","projects":[{"id":id,"slug":slug,"name":"Deliver","tenant_id":"foundry","concurrency":1,"isolation":"native","repository_slug":slug,"runtime":"local"}]}})
+    json!({"kind":"project-registration","config":{"schema_version":1,"scope":"standalone","projects":[{"id":id,"slug":slug,"name":"Deliver","tenant_id":"standalone","concurrency":1,"isolation":"native","repository_slug":slug,"runtime":"local"}]}})
 }
 const FIRST: &str = "11111111-1111-4111-8111-111111111111";
 const SECOND: &str = "22222222-2222-4222-8222-222222222222";
@@ -119,14 +119,14 @@ async fn registration_http_create_reconcile_independent_replay() {
     assert_eq!(uuid::Uuid::parse_str(repo_id).unwrap().to_string(), repo_id);
     assert_eq!(
         first["result"],
-        json!({"schema_version":1,"scope":"foundry","projects":[{"id":FIRST,"slug":"deliver","name":"Deliver","tenant_id":"foundry","concurrency":1,"isolation":"native","repository":{"id":repo_id,"slug":"deliver"},"runtime":"local","disposition":"created"}]})
+        json!({"schema_version":1,"scope":"standalone","projects":[{"id":FIRST,"slug":"deliver","name":"Deliver","tenant_id":"standalone","concurrency":1,"isolation":"native","repository":{"id":repo_id,"slug":"deliver"},"runtime":"local","disposition":"created"}]})
     );
     let mut unknown_kind = body.clone();
     unknown_kind["kind"] = json!("future-kind");
     assert_eq!(f.put("a", &unknown_kind).await.status(), 409);
 
     let db = database(&f.root).unwrap();
-    assert_eq!(projects::tenant(&db, FIRST).unwrap(), "foundry");
+    assert_eq!(projects::tenant(&db, FIRST).unwrap(), "standalone");
     assert!(projects::runtime_allowed(&db, FIRST, "local").unwrap());
     let reconciled: Value = f.put("again", &body).await.json().await.unwrap();
     assert_eq!(
@@ -428,6 +428,7 @@ async fn registration_http_filesystem_and_ownership_denials() {
         "gitfile",
         "plain",
         "cross-project",
+        "cross-tenant",
         "stored-path",
         "dedicated",
         "common-indirection",
@@ -468,6 +469,11 @@ async fn registration_http_filesystem_and_ownership_denials() {
                     &json!({"project":"default","path":path}),
                 )
                 .unwrap();
+            }
+            "cross-tenant" => {
+                let mut project = body["config"]["projects"][0].clone();
+                project["tenant_id"] = json!("another-team");
+                projects::dispatch(&db, "project_create", &project).unwrap();
             }
             "stored-path" => {
                 projects::dispatch(&db, "project_create", &body["config"]["projects"][0]).unwrap();
@@ -589,7 +595,7 @@ async fn registration_http_batch_validation_order_and_atomicity() {
         .unwrap()
         .push(first["config"]["projects"][0].clone());
     // Final entry conflicts; no earlier project, tenant, repository or grant can survive.
-    projects::dispatch(&db, "project_create", &json!({"id":FIRST,"slug":"deliver","name":"Different","tenant_id":"foundry","concurrency":1})).unwrap();
+    projects::dispatch(&db, "project_create", &json!({"id":FIRST,"slug":"deliver","name":"Different","tenant_id":"standalone","concurrency":1})).unwrap();
     let before = snapshot(&db);
     let response = f.put("later-conflict", &batch).await;
     assert_eq!(response.status(), 409);

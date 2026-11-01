@@ -111,7 +111,7 @@ fn absolute(p: &Path) -> bool {
 fn configure(v: &Value) -> Result<Config> {
     let c: Config = serde_json::from_value(v.clone()).context("invalid preview pipeline policy")?;
     ensure!(
-        c.schema_version == 1 && ["local", "foundry"].contains(&c.scope.as_str()),
+        c.schema_version == 1 && ["local", "standalone"].contains(&c.scope.as_str()),
         "invalid preview policy scope/version"
     );
     ensure!(c.projects.len() <= 128, "too many preview projects");

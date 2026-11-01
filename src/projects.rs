@@ -122,7 +122,7 @@ pub fn tenant(db: &Store, project: &str) -> Result<String> {
         .optional()?
         .unwrap_or(project))
 }
-fn validate_tenant(value: &str) -> Result<()> {
+pub(crate) fn validate_tenant(value: &str) -> Result<()> {
     ensure!(
         !value.is_empty()
             && value.len() <= 128

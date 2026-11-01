@@ -187,13 +187,13 @@ fn pool_plan(db: &Store, scope: &str, value: &Value) -> Result<PoolPlan> {
         ready.len() >= 2,
         "two ready granted matching accounts required"
     );
-    let slots = if scope == "foundry" { 2 } else { 1 };
+    let slots = if scope == "standalone" { 2 } else { 1 };
     let previous = config
         .get("concurrency")
         .and_then(toml::Value::as_integer)
         .context("explicit project concurrency required")?;
     ensure!(
-        previous == 1 || (scope == "foundry" && previous == 2),
+        previous == 1 || (scope == "standalone" && previous == 2),
         "unexpected project concurrency"
     );
     config["concurrency"] = toml::Value::Integer(slots);
@@ -242,7 +242,7 @@ fn apply_pool_plan(db: &Store, plan: &PoolPlan) -> Result<()> {
 }
 pub fn account_pool(db: &Store, args: &Value) -> Result<Value> {
     let scope = args["scope"].as_str().context("scope required")?;
-    ensure!(["foundry", "local"].contains(&scope), "invalid scope");
+    ensure!(["standalone", "local"].contains(&scope), "invalid scope");
     let list = args["projects"].as_array().context("projects required")?;
     ensure!(
         !list.is_empty() && list.len() <= 100,
@@ -250,7 +250,7 @@ pub fn account_pool(db: &Store, args: &Value) -> Result<Value> {
     );
     db.atomic(|| {
         quiet(db)?;
-        if scope == "foundry" {
+        if scope == "standalone" {
             ensure!(
                 crate::management::value(db, "concurrency")?.is_none_or(|v| v == "2"),
                 "runtime concurrency override requires reconciliation"
@@ -272,7 +272,7 @@ pub fn account_pool(db: &Store, args: &Value) -> Result<Value> {
         for plan in &plans {
             apply_pool_plan(db, plan)?;
         }
-        if scope == "foundry" {
+        if scope == "standalone" {
             crate::management::set(db, "concurrency", "2")?;
         }
         Ok(json!({"configured":true,"scope":scope,"project_count":list.len()}))
@@ -405,11 +405,11 @@ mod tests {
             ));
         }
         std::fs::write(root.join("config.toml"), &config).unwrap();
-        assert!(pool_plan(&db, "foundry", &json!(id)).is_ok());
+        assert!(pool_plan(&db, "standalone", &json!(id)).is_ok());
         assert!(
             account_pool(
                 &db,
-                &json!({"scope":"foundry","projects":[id,"../invalid"]})
+                &json!({"scope":"standalone","projects":[id,"../invalid"]})
             )
             .is_err()
         );
@@ -422,7 +422,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        account_pool(&db, &json!({"scope":"foundry","projects":[id]})).unwrap();
+        account_pool(&db, &json!({"scope":"standalone","projects":[id]})).unwrap();
         let updated = std::fs::read_to_string(root.join("config.toml")).unwrap();
         assert!(!updated.contains("account ="));
         assert_eq!(

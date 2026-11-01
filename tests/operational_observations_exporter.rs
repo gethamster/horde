@@ -15,7 +15,7 @@ fn operational_observations_exporter_does_not_start_worker_daemon() {
 fn run_exporter(signal: i32) {
     let root = tempfile::tempdir().unwrap();
     let config = root.path().join("exporter.json");
-    std::fs::write(&config,serde_json::json!({"schema_version":1,"endpoint":"http://signals:8080/v1/observations","token_file":"/run/system/telemetry/token","tenant_id":"foundry","telemetry_project_id":"system-operations","diagnostic_thread_id":"foundry-operations","project_ids":["default"]}).to_string()).unwrap();
+    std::fs::write(&config,serde_json::json!({"schema_version":1,"endpoint":"http://signals:8080/v1/observations","token_file":"/run/system/telemetry/token","tenant_id":"standalone","telemetry_project_id":"system-operations","diagnostic_thread_id":"standalone-operations","project_ids":["default"]}).to_string()).unwrap();
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_horde"))
         .arg("--data-dir")

@@ -26,7 +26,7 @@ fn fixture() -> (tempfile::TempDir, Store, Policy) {
         "repository":"gethamster/adam","base":"main","automation_grant_id":"grant-1",
         "routine_id":"routine-1","expires_at":now()+3600,
         "authority_url":"http://127.0.0.1:1/internal/upstream-maintenance/adam-upstream/authorization",
-        "authority_token_env":"FOUNDRY_MAINTENANCE_AUTHORITY_TOKEN",
+        "authority_token_env":"STUDIO_MAINTENANCE_AUTHORITY_TOKEN",
         "budget":{"reference":"approved-worker-budget-1","max_model_calls":2,"max_input_bytes":100,"max_output_bytes":80}
     })).unwrap();
     (dir, db, policy)

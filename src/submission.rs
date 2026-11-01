@@ -117,7 +117,7 @@ impl CloseRequest {
             format!("{}:{}", binding.original_actor_id, binding.operation_id).as_bytes(),
         );
         ensure!(
-            self.request_id == format!("foundry:{key}"),
+            self.request_id == format!("studio:{key}"),
             "original actor/operation request key mismatch"
         );
         Ok(())

@@ -50,7 +50,7 @@ impl Fixture {
     pub fn request(&self, project: &str) -> Value {
         let operation = "op-fixture-build";
         let request_id = format!(
-            "foundry:{}",
+            "studio:{}",
             horde::store::hash(format!("{ORIGINAL_ACTOR}:{operation}").as_bytes())
         );
         json!({

@@ -55,10 +55,12 @@ fn slug(s: &str) -> bool {
 pub(crate) fn validate(value: &Value) -> Result<Config> {
     let config: Config = serde_json::from_value(value.clone())?;
     ensure!(
-        config.schema_version == 1 && config.scope == "foundry",
+        config.schema_version == 1 && config.scope == "standalone",
         "invalid version or scope"
     );
     ensure!((1..=100).contains(&config.projects.len()), "invalid count");
+    let tenant_id = &config.projects[0].tenant_id;
+    projects::validate_tenant(tenant_id)?;
     let mut ids = BTreeSet::new();
     let mut slugs = BTreeSet::new();
     let mut repos = BTreeSet::new();
@@ -75,7 +77,7 @@ pub(crate) fn validate(value: &Value) -> Result<Config> {
             "invalid name"
         );
         ensure!(
-            p.tenant_id == "foundry"
+            &p.tenant_id == tenant_id
                 && p.runtime == "local"
                 && (1..=64).contains(&p.concurrency)
                 && matches!(p.isolation.as_str(), "native" | "vm"),
@@ -402,7 +404,7 @@ pub(crate) fn apply(db: &Store, root: &Path, config: &Config, expected: &str) ->
     }
     Ok(serde_json::to_value(RegistrationResult {
         schema_version: 1,
-        scope: "foundry".into(),
+        scope: config.scope.clone(),
         projects: results,
     })?)
 }
@@ -411,7 +413,7 @@ pub(crate) fn apply(db: &Store, root: &Path, config: &Config, expected: &str) ->
 mod tests {
     use super::*;
     fn payload() -> Value {
-        json!({"schema_version":1,"scope":"foundry","projects":[{"id":"11111111-1111-4111-8111-111111111111","slug":"deliver","name":"Deliver","tenant_id":"foundry","concurrency":1,"isolation":"native","repository_slug":"deliver","runtime":"local"}]})
+        json!({"schema_version":1,"scope":"standalone","projects":[{"id":"11111111-1111-4111-8111-111111111111","slug":"deliver","name":"Deliver","tenant_id":"standalone","concurrency":1,"isolation":"native","repository_slug":"deliver","runtime":"local"}]})
     }
     #[test]
     fn typed_bounds_required_fields_and_no_coercion() {
@@ -463,7 +465,7 @@ mod tests {
             ("slug", json!("11111111-1111-4111-8111-111111111111")),
             ("isolation", json!("remote")),
             ("runtime", json!("local-id")),
-            ("tenant_id", json!("other")),
+            ("tenant_id", json!("../other")),
         ] {
             let mut invalid = original.clone();
             invalid["projects"][0][field] = value;
@@ -492,6 +494,25 @@ mod tests {
             .push(original["projects"][0].clone());
         assert!(validate(&valid).is_err());
     }
+
+    #[test]
+    fn operator_selected_tenant_is_validated_and_shared_by_the_batch() {
+        let mut value = payload();
+        value["projects"][0]["tenant_id"] = json!("development-team");
+        let config = validate(&value).unwrap();
+        assert_eq!(config.projects[0].tenant_id, "development-team");
+
+        let mut second = value["projects"][0].clone();
+        second["id"] = json!("22222222-2222-4222-8222-222222222222");
+        second["slug"] = json!("signals");
+        second["repository_slug"] = json!("signals");
+        value["projects"].as_array_mut().unwrap().push(second);
+        assert!(validate(&value).is_ok());
+
+        value["projects"][1]["tenant_id"] = json!("another-team");
+        assert!(validate(&value).is_err(), "a batch cannot cross tenants");
+    }
+
     #[test]
     fn strict_json_rejects_nested_escaped_duplicates_and_retains_numbers() {
         for value in [
