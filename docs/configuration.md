@@ -37,7 +37,7 @@ configuration.
 
 ## Decision models and advisory routing
 
-Horde can record decision-model routing advice without changing which executor runs a step. The feature is disabled by default and can be enabled only in operator-owned configuration. A repository `.horde.toml` cannot enable or alter it. Fresh decision settings name Tuara as the provider but leave the endpoint and credential source empty. This example uses the Tuara Jev catalog ID validated by the [live smoke test](decision-routing-v1-report.md):
+Horde can record decision-model routing advice without changing which executor runs a step. The feature is disabled by default and can be enabled only in operator-owned configuration. A repository `.horde.toml` cannot enable or alter it. Fresh decision settings name Tuara as the provider but leave the endpoint and credential source empty. This example configures an explicit Tuara Jev catalog ID:
 
 ```toml
 [decision]
